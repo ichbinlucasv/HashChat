@@ -1,0 +1,15 @@
+target/
+dist-newstyle/
+*.o
+*.hi
+*.so
+*.dylib
+*.dll
+__pycache__/
+*.pyc
+android/build/
+android/.gradle/
+*.db
+*.db-shm
+*.db-wal
+tor/hidden_service/

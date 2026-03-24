@@ -1,0 +1,7 @@
+{
+    "haskell.manageHLS": "PATH",
+    "rust-analyzer.cargo.buildScripts.enable": true,
+    "files.associations": {
+        "*.hs": "haskell"
+    }
+}

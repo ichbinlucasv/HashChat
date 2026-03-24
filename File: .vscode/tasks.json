@@ -1,0 +1,12 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build HashChat",
+            "type": "shell",
+            "command": "python3 build.py",
+            "group": "build",
+            "problemMatcher": []
+        }
+    ]
+}

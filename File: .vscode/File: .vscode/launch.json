@@ -1,0 +1,13 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug HashChat Desktop",
+            "program": "${workspaceFolder}/dist-newstyle/build/x86_64-linux/ghc-*/hashchat-*/x/hashchat-desktop/build/hashchat-desktop/hashchat-desktop",
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
