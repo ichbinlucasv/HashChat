@@ -1,11 +1,38 @@
-# HashChat - Exact SimpleX + Session mix, 100% open source, multi-platform
+# HashChat
 
-Supported: Fedora, Debian, Arch, Windows, Android.
+**Presidential-grade anonymous messenger** — SimpleX + Session architecture with Rust crypto core.
 
-No IDs. No phones. Random per-profile keys. Tor hidden service default. SMP queues. Double-ratchet E2EE + extra HMAC. Full files (1GB chunked). Voice/Audio/Video. 2-click Panic Wipe. Dark mode only.
+No phone numbers. No user IDs. No central servers. No logs. No metadata.
 
-Build on Fedora:
-cargo build && cabal build && python3 build.py
+### Core Design
+- Random ed25519/x25519 keypair per profile (never reused)
+- Unidirectional SMP queues (SimpleX style)
+- Double-ratchet E2EE + extra HMAC-SHA512 layer
+- Tor hidden service routing by default
+- SQLCipher encrypted local storage (`PRAGMA key='hashchat-secure-passphrase'`)
+- Amnesic design — 2-click Panic Wipe (Rust secure erase + 3-pass shred)
+- Storage capped to prevent DoS
+- Full file transfer (any type, up to 1 GB, chunked + padded)
 
-Android APK:
-cd android && ./gradlew assembleDebug
+### Security Features
+- Constant-time crypto in Rust (ring + zeroize)
+- Memory zeroization on every sensitive operation
+- Extra per-message HMAC verification
+- Yubikey-ready MFA hooks (closed for now)
+- Dark mode only (Twitter/X palette)
+- No light mode ever
+
+### Supported Platforms
+- Fedora
+- Debian
+- Arch Linux
+- Windows (via MSYS2)
+- Android (native APK via cargo-ndk + Gradle)
+
+### Build Instructions
+
+**Fedora / Debian / Arch**
+```bash
+cargo build --release
+cabal build
+python3 build.py

@@ -1,4 +1,38 @@
-SocksPort 9050
+SocksPort 9050 IsolateClientAddr IsolateSOCKSAuth
+SocksPolicy accept 127.0.0.1
+SocksPolicy reject *
 HiddenServiceDir /var/lib/tor/hashchat/
+HiddenServiceVersion 3
 HiddenServicePort 80 127.0.0.1:8080
+HiddenServicePort 443 127.0.0.1:8080
+HiddenServiceSingleHopMode 0
+HiddenServiceNonAnonymousMode 0
 ControlPort auto
+CookieAuthentication 1
+ControlSocket /var/run/tor/control
+SafeLogging 1
+Log notice file /var/log/tor/hashchat.log
+AvoidDiskWrites 1
+DisableNetwork 0
+ClientOnly 1
+ClientDNSRejectInternalAddresses 1
+ClientRejectInternalAddresses 1
+DisableAllSwap 1
+CircuitBuildTimeout 60
+LearnCircuitBuildTimeout 0
+NumEntryGuards 3
+NumDirectoryGuards 3
+UseEntryGuards 1
+CircuitPadding 0
+ReducedExitPolicy 1
+MaxMemInQueues 512
+MaxCircuitDirtiness 600
+NewCircuitPeriod 600
+GeoIPFile /dev/null
+GeoIPv6File /dev/null
+DisableDebuggerAttachment 1
+Sandbox 1
+DataDirectory /var/lib/tor/hashchat
+DataDirectoryGroupReadable 0
+Nickname ""
+ContactInfo ""
