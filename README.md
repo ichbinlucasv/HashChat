@@ -1,4 +1,5 @@
 # HashChat
+![grok-image-c881f444-cc70-4aff-8b35-55e8f616ba02](https://github.com/user-attachments/assets/dbf8185e-a02d-4dc1-b116-3bb35e92b9b9)
 
 **Presidential-grade anonymous messenger** — SimpleX + Session architecture with Rust crypto core.
 
