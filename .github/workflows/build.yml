@@ -1,0 +1,22 @@
+name: Build HashChat
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build-fedora:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ghc cabal-install rustc cargo gtk3
+      - name: Build
+        run: cargo build --release && cabal build && python3 build.py
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Android APK
+        run: cd android && ./gradlew assembleDebug
