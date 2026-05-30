@@ -63,4 +63,9 @@ class MainActivity : AppCompatActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
     }
+
+    // === Future: Integrate with the new message system ===
+    // Use sendEncryptedMessage / receiveEncryptedMessage from the Haskell side
+    // (via JNI) with real Double Ratchet keys, per-contact ratchets,
+    // disappearing messages, and burner profiles.
 }

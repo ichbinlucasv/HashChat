@@ -29,6 +29,20 @@ pub extern "system" fn Java_chat_hashchat_HashChatNative_ratchetNew(
 
 #[cfg(target_os = "android")]
 #[no_mangle]
+pub extern "system" fn Java_chat_hashchat_HashChatNative_sendMessage(
+    _env: JNIEnv,
+    _class: JClass,
+    ratchet_id: i32,
+    message: jstring,
+) -> jstring {
+    // TODO: Call into the real message system
+    env.new_string("Message sent via ratchet (stub)")
+        .expect("Couldn't create java string")
+        .into_raw()
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
 pub extern "system" fn Java_chat_hashchat_HashChatNative_getOnion(
     env: JNIEnv,
     _class: JClass,

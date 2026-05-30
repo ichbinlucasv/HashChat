@@ -29,6 +29,8 @@ pub struct DoubleRatchet {
     chain_key_recv: [u8; RATCHET_KEY_LEN],
     send_count: u32,
     recv_count: u32,
+    // Skipped message keys for out-of-order delivery (message_number -> key)
+    skipped_keys: std::collections::HashMap<u32, [u8; RATCHET_KEY_LEN]>,
 }
 
 impl DoubleRatchet {
@@ -44,6 +46,7 @@ impl DoubleRatchet {
             chain_key_recv: [0u8; RATCHET_KEY_LEN],
             send_count: 0,
             recv_count: 0,
+            skipped_keys: std::collections::HashMap::new(),
         }
     }
 
@@ -59,11 +62,26 @@ impl DoubleRatchet {
     }
 
     /// Restore from previously exported state.
-    /// Warning: This is a simplified version. Real apps should also restore chain keys.
     pub fn restore_state(&mut self, root: [u8; RATCHET_KEY_LEN], send: u32, recv: u32) {
         self.root_key = root;
         self.send_count = send;
         self.recv_count = recv;
+    }
+
+    /// Store a skipped message key (for out-of-order delivery)
+    pub fn store_skipped_key(&mut self, msg_number: u32, key: [u8; RATCHET_KEY_LEN]) {
+        self.skipped_keys.insert(msg_number, key);
+        // Limit size to prevent DoS
+        if self.skipped_keys.len() > 1000 {
+            if let Some(oldest) = self.skipped_keys.keys().min().cloned() {
+                self.skipped_keys.remove(&oldest);
+            }
+        }
+    }
+
+    /// Try to get a skipped key
+    pub fn get_skipped_key(&mut self, msg_number: u32) -> Option<[u8; RATCHET_KEY_LEN]> {
+        self.skipped_keys.remove(&msg_number)
     }
 
     /// Securely clear sensitive state (called automatically on drop via ZeroizeOnDrop).
