@@ -20,6 +20,8 @@ chmod +x install-fedora.sh
 
 Then follow the printed instructions to set up Tor (critical).
 
+**Future easy install**: We are building Flatpak support (see `flatpak/` directory). This will be the recommended method for most Fedora + other Linux users.
+
 Full instructions: see [INSTALL.md](INSTALL.md)
 
 ## Important: Tor is Required

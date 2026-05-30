@@ -1,0 +1,45 @@
+app-id: org.hashchat.HashChat
+runtime: org.freedesktop.Platform
+runtime-version: "23.08"
+sdk: org.freedesktop.Sdk
+command: hashchat-tui
+
+finish-args:
+  - --share=network          # Needed for Tor hidden services
+  - --socket=wayland
+  - --socket=x11
+  - --device=dri
+  - --filesystem=home        # User controls persistence in ~/hashchat_data
+  - --env=LD_LIBRARY_PATH=/app/lib
+  - --talk-name=org.freedesktop.secrets  # Future: better secret storage
+  # No direct device access beyond what's needed for TUI
+
+modules:
+  - name: hashchat-rust
+    buildsystem: simple
+    build-commands:
+      - cargo build --release
+      - install -Dm755 target/release/libhashchat_rust.so /app/lib/libhashchat_rust.so
+    sources:
+      - type: dir
+        path: .
+
+  - name: hashchat-haskell
+    buildsystem: simple
+    build-commands:
+      - cabal update
+      - cabal build -f-tui hashchat-tui
+      - install -Dm755 $(find dist-newstyle -name hashchat-tui -type f | head -1) /app/bin/hashchat-tui
+    sources:
+      - type: dir
+        path: .
+
+  - name: desktop-file
+    buildsystem: simple
+    build-commands:
+      - install -Dm644 flatpak/org.hashchat.HashChat.desktop /app/share/applications/org.hashchat.HashChat.desktop
+      - install -Dm644 flatpak/org.hashchat.HashChat.metainfo.xml /app/share/metainfo/org.hashchat.HashChat.metainfo.xml
+      # TODO: Add real icons (SVG + PNG in multiple sizes) before Flathub submission
+    sources:
+      - type: dir
+        path: .

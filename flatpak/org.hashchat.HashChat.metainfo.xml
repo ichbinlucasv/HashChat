@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.hashchat.HashChat</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>HashChat</name>
+  <summary>Maximum anonymity messenger built with Haskell + Rust. Tor-only. Strongest OPSEC focus.</summary>
+  <description>
+    <p>
+      HashChat is a privacy-first, metadata-resistant messenger designed for high-risk environments.
+      It uses real Double Ratchet cryptography, Tor hidden services by default, burner profiles,
+      and an extremely aggressive panic wipe feature.
+    </p>
+    <p>
+      Built for people who need serious protection against advanced adversaries.
+    </p>
+  </description>
+  <launchable type="desktop-id">org.hashchat.HashChat.desktop</launchable>
+  <url type="homepage">https://github.com/ichbinlucasv/HashChat</url>
+  <url type="bugtracker">https://github.com/ichbinlucasv/HashChat/issues</url>
+  <developer id="org.hashchat">
+    <name>ichbinlucasv</name>
+  </developer>
+  <content_rating type="oars-1.1" />
+</component>

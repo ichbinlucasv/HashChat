@@ -75,6 +75,11 @@ foreign import ccall unsafe "rust_ratchet_import_encrypted" rust_ratchet_import_
 foreign import ccall unsafe "rust_encrypt_blob_with_passphrase" rust_encrypt_blob_with_passphrase :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> IO Bool
 foreign import ccall unsafe "rust_decrypt_blob_with_passphrase" rust_decrypt_blob_with_passphrase :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> IO Bool
 
+-- Ultra kernel-level security (mlockall + madvise)
+foreign import ccall unsafe "rust_mlockall_current" rust_mlockall_current :: IO Bool
+foreign import ccall unsafe "rust_madvise_dontneed" rust_madvise_dontneed :: Ptr Word8 -> Int -> IO ()
+foreign import ccall unsafe "rust_apply_basic_seccomp" rust_apply_basic_seccomp :: IO Bool
+
 initProfile :: IO ProfileKey
 initProfile = do
   ptr <- rust_init_profile
@@ -318,6 +323,16 @@ decryptWithPassphrase pass ciphertext = do
     blob <- peekArray actual outPtr
     pure (Just $ pack blob)
   else pure Nothing
+
+-- Kernel-level hardening helpers (exposed for TUI wipe)
+mlockAllCurrent :: IO Bool
+mlockAllCurrent = rust_mlockall_current
+
+madviseDontNeed :: Ptr Word8 -> Int -> IO ()
+madviseDontNeed = rust_madvise_dontneed
+
+applyBasicSeccomp :: IO Bool
+applyBasicSeccomp = rust_apply_basic_seccomp
 
 -- === Real Encrypted Message Log Persistence (properly implemented) ===
 

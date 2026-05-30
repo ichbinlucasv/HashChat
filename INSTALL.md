@@ -86,6 +86,24 @@ Will require:
 - Rust + cargo-ndk
 - Proper secure storage + JNI integration
 
+## Flatpak (Easiest Cross-Distro Method - Experimental)
+
+Flatpak support is being actively developed, starting with Fedora.
+
+```bash
+# Build locally (requires flatpak-builder)
+cd flatpak
+./build-flatpak.sh
+```
+
+Then install with:
+```bash
+flatpak-builder --user --install build-dir org.hashchat.HashChat.yml
+flatpak run org.hashchat.HashChat
+```
+
+This is the long-term recommended way to distribute the Linux desktop version.
+
 ## Troubleshooting
 
 - **Missing `libhashchat_rust.so`**: Run `cargo build --release` and copy the library to `rust-lib/`.

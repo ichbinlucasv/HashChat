@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=HashChat
+Comment=Maximum anonymity messenger - Haskell + Rust - Tor only
+Exec=hashchat-tui
+Icon=org.hashchat.HashChat
+Categories=Network;Security;Chat;
+Terminal=true
+StartupNotify=true

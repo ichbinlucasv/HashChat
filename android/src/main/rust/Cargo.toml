@@ -1,0 +1,11 @@
+[package]
+name = "hashchat-android"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Re-use or re-export the main hashchat-rust logic
+# In practice you would depend on the parent crate or copy the relevant modules.
