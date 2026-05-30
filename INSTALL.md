@@ -91,23 +91,17 @@ Will require:
 - Rust + cargo-ndk
 - Proper secure storage + JNI integration
 
-## Flatpak (Easiest Cross-Distro Method - Experimental)
+## Flatpak (Primary Recommended Distribution Method)
 
-Flatpak support is being actively developed, starting with Fedora.
+We now have a **pure-Nix reproducible Flatpak** as the main easy install path.
 
 ```bash
-# Build locally (requires flatpak-builder)
-cd flatpak
-./build-flatpak.sh
-```
-
-Then install with:
-```bash
-flatpak-builder --user --install build-dir org.hashchat.HashChat.yml
+nix build .#hashchat-flatpak
+flatpak install --user result/hashchat-tui.flatpak
 flatpak run org.hashchat.HashChat
 ```
 
-This is the long-term recommended way to distribute the Linux desktop version.
+This is currently the best way to get a sandboxed, reproducible build on Fedora and other distros. See `flake.nix` for details.
 
 ## Troubleshooting
 

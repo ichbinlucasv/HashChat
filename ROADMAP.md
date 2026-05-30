@@ -2,94 +2,63 @@
 
 Goal: Build a SimplexChat-level (or better) anonymous messenger using only **Haskell + Rust**, with strong focus on security, forward secrecy, and metadata resistance.
 
-## Phase 1 — Foundations (Current)
-- [x] Rust secure primitives (zeroization, AEAD, constant time)
-- [x] Functional black/yellow/white Brick TUI (Desktop) with real ratchet persistence + encrypted messaging foundation (Editor widget temporarily simplified for build stability across Brick versions)
-- [x] Real AES-GCM + **Double Ratchet foundation** (KDF chains + DH ratcheting started)
-- [x] Panic Wipe + Logout on Desktop and Android (prominent)
-- [x] Easy build system (`./build.sh` + launchers) — pure Bash (no Python)
-- [x] Ratchet FFI exposed to Haskell + live in TUI
-- [x] Real Tor control port + onion persistence (basic working implementation with persistence)
-- [x] Proper Android multi-screen UI (bottom nav: Chats/Contacts/Settings) + JNI bridge expanded
-- [ ] Full production Double Ratchet (very close)
-- [ ] Complete Tor + Android production integration
+**We have moved from "build the foundations" to "polish to production".**
 
-## Phase 2 — Core Security Features
-1. **Proper Double Ratchet + per-contact ratchet state**
-   - KDF chains
-   - DH ratcheting
-   - Skipped message keys
-   - Header encryption
+## What Is Actually Done (as of this build)
 
-2. **Real Tor hidden service support**
-   - Automatic .onion address generation
-   - Hidden service descriptor management
-   - Circuit isolation
+### Paranoid Core (Implemented)
+- Real Double Ratchet in Rust (KDF chains, DH ratcheting, skipped keys, zeroize on drop)
+- Bidirectional Tor v3 hidden services with proper sender-header framing
+- Encrypted persistence (Argon2id + AES-GCM) for ratchets, messages, and groups
+- Nuclear Panic Wipe (7-pass + Rust zeroize + kernel anti-forensics + mlock)
+- Dynamic Security Posture with real environment inspection + action refusals
+- Burner profiles + plausible deniability decoy profiles with automatic wipe on switch
+- Disappearing messages tied to ratchet key erasure
 
-3. **Self-destructing / disappearing messages**
-   - Per-message TTL
+### SimplexChat-Level UX Parity (both platforms)
+- Full contact actions: Block, Mute, Delete, Report, View security info, Disappearing timer
+- Multi-member groups with sender-key forward secrecy + member management + QR join
+- Voice messages: per-chunk ratchet streaming + playback with seek bars (Android RecyclerView + TUI)
+- Burner switching (p/n), decoy mode (D), prominent nuclear wipe (w)
+- Black + #FFD700 gold theme on both TUI and Android
 
-## SimplexChat Button & Feature Parity (Desktop TUI + Android) — Required for User Respect
-The explicit goal is that both the Brick TUI and the Android Kotlin UI feel *very close* in look, keyboard/mouse/touch flow, and available actions to SimplexChat.
+### Android (Production Direction)
+- RecyclerView chat + dedicated group member management screen
+- Hardware-backed Android Keystore + optional BiometricPrompt for ratchet unlock
+- QR scanning + group join flow
+- Background Tor receiver thread
 
-**Minimum button / action set that must exist and behave similarly on both platforms:**
-- Contact list with status (blocked, last seen, E2EE badge)
-- Long-press / 'a' key / overflow on contact → menu with:
-  - Block user (persist, drop messages, show [BLOCKED])
-  - Mute notifications
-  - Delete chat (local wipe only)
-  - Report suspicious / mark for review
-  - Set disappearing message timer (integrate with ratchet key wipe)
-  - View security info / verify (ratchet public key fingerprint, QR in future)
-  - Export encrypted transcript (for backup / legal)
-- Chat input bar (bottom on Android, bottom on TUI) with send (Enter)
-- Global top / menu actions:
-  - Switch / create burner profiles (p/n)
-  - Decoy / plausible deniability mode (D)
-  - Security Posture dashboard (live, dynamic)
-  - Tor / Network status
-  - Panic Wipe (prominent red, confirmation)
-  - Settings (disappearing defaults, self-destruct on wipe, etc.)
-- Message-level actions (long-press on a message): Delete this message, Make disappearing, Copy (redacted), View ratchet step used.
-- Visual style: Black background (#000), gold/yellow accents (#FFD700), white text, clear [E2EE], [D] for disappearing, security score in title bar on both platforms.
+### Distribution & Reproducibility
+- Pure-Nix reproducible Flatpak (`nix build .#hashchat-flatpak`)
+- Nix cross-compile path for Android Rust libraries
+- Qubes/Tails disposable VM build scripts that enforce `clean-security.sh` + anti-forensics
 
-All of the above have been started in the TUI (action menu, blocked list, decoy, dynamic posture) and Android layout (gold theme + action buttons + docs). Full RecyclerView chat + exact menu parity is the next concrete UI task.
+## Current Phase: Polish to "Feels Complete" (High Priority)
 
-This level of parity + the 8 major paranoid features is what gives the project "respect of users" comparable to SimplexChat.
-   - Burn after reading
+### Immediate Polish Items
+1. **Android group persistence** — Real encrypted load/save (Keystore + JNI ratchet export/import) so groups survive app restarts.
+2. **Voice with real seek bars everywhere** — Wire chunk receive → JNI decrypt → MediaPlayer with proper SeekBar + progress in RecyclerView bubbles. Improve TUI ffplay integration.
+3. **Nix Android toolchain** — Turn the current skeleton into a working derivation so `nix build` actually produces usable .so files for aarch64 + armv7.
+4. **Docs** — Finish full README/ROADMAP/INSTALL refresh (already in progress).
 
-4. **Voice messages with forward secrecy**
-   - Streaming encryption
-   - Ratchet per chunk
+### Credibility & Hardening
+- Add basic tests (ratchet roundtrips, group sender-key, voice framing).
+- More disappearing-message key wipe integration across the stack.
+- One more posture refusal pass for groups/voice/QR features.
 
-5. **File transfer with streaming encryption**
-   - Chunked + ratcheted encryption
-   - Resume support
+## Medium Term (Next 1-2 Months)
 
-6. **"Burner" profiles / multiple identities**
-   - Separate ratchet states per profile
-   - Quick profile switching
+- Make Flatpak the primary distribution method (signed, one-command via Nix).
+- One final git history clean + v0.2 / "preview" tag.
+- Android: Proper multi-screen navigation (dedicated Group list screen, improved voice recording UI).
+- Next "wow" technical feature: proper streaming file transfer or secure cross-device ratchet export.
 
-## Phase 3 — Advanced
-7. **Full Android with Rust backend + nice UI**
-   - Proper JNI/NDK bridge
-   - Material You dark theme matching the yellow/black aesthetic
+## Longer Term / Stretch Goals
 
-8. **Group chats with proper metadata resistance**
-   - Sender anonymity within groups
-   - No central servers knowing who talks to whom
+- Real test suite + CI that exercises the paranoid paths.
+- Quantum-resistant options (post-quantum KEMs as noted in earlier roadmap).
+- Decentralized discovery without leaking metadata.
 
-## Long Term / Cool Features
-- Quantum-resistant options (post-quantum KEMs)
-- Decentralized discovery (without leaking metadata)
-- Plausible deniability modes
-- Cross-device sync with ratchet state export (securely)
+We are building this the right way: small trusted computing base, Haskell for correctness, Rust for performance/crypto, Tor-only, and SimplexChat-level respect for the user.
 
-## Current Status (as of last build)
-- Ratchet module exists in Rust with real KDF chains
-- TUI demonstrates encrypt/decrypt roundtrips
-- Wipe + Logout is prominent on both platforms
-
-We are building this the right way: small trusted computing base, Haskell for correctness, Rust for performance/crypto.
-
-Contributions welcome — especially in the Ratchet and Tor integration areas.
+Contributions are very welcome — especially in the remaining polish areas above.

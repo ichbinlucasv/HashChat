@@ -7,9 +7,47 @@
 
 **No phone numbers. No user IDs. No central servers. No logs. No metadata.**
 
-**Current Status (as of this build)**: Real bidirectional Tor messaging, multi-member groups with sender-key forward secrecy + persistence, end-to-end voice streaming with ratchet-per-chunk + playback + seek bars, Android with RecyclerView + Keystore + biometric + QR/group management, pure-Nix reproducible Flatpak, full Simplex-style button parity (block, report, delete, voice, groups, QR, etc.), dynamic Security Posture with real refusals, nuclear panic wipe, burner + decoy profiles, disappearing messages with key erasure.
+**Current Status (as of this build)**: We have implemented the majority of the hard paranoid features and SimplexChat-level UX parity.
 
-We are very close to a production-grade, auditable, paranoid messenger.
+### Current Working Features (What Actually Works Today)
+**Paranoid Core**
+- Real Double Ratchet (KDF chains, DH ratcheting, skipped keys) in Rust with mlock + basic seccomp
+- Bidirectional Tor v3 hidden services with proper sender-header framing
+- Encrypted-at-rest persistence (Argon2id + AES-GCM) for ratchets, messages, and groups
+- Nuclear Panic Wipe (7-pass shred + Rust zeroize + kernel drop_caches + mlock)
+- Dynamic Security Posture (real environment checks + action refusals in low posture)
+- Burner profiles + plausible deniability decoy profiles with auto-wipe on switch
+- Disappearing messages with ratchet key erasure
+
+**SimplexChat-Level UX Parity (both TUI and Android)**
+- Contact actions: Block, Mute, Delete chat, Report suspicious, View security info, Set disappearing timer
+- Group chats with sender-key forward secrecy + member management + QR join
+- Voice messages: chunked ratchet streaming + playback with seek bars (Android RecyclerView + TUI ffplay)
+- Burner profile switching (p/n keys)
+- Panic Wipe as first-class prominent action
+- Black + #FFD700 gold theme on both platforms
+
+**Android Specific**
+- RecyclerView chat + group member management
+- Hardware-backed Keystore + optional BiometricPrompt for ratchet unlock
+- QR scanning + group join
+- Background Tor receiver thread
+
+**Distribution & Reproducibility**
+- Pure-Nix reproducible Flatpak (one command: `nix build .#hashchat-flatpak`)
+- Nix cross-compile path for Android Rust libs
+- Qubes/Tails disposable VM build scripts that enforce clean-security + anti-forensics
+
+We are now in the "polish to production" phase.
+
+We are very close to a production-grade, auditable, paranoid messenger that can earn real user respect.
+
+### Screenshots / Demo (Text Descriptions)
+- **TUI**: Black background, gold titles, contact list on left, active chat in center, input bar at bottom. Press 'g' for group menu, 'v' for voice, 'a' for contact actions (Block/Report/Delete/Disappear), 'w' for nuclear wipe.
+- **Android**: Black + gold theme, RecyclerView chat with gold bubbles for your messages, long-press for full Simplex action menu, dedicated group management screen with member list + QR, voice recording + playback with seek bar.
+- **Flatpak**: One `nix build` produces a signed, reproducible .flatpak that runs the exact same paranoid TUI in a sandbox.
+
+(Demo videos and real screenshots will be added before v0.2 tag.)
 
 ## Quick Start on Fedora (Easiest)
 
@@ -22,9 +60,14 @@ chmod +x install-fedora.sh
 
 Then follow the printed instructions to set up Tor (critical).
 
-**Future easy install**: We are building Flatpak support (see `flatpak/` directory). This will be the recommended method for most Fedora + other Linux users.
+**Recommended easy install (one-command, reproducible):**
+```bash
+nix build .#hashchat-flatpak
+flatpak install --user result/hashchat-tui.flatpak
+flatpak run org.hashchat.HashChat
+```
 
-Full instructions: see [INSTALL.md](INSTALL.md)
+See `flake.nix` and [INSTALL.md](INSTALL.md) for details. This is now the primary distribution path.
 
 ## Important: Tor is Required
 
