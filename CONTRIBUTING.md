@@ -26,7 +26,7 @@ Public issues for security problems will be closed without comment.
 sudo dnf install ghc cabal-install rust cargo ncurses-devel
 
 # 2. Build everything
-./build.py
+./build.sh
 
 # 3. Run the TUI
 ./run-desktop
@@ -69,7 +69,7 @@ feat(ratchet): add proper DH ratchet step on send
 
 ### 6. Testing
 
-- Run `./build.py` successfully
+- Run `./build.sh` successfully
 - Test the TUI (`./run-desktop`)
 - Test the CLI (`./run-cli cli`)
 - For Android changes, test on device or emulator

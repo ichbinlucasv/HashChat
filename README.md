@@ -61,7 +61,7 @@ See [INSTALL.md](INSTALL.md) for exact steps on Fedora.
 ```bash
 cargo build --release
 cabal build
-python3 build.py
+./build.sh
 
 ---
 
@@ -72,7 +72,7 @@ python3 build.py
 - Read [SECURITY.md](SECURITY.md)
 - Never commit anything from `tor/hidden_service/`
 - Never commit compiled libraries from `rust-lib/`
-- Use `./build.py` — it handles everything safely
+- Use `./build.sh` — pure Bash, no Python required
 
 Large media files and old GTK code have been removed from git history for cleanliness.
 

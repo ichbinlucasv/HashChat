@@ -7,7 +7,7 @@ Goal: Build a SimplexChat-level (or better) anonymous messenger using only **Has
 - [x] Functional black/yellow/white Brick TUI (Desktop) with real ratchet persistence + encrypted messaging foundation (Editor widget temporarily simplified for build stability across Brick versions)
 - [x] Real AES-GCM + **Double Ratchet foundation** (KDF chains + DH ratcheting started)
 - [x] Panic Wipe + Logout on Desktop and Android (prominent)
-- [x] Easy build system (`./build.py` + launchers)
+- [x] Easy build system (`./build.sh` + launchers) — pure Bash (no Python)
 - [x] Ratchet FFI exposed to Haskell + live in TUI
 - [x] Real Tor control port + onion persistence (basic working implementation with persistence)
 - [x] Proper Android multi-screen UI (bottom nav: Chats/Contacts/Settings) + JNI bridge expanded

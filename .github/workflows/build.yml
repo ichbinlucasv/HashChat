@@ -34,7 +34,7 @@ jobs:
           # You can test it locally with: cabal build hashchat-tui
           echo "TUI build skipped in CI (use -f+tui locally with proper system deps)."
 
-          python3 build.py
+          # Note: We no longer use Python. All builds are done with pure Bash + Cargo + Cabal.
         env:
           CARGO_TERM_COLOR: always
 

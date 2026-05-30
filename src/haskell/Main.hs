@@ -153,33 +153,6 @@ runFullAudit = do
   _ <- runSecurityChecks
   pure ()
 
-stubFunction1 :: IO ()
-stubFunction1 = pure ()
-
-stubFunction2 :: IO ()
-stubFunction2 = pure ()
-
-stubFunction3 :: IO ()
-stubFunction3 = pure ()
-
-stubFunction4 :: IO ()
-stubFunction4 = pure ()
-
-stubFunction5 :: IO ()
-stubFunction5 = pure ()
-
-stubFunction6 :: IO ()
-stubFunction6 = pure ()
-
-stubFunction7 :: IO ()
-stubFunction7 = pure ()
-
-stubFunction8 :: IO ()
-stubFunction8 = pure ()
-
-stubFunction9 :: IO ()
-stubFunction9 = pure ()
-
 -- Simple ratchet demonstration (used by the "ratchet-demo" command)
 ratchetDemo :: IO ()
 ratchetDemo = do

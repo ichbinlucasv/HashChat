@@ -29,8 +29,17 @@
 
 A basic Rust + JNI skeleton now exists under `android/src/main/rust/`.
 
-## Monetization Philosophy
-The desktop/Linux version will always remain completely free and open source.
-The Android version may be paid to sustain development and any necessary servers (push, discovery, etc.), while still allowing full source code audit.
+## Monetization Philosophy (Updated Recommendation)
 
-This model tries to balance sustainability with the core value of transparency and security.
+- **Linux / Desktop**: Always free and fully open source.
+- **Android**: Source remains 100% public on GitHub. Distribution can be:
+  - Self-hosted F-Droid repository (recommended for privacy)
+  - Direct APK with donation-based unlock (preferred over Google Play billing)
+  - Optional paid unlock key for convenience
+
+**Why this is better for privacy:**
+- No Google Play dependency
+- Users can audit the exact same code they run
+- Donation model aligns incentives without forcing surveillance capitalism
+
+This approach keeps the project sustainable while maintaining the highest possible integrity.

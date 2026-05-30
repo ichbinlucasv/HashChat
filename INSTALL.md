@@ -32,16 +32,13 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 ```
 
-### 3. Build the Project
+### 3. Build the Project (Recommended)
 ```bash
-cargo build --release
-mkdir -p rust-lib
-cp target/release/libhashchat_rust.so rust-lib/   # or .dylib on macOS
-
-cabal update
-cabal build -f-tui hashchat-cli
-cabal build -f-tui hashchat-tui   # Desktop TUI
+./build.sh          # Builds Rust + Haskell (CLI + library)
+./build.sh tui      # Also builds the desktop TUI
 ```
+
+This is a pure Bash script — no Python is used or required anywhere in the build process.
 
 ### 4. Run
 ```bash
