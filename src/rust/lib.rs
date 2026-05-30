@@ -1,26 +1,26 @@
 use ring::hmac;
 use ring::rand::{SecureRandom, SystemRandom};
 use zeroize::Zeroize;
-use ed25519_dalek::{Keypair, Signer};
+use ed25519_dalek::SigningKey;
 use std::fs;
 use std::os::raw::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 #[no_mangle]
 pub extern "C" fn rust_init_profile() -> *mut c_void {
-    let mut rng = rand::thread_rng();
-    let keypair = Keypair::generate(&mut rng);
-    let boxed = Box::new(keypair);
+    let mut secret = [0u8; 32];
+    let _ = getrandom::getrandom(&mut secret);
+    let _signing = SigningKey::from_bytes(&secret);
+    let boxed = Box::new(secret);
     Box::into_raw(boxed) as *mut c_void
 }
 
 #[no_mangle]
 pub extern "C" fn rust_secure_erase(ptr: *mut c_void) {
     unsafe {
-        let mut keypair: Box<Keypair> = Box::from_raw(ptr as *mut Keypair);
-        keypair.zeroize();
-        drop(keypair);
+        let mut secret: Box<[u8; 32]> = Box::from_raw(ptr as *mut [u8; 32]);
+        secret.zeroize();
+        drop(secret);
     }
 }
 
@@ -55,14 +55,14 @@ pub extern "C" fn rust_constant_time_eq(a: *const u8, b: *const u8, len: usize) 
 pub extern "C" fn rust_wipe_slice(ptr: *mut u8, len: usize) {
     let slice = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
     slice.zeroize();
-    ptr::write_bytes(ptr, 0, len);
+    unsafe { ptr::write_bytes(ptr, 0, len); }
 }
 
 #[no_mangle]
 pub extern "C" fn rust_wipe_memory(ptr: *mut u8, len: usize) {
     let slice = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
     slice.zeroize();
-    ptr::write_bytes(ptr, 0, len);
+    unsafe { ptr::write_bytes(ptr, 0, len); }
 }
 
 #[no_mangle]
@@ -76,7 +76,7 @@ pub extern "C" fn rust_secure_copy(src: *const u8, dst: *mut u8, len: usize) {
 pub extern "C" fn rust_secure_zero(ptr: *mut u8, len: usize) {
     let slice = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
     slice.zeroize();
-    ptr::write_bytes(ptr, 0, len);
+    unsafe { ptr::write_bytes(ptr, 0, len); }
 }
 
 #[no_mangle]
