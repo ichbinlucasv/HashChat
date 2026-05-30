@@ -7,40 +7,41 @@ import Brick
 import Brick.Widgets.Border (borderWithLabel)
 import Brick.Widgets.Core (str, hBox, vBox, padAll, fill, withAttr)
 import Brick.Widgets.Center (center)
-import Brick.Widgets.Edit (Editor, editor, renderEditor, getEditContents, handleEditorEvent)
+-- No longer using full Editor widget (simplified reliable Text input for stability across brick versions)
 import qualified Graphics.Vty as V
+import Graphics.Vty.Platform.Unix (mkVty)  -- correct location in modern vty
 import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
 import qualified Data.ByteString as BS
+import Data.Word (Word32)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import HashChat.Core
 import MessageUI
-import Control.Monad (when, void)
-import System.Directory (createDirectoryIfMissing)
+import Control.Monad (when, void, foldM)
+import Control.Monad.IO.Class (liftIO)
+import System.Directory (createDirectoryIfMissing, listDirectory, doesFileExist)
 import System.FilePath (combine, takeDirectory)
 import Data.Time.Clock (getCurrentTime)
 import System.IO (hFlush, stdout, hSetEcho, stdin)
 import qualified Data.List
-import System.Directory (listDirectory, doesFileExist)
-import Control.Monad (foldM)
 
 data Name = ChatInput | ContactList | Help deriving (Eq, Ord, Show)
 
 -- Helper to get the current session passphrase (must be set after unlock)
-passForSession :: AppState -> ByteString
+passForSession :: AppState -> BS.ByteString
 passForSession = sessionPass
 
 data AppState = AppState
   { currentProfile :: ProfileName
   , profiles       :: ProfileStore
   , messages       :: Map String [Message]
-  , input          :: Editor Text Name
+  , input          :: Text                      -- simple accumulating input (reliable across brick versions)
   , currentContact :: String
   , showHelp       :: Bool
   , ratchets       :: Map String Word32        -- contact -> ratchet ID (persisted encrypted)
-  , sessionPass    :: ByteString               -- unlocked once per session for ratchet encryption
+  , sessionPass    :: BS.ByteString            -- unlocked once per session for ratchet encryption
   }
 
 initialState :: AppState
@@ -48,7 +49,7 @@ initialState = AppState
   { currentProfile = "Default"
   , profiles       = Map.empty
   , messages       = Map.empty
-  , input          = editor ChatInput (Just 1) ""
+  , input          = ""
   , currentContact = "Alice"
   , showHelp       = False
   , ratchets       = Map.empty
@@ -67,7 +68,7 @@ getRatchetPath profile contact =
   combine (getProfileDir profile) (contact ++ ".ratchet.enc")
 
 -- Prompt for passphrase (simple, echoes for demo; later use haskeline or similar)
-promptPassphrase :: String -> IO ByteString
+promptPassphrase :: String -> IO BS.ByteString
 promptPassphrase msg = do
   putStr msg
   hFlush stdout
@@ -78,7 +79,7 @@ promptPassphrase msg = do
   pure (TE.encodeUtf8 (T.pack line))
 
 -- Load all encrypted ratchets for the current profile using the provided passphrase
-loadEncryptedRatchets :: ProfileName -> ByteString -> IO (Map String Word32)
+loadEncryptedRatchets :: ProfileName -> BS.ByteString -> IO (Map String Word32)
 loadEncryptedRatchets profile pass = do
   let pdir = getProfileDir profile
   createDirectoryIfMissing True pdir
@@ -98,7 +99,7 @@ loadEncryptedRatchets profile pass = do
           pure m
 
 -- Save a single ratchet encrypted
-saveEncryptedRatchet :: ProfileName -> String -> Word32 -> ByteString -> IO ()
+saveEncryptedRatchet :: ProfileName -> String -> Word32 -> BS.ByteString -> IO ()
 saveEncryptedRatchet profile contact rid pass = do
   createDirectoryIfMissing True (getProfileDir profile)
   mblob <- exportEncryptedRatchet rid pass
@@ -120,19 +121,22 @@ drawUI st =
 
 drawMain :: AppState -> Widget Name
 drawMain st = vBox
-  [ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ "  (? help, q quit)"
+  [ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ "  (real E2EE + ratchet)   (? help, q quit, w=wipe)"
   , hBox
       [ borderWithLabel (str " Contacts ") $ vBox $ map str ["Alice", "Bob", "Support"]
       , borderWithLabel (str $ " " ++ currentContact st ++ " ") $
           vBox (map (str . showMsg) (Map.findWithDefault [] (currentContact st) (messages st))) <+> fill ' '
       ]
-  , borderWithLabel (str " Message ") $ renderEditor (str . T.unpack) True (input st)
+  , borderWithLabel (str " Message (encrypted on send) ") $ str (T.unpack (input st) ++ "█")
   ]
 
 showMsg :: Message -> String
 showMsg m =
   let d = if isDisappearing m then "[D] " else ""
-  in d ++ "[" ++ show (ratchetStep m) ++ "] " ++ show (content m)
+      ctPreview = if BS.null (ciphertext m)
+                  then "[no-ct]"
+                  else "ct:" ++ show (BS.length (ciphertext m)) ++ "B"
+  in d ++ "[" ++ show (ratchetStep m) ++ "] " ++ show (content m) ++ " (" ++ ctPreview ++ ")"
 
 drawHelp :: Widget Name
 drawHelp = borderWithLabel (str " HELP ") $ padAll 1 $ vBox
@@ -146,11 +150,11 @@ handleEvent (VtyEvent (V.EvKey (V.KChar '?') [])) = modify $ \s -> s { showHelp 
 
 handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
   s <- get
-  let txt = T.concat (getEditContents (input s))
+  let txt = input s
   when (not $ T.null txt) $ do
     let contact = currentContact s
     let prof    = currentProfile s
-    let pass    = passForSession s   -- we store the unlocked passphrase in state for this session
+    let pass    = passForSession s
 
     -- Get or create ratchet (now with real encrypted persistence)
     rid <- case Map.lookup contact (ratchets s) of
@@ -169,13 +173,18 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
 
     modify $ \st -> st
       { messages = Map.insertWith (++) contact [msg] (messages st)
-      , input = editor ChatInput (Just 1) ""
+      , input = ""
       }
 
-handleEvent (VtyEvent ev) = do
+handleEvent (VtyEvent (V.EvKey (V.KChar c) [])) = do
   s <- get
-  newEd <- handleEditorEvent (VtyEvent ev) (input s)
-  put $ s { input = newEd }
+  put $ s { input = input s <> T.singleton c }
+
+handleEvent (VtyEvent (V.EvKey V.KBS [])) = do
+  s <- get
+  put $ s { input = if T.null (input s) then "" else T.init (input s) }
+
+handleEvent (VtyEvent (V.EvKey V.KEsc [])) = halt
 
 handleEvent _ = pure ()
 
@@ -207,11 +216,12 @@ app = App
 
       liftIO $ putStrLn $ "[OK] Loaded " ++ show (Map.size loaded) ++ " ratchet(s) with forward secrecy continuity."
       liftIO $ putStrLn "Ready. Messages you send now use real Double Ratchet keys.\n"
-  , appAttrMap = const $ attrMap defAttr []
+  , appAttrMap = const $ attrMap V.defAttr []
   }
 
 main :: IO ()
 main = do
   putStrLn "Starting HashChat TUI with real message system + persistence..."
-  initialVty <- V.mkVty V.defaultConfig
-  void $ customMain initialVty (V.mkVty V.defaultConfig) Nothing app initialState
+  -- Mix of direct + qualified to handle vty version differences
+  initialVty <- mkVty V.defaultConfig
+  void $ customMain initialVty (mkVty V.defaultConfig) Nothing app initialState

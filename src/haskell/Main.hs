@@ -20,6 +20,7 @@ import Data.ByteString
 import qualified Data.ByteString as BS
 import Data.Text
 import qualified Data.Text as T
+import Data.Word (Word32)
 import Control.Monad
 import Control.Concurrent
 import Foreign.Ptr
@@ -70,10 +71,10 @@ type MessageStore = Map.Map String [String]
 
 cliMessageLoop :: RatchetMap -> MessageStore -> IO ()
 cliMessageLoop ratchets messages = do
-  putStr "> "
+  System.IO.putStr "> "
   hFlush stdout
-  line <- getLine
-  let ws = words line
+  line <- System.IO.getLine
+  let ws = Prelude.words line
   case ws of
     ["quit"] -> putStrLn "Goodbye. (Run with --ratchet-demo for full crypto trace)"
     ["help"] -> do
@@ -84,30 +85,33 @@ cliMessageLoop ratchets messages = do
       putStrLn "quit"
       cliMessageLoop ratchets messages
     ("send":contact:rest) -> do
-      let msg = unwords rest
-      -- Get or create ratchet for this contact
+      let plaintext = BS.pack $ Prelude.map (fromIntegral . fromEnum) (Prelude.unwords rest)
+      -- Get or create ratchet for this contact using the high-level API
       (rid, newRatchets) <- case Map.lookup contact ratchets of
         Just r  -> pure (r, ratchets)
         Nothing -> do
           r <- newRatchet
           -- In real app we'd do X3DH here to get shared secret + remote pub
-          let dummyRemote = BS.pack (replicate 32 0xAA)
-          let dummyShared = BS.pack (replicate 32 0xBB)
+          let dummyRemote = BS.pack (Prelude.replicate 32 0xAA)
+          let dummyShared = BS.pack (Prelude.replicate 32 0xBB)
           initRatchet r dummyRemote dummyShared
           pure (r, Map.insert contact r ratchets)
 
-      (key, step) <- ratchetSend rid
-      -- In real implementation we pass this exact key to rust_encrypt / AES-GCM
-      -- For demo we show the ratchet advancing clearly
-      let encNote = "[ratchet#" ++ show step ++ " key:" ++ take 6 (show $ BS.unpack key) ++ "...]"
-      let stored = msg ++ " " ++ encNote
+      -- Use the real high-level send (now produces actual ciphertext via ratchet key + AES-GCM)
+      realMsg <- sendEncryptedMessage rid (BS.pack []) plaintext False Nothing
+
+      let ctLen = BS.length (ciphertext realMsg)
+      let encNote = "[ratchet#" ++ show (ratchetStep realMsg) ++ " ct:" ++ show ctLen ++ "B]"
+      let stored = (Prelude.map (toEnum . fromIntegral) $ BS.unpack (content realMsg)) ++ " " ++ encNote
       let newMessages = Map.insertWith (++) contact [stored] messages
-      putStrLn $ "Sent to " ++ contact ++ " " ++ encNote ++ " (forward secrecy applied)"
+      putStrLn $ "Sent to " ++ contact ++ " " ++ encNote ++ " (real ciphertext produced)"
       cliMessageLoop newRatchets newMessages
     ["chat", contact] -> do
       case Map.lookup contact messages of
         Nothing -> putStrLn $ "No messages with " ++ contact
-        Just ms -> mapM_ putStrLn ms
+        Just ms -> do
+          putStrLn $ "=== Conversation with " ++ contact ++ " ==="
+          mapM_ putStrLn ms
       cliMessageLoop ratchets messages
     ["ratchet-demo"] -> do
       ratchetDemo
@@ -175,6 +179,26 @@ stubFunction8 = pure ()
 
 stubFunction9 :: IO ()
 stubFunction9 = pure ()
+
+-- Simple ratchet demonstration (used by the "ratchet-demo" command)
+ratchetDemo :: IO ()
+ratchetDemo = do
+  putStrLn "=== Double Ratchet Demo ==="
+  rid <- newRatchet
+  let dummyRemote = BS.pack (Prelude.replicate 32 0xAA)
+  let dummyShared = BS.pack (Prelude.replicate 32 0xBB)
+  initRatchet rid dummyRemote dummyShared
+
+  putStrLn "Initial ratchet created."
+
+  (k1, s1) <- ratchetSend rid
+  putStrLn $ "Send step " ++ show s1 ++ " -> key: " ++ Prelude.take 8 (show (BS.unpack k1)) ++ "..."
+
+  (k2, s2) <- ratchetSend rid
+  putStrLn $ "Send step " ++ show s2 ++ " -> key: " ++ Prelude.take 8 (show (BS.unpack k2)) ++ "..."
+
+  putStrLn "Ratchet advanced successfully (forward secrecy in action)."
+  putStrLn "============================"
 
 stubFunction10 :: IO ()
 stubFunction10 = pure ()

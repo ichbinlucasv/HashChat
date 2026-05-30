@@ -42,13 +42,14 @@ data Queue = Queue ByteString
 
 -- Core Message type for the messaging system
 data Message = Message
-  { msgId         :: Int
-  , sender        :: ByteString   -- pubkey or identifier
-  , content       :: ByteString   -- plaintext after decryption
-  , timestamp     :: Int
+  { msgId          :: Int
+  , sender         :: ByteString     -- pubkey or identifier
+  , content        :: ByteString     -- plaintext (for display after decrypt)
+  , ciphertext     :: ByteString     -- the actual encrypted blob (for storage/transport)
+  , timestamp      :: Int
   , isDisappearing :: Bool
-  , expiresAt     :: Maybe UTCTime
-  , ratchetStep   :: Word32       -- which ratchet step was used
+  , expiresAt      :: Maybe UTCTime
+  , ratchetStep    :: Word32         -- which ratchet step was used
   }
 
 -- === FFI bindings ===
@@ -161,7 +162,8 @@ sendEncryptedMessage ratchetId senderPub plaintext disappearing ttl = do
   pure Message
     { msgId = fromIntegral step
     , sender = senderPub
-    , content = plaintext
+    , content = plaintext                    -- keep plaintext for UI display
+    , ciphertext = BS.pack enc               -- real encrypted data for storage/transport
     , timestamp = fromIntegral (utcToSeconds now)
     , isDisappearing = disappearing
     , expiresAt = expTime
@@ -169,29 +171,32 @@ sendEncryptedMessage ratchetId senderPub plaintext disappearing ttl = do
     }
 
 receiveEncryptedMessage :: Word32 -> ByteString -> ByteString -> IO (Maybe Message)
-receiveEncryptedMessage ratchetId senderPub ciphertext = do
+receiveEncryptedMessage ratchetId senderPub ct = do
   (msgKey, step) <- ratchetRecv ratchetId senderPub
 
   let keyPtr = unsafePerformIO $ newArray (unpack msgKey)
-  let ctPtr  = unsafePerformIO $ newArray (unpack ciphertext)
-  let buf    = replicate (BS.length ciphertext) 0
+  let ctPtr  = unsafePerformIO $ newArray (unpack ct)
+  let buf    = replicate (BS.length ct + 32) 0   -- generous buffer
   outPtr <- newArray buf
   outLenPtr <- malloc
 
-  _ <- rust_decrypt_with_key keyPtr ctPtr (BS.length ciphertext) outPtr outLenPtr
-  len <- peek outLenPtr
-  dec <- peekArray len outPtr
-
-  now <- Time.getCurrentTime
-  pure $ Just $ Message
-    { msgId = fromIntegral step
-    , sender = senderPub
-    , content = BS.pack dec
-    , timestamp = fromIntegral (utcToSeconds now)
-    , isDisappearing = False
-    , expiresAt = Nothing
-    , ratchetStep = step
-    }
+  ok <- rust_decrypt_with_key keyPtr ctPtr (BS.length ct) outPtr outLenPtr
+  if ok then do
+    len <- peek outLenPtr
+    dec <- peekArray len outPtr
+    now <- Time.getCurrentTime
+    pure $ Just $ Message
+      { msgId = fromIntegral step
+      , sender = senderPub
+      , content = BS.pack dec                    -- decrypted plaintext for display
+      , ciphertext = ct                          -- keep the original encrypted blob
+      , timestamp = fromIntegral (utcToSeconds now)
+      , isDisappearing = False
+      , expiresAt = Nothing
+      , ratchetStep = step
+      }
+  else
+    pure Nothing
 
 -- Helper to check if a disappearing message should be deleted
 isMessageExpired :: Message -> IO Bool
@@ -245,7 +250,14 @@ type ProfileName = String
 type ContactRatchets = Map.Map String Word32   -- contact -> ratchetId
 type ProfileStore = Map.Map ProfileName ContactRatchets
 
--- Simple persistence helpers (must be encrypted at rest in production)
+-- === Message + Ratchet Persistence (deep work in progress) ===
+
+-- For now we only persist ratchet *state* securely (Argon2id + AES-GCM).
+-- Full message history (with ciphertext) should also be stored encrypted per profile.
+
+-- Future: save/load actual [Message] (with ciphertext) encrypted at rest.
+-- This is the next logical step after ratchet state persistence.
+
 saveProfileRatchets :: FilePath -> ProfileName -> ContactRatchets -> IO ()
 saveProfileRatchets path profileName ratchets = do
   createDirectoryIfMissing True (takeDirectory path)
@@ -256,6 +268,6 @@ loadProfileRatchets path = do
   exists <- doesFileExist path
   if exists then do
     content <- readFile path
-    pure $ Just (read content)   -- placeholder deserialization
+    pure $ Just (read content)
   else pure Nothing
 

@@ -12,9 +12,10 @@ use hkdf::Hkdf;
 use ring::aead::{self, LessSafeKey, UnboundKey, Aad};
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::Zeroize;
 
 pub const RATCHET_KEY_LEN: usize = 32;
+#[allow(dead_code)]
 pub const RATCHET_NONCE_LEN: usize = ring::aead::NONCE_LEN;
 
 /// Per-contact Double Ratchet state.

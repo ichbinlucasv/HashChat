@@ -1,3 +1,5 @@
+#![allow(static_mut_refs)]  // Intentional global store for FFI ratchet handles (safe in our single-threaded usage)
+
 use ring::hmac;
 use ring::rand::{SecureRandom, SystemRandom};
 use zeroize::Zeroize;
@@ -301,7 +303,7 @@ pub extern "C" fn rust_ratchet_export_encrypted(
             let lsk = LessSafeKey::new(unbound);
             let nonce = Nonce::assume_unique_for_key(nonce_bytes);
             let mut buf = plaintext;
-            let tag_len = AES_256_GCM.tag_len();
+            let _tag_len = AES_256_GCM.tag_len();
 
             if lsk.seal_in_place_append_tag(nonce, Aad::empty(), &mut buf).is_err() {
                 return false;
