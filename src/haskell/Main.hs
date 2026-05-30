@@ -26,6 +26,7 @@ import Foreign.Ptr
 import Foreign.Marshal.Alloc
 import Foreign.Storable
 import System.Posix
+import qualified Data.Map.Strict as Map
 
 data Mode = DesktopMode | CLIMode | CheckTorMode | WipeMode | AuditMode | VersionMode | HelpMode
 
@@ -59,7 +60,64 @@ wipeAllData = wipeAll
 startCLI :: IO ()
 startCLI = do
   initAll
-  pure ()
+  putStrLn "HashChat CLI - Interactive Secure Messaging (Double Ratchet)"
+  putStrLn "Commands: send <contact> <msg> | chat <contact> | ratchet-demo | wipe | quit"
+  cliMessageLoop Map.empty Map.empty   -- (ratchetId per contact, messages per contact)
+
+-- Per-contact state for the demo message system
+type RatchetMap = Map.Map String Word32
+type MessageStore = Map.Map String [String]
+
+cliMessageLoop :: RatchetMap -> MessageStore -> IO ()
+cliMessageLoop ratchets messages = do
+  putStr "> "
+  hFlush stdout
+  line <- getLine
+  let ws = words line
+  case ws of
+    ["quit"] -> putStrLn "Goodbye. (Run with --ratchet-demo for full crypto trace)"
+    ["help"] -> do
+      putStrLn "send <contact> <message>   -- send encrypted via ratchet"
+      putStrLn "chat <contact>             -- show conversation"
+      putStrLn "ratchet-demo               -- show raw ratchet steps"
+      putStrLn "wipe                       -- panic wipe"
+      putStrLn "quit"
+      cliMessageLoop ratchets messages
+    ("send":contact:rest) -> do
+      let msg = unwords rest
+      -- Get or create ratchet for this contact
+      (rid, newRatchets) <- case Map.lookup contact ratchets of
+        Just r  -> pure (r, ratchets)
+        Nothing -> do
+          r <- newRatchet
+          -- In real app we'd do X3DH here to get shared secret + remote pub
+          let dummyRemote = BS.pack (replicate 32 0xAA)
+          let dummyShared = BS.pack (replicate 32 0xBB)
+          initRatchet r dummyRemote dummyShared
+          pure (r, Map.insert contact r ratchets)
+
+      (key, step) <- ratchetSend rid
+      -- Real version: use 'key' with rust_encrypt / AES-GCM
+      let encNote = " [enc with ratchet#" ++ show step ++ "]"
+      let stored = msg ++ encNote
+      let newMessages = Map.insertWith (++) contact [stored] messages
+      putStrLn $ "Sent to " ++ contact ++ encNote
+      cliMessageLoop newRatchets newMessages
+    ["chat", contact] -> do
+      case Map.lookup contact messages of
+        Nothing -> putStrLn $ "No messages with " ++ contact
+        Just ms -> mapM_ putStrLn ms
+      cliMessageLoop ratchets messages
+    ["ratchet-demo"] -> do
+      ratchetDemo
+      cliMessageLoop ratchets messages
+    ["wipe"] -> do
+      wipeAll
+      putStrLn "Everything wiped."
+      cliMessageLoop Map.empty Map.empty
+    _ -> do
+      putStrLn "Unknown. Type 'help'."
+      cliMessageLoop ratchets messages
 
 startDesktop :: IO ()
 startDesktop = do

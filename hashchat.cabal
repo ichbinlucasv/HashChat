@@ -2,6 +2,11 @@ cabal-version: 3.0
 name: hashchat
 version: 0.1.9
 build-type: Simple
+
+flag desktop
+  description: Build the legacy GTK desktop frontend (heavy dependency)
+  default: False
+  manual: True
 library
   exposed-modules: HashChat.Core HashChat.Profile HashChat.Queue HashChat.FileTransfer HashChat.Contact HashChat.Voice HashChat.Call HashChat.Settings HashChat.Security HashChat.Group HashChat.Chat
   build-depends: base, stm, cryptonite, memory, sqlite-simple, bytestring, time, text
@@ -10,8 +15,11 @@ library
 executable hashchat-desktop
   main-is: Desktop.hs
   hs-source-dirs: src/haskell
-  build-depends: hashchat, gi-gtk
+  build-depends: hashchat
+  if flag(desktop)
+    build-depends: gi-gtk
   default-language: Haskell2010
+
 executable hashchat-cli
   main-is: Main.hs
   hs-source-dirs: src/haskell
