@@ -192,9 +192,10 @@ processDisappearingMessages :: [Message] -> IO [Message]
 processDisappearingMessages msgs = do
   now <- Time.getCurrentTime
   let (expired, active) = partition (\m -> maybe False (<= now) (expiresAt m)) msgs
-  forM_ expired $ \m ->
-    when (isDisappearing m) $
+  forM_ expired $ \m -> do
+    when (isDisappearing m) $ do
       wipeRatchetMessageKey (ratchetStep m) (fromIntegral $ msgId m)
+      putStrLn $ "[SECURITY] Message " ++ show (msgId m) ++ " expired and ratchet key wiped"
   pure active
 
 -- Burner profile support (each profile owns isolated ratchets)

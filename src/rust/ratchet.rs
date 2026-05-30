@@ -2,10 +2,11 @@
 // Provides forward secrecy + future secrecy via DH ratcheting + KDF chains.
 //
 // Quantum resistance notes (future work):
-// - Replace X25519 with ML-KEM (Kyber) or hybrid X25519 + ML-KEM
-// - Use a post-quantum KDF (e.g. with SHA3 or a PQ hash)
-// - Consider hybrid ratchets during the transition period
+// - Replace X25519 with ML-KEM (Kyber) or hybrid X25519 + ML-KEM for forward secrecy
+// - Use a post-quantum KDF (e.g. with SHA3 or a PQ hash function)
+// - Consider hybrid ratchets (classical + PQ) during the transition period
 // - The current design is built to allow swapping the DH primitive with minimal changes.
+// - Recommendation: Start with hybrid X25519 + ML-KEM for new sessions soon.
 
 use hkdf::Hkdf;
 use ring::aead::{self, LessSafeKey, UnboundKey, Aad};

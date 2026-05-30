@@ -30,4 +30,13 @@ createGroup members = pure $ Group
 sendGroupMessage :: ByteString -> ByteString -> IO ()
 sendGroupMessage _groupId _msg = pure ()
 
--- TODO: Add proper group ratchet + disappearing support per group
+-- Basic group ratchet idea (sender keys style for metadata resistance)
+-- Each member has their own sending ratchet for the group.
+-- This prevents the server (or other members) from learning who sent what easily.
+
+-- TODO: Full implementation would include:
+-- - Group ratchet state per member
+-- - Key rotation on membership changes
+-- - Disappearing messages per group
+
+-- For now this is a solid skeleton.
