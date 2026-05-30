@@ -8,6 +8,7 @@ import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.ByteString (ByteString)
 import Data.Time.Clock (NominalDiffTime)
+import Data.Word (Word32)
 
 -- Per-profile state the TUI can hold
 type UIState = (ProfileStore, Map String [Message])   -- (ratchets per profile, messages per contact)

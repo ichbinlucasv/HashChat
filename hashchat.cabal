@@ -9,15 +9,26 @@ flag desktop
   manual: True
 library
   exposed-modules: HashChat.Core HashChat.Profile HashChat.Queue HashChat.FileTransfer HashChat.Contact HashChat.Voice HashChat.Call HashChat.Settings HashChat.Security HashChat.Group HashChat.Chat
-  build-depends: base, stm, cryptonite, memory, sqlite-simple, bytestring, time, text
+  build-depends: base, stm, cryptonite, memory, sqlite-simple, bytestring, time, text,
+                  containers, directory, filepath, process, unix
   hs-source-dirs: src/haskell
   default-language: Haskell2010
+-- Real production desktop target: Beautiful Brick TUI (black/yellow theme)
+-- This replaced the old GTK attempt. Run with: cabal run hashchat-tui
+executable hashchat-tui
+  main-is: TUI.hs
+  hs-source-dirs: app-desktop
+  build-depends: hashchat,
+                  base, containers, directory, filepath, bytestring, text,
+                  brick, vty, vty-unix, vector, time
+  default-language: Haskell2010
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+
+-- Legacy placeholder (kept so old references don't break build; we never use it)
 executable hashchat-desktop
-  main-is: Desktop.hs
+  main-is: Main.hs
   hs-source-dirs: src/haskell
   build-depends: hashchat
-  if flag(desktop)
-    build-depends: gi-gtk
   default-language: Haskell2010
 
 executable hashchat-cli

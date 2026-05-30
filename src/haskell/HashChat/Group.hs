@@ -6,6 +6,7 @@ module HashChat.Group where
 
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
+import Data.Word (Word32)
 
 data Group = Group
   { groupId       :: ByteString
@@ -36,7 +37,7 @@ sendGroupMessage _groupId _msg = pure ()
 -- This gives forward secrecy and hides sender metadata from the server.
 
 data GroupRatchet = GroupRatchet
-  { groupId      :: ByteString
+  { grGroupId      :: ByteString
   , memberRatchets :: [Word32]   -- one ratchet per member (sender keys)
   }
 

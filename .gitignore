@@ -36,6 +36,10 @@ android/.cxx/
 *.db-wal
 hashchat.db*
 
+# === Ratchet state & profile data (encrypted at rest, still never commit) ===
+hashchat_data/
+hashchat_data/**
+
 # === Tor (EXTREMELY SENSITIVE) ===
 tor/hidden_service/
 tor/data/

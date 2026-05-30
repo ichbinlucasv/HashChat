@@ -2,6 +2,9 @@ module HashChat.Core
   ( ProfileKey(..)
   , Queue(..)
   , Message(..)
+  , ProfileName
+  , ContactRatchets
+  , ProfileStore
   , initProfile
   , wipeAll
   , newRatchet
@@ -11,19 +14,27 @@ module HashChat.Core
   , sendEncryptedMessage
   , receiveEncryptedMessage
   , isMessageExpired
+  , exportEncryptedRatchet
+  , importEncryptedRatchet
+  , processDisappearingMessages
   ) where
 
 import Control.Concurrent.STM
+import Control.Monad (forM_, when)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString, pack, unpack)
-import qualified Data.Time.Clock as Time
+import Data.List (partition)
+import qualified Data.Map.Strict as Map
 import Data.Time.Clock (UTCTime, NominalDiffTime)
+import qualified Data.Time.Clock as Time
 import Data.Word (Word8, Word32)
 import Database.SQLite.Simple
 import Foreign.Ptr
 import Foreign.Marshal.Alloc (malloc)
 import Foreign.Marshal.Array (withArray, peekArray, mallocArray, newArray)
-import Foreign.Storable (peek)
+import Foreign.Storable (peek, poke)
+import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.FilePath (takeDirectory)
 import System.IO.Unsafe
 
 data ProfileKey = ProfileKey ByteString
@@ -53,6 +64,10 @@ foreign import ccall unsafe "rust_ratchet_recv"     rust_ratchet_recv     :: Wor
 
 foreign import ccall unsafe "rust_encrypt_with_key" rust_encrypt_with_key :: Ptr Word8 -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> IO Bool
 foreign import ccall unsafe "rust_decrypt_with_key" rust_decrypt_with_key :: Ptr Word8 -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> IO Bool
+
+-- Encrypted ratchet state persistence (Argon2id + AES-GCM envelope)
+foreign import ccall unsafe "rust_ratchet_export_encrypted" rust_ratchet_export_encrypted :: Word32 -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> IO Bool
+foreign import ccall unsafe "rust_ratchet_import_encrypted" rust_ratchet_import_encrypted :: Word32 -> Ptr Word8 -> Int -> Ptr Word8 -> Int -> IO Bool
 
 initProfile :: IO ProfileKey
 initProfile = do
@@ -93,6 +108,33 @@ ratchetRecv rid remotePub = do
     key <- peekArray 32 keyPtr
     cnt <- peek cntPtr
     pure (pack key, cnt)
+
+-- === Encrypted Ratchet Persistence (production path) ===
+
+-- | Export the full ratchet state encrypted with a user passphrase (Argon2id + AES-GCM).
+--   The returned ByteString is safe to write to disk. Returns Nothing on failure.
+exportEncryptedRatchet :: Word32 -> ByteString -> IO (Maybe ByteString)
+exportEncryptedRatchet rid passphrase = do
+  let maxSize = 4096  -- generous upper bound for a ratchet blob
+  outPtr <- mallocArray maxSize
+  outLenPtr <- malloc
+  poke outLenPtr maxSize
+  ok <- withArray (unpack passphrase) $ \pp ->
+          rust_ratchet_export_encrypted rid pp (BS.length passphrase) outPtr outLenPtr
+  if ok then do
+    actualLen <- peek outLenPtr
+    blob <- peekArray actualLen outPtr
+    pure (Just $ pack blob)
+  else
+    pure Nothing
+
+-- | Import (decrypt + restore) a ratchet from an encrypted blob + correct passphrase.
+--   Returns True on success.
+importEncryptedRatchet :: Word32 -> ByteString -> ByteString -> IO Bool
+importEncryptedRatchet rid passphrase blob =
+  withArray (unpack passphrase) $ \pp ->
+    withArray (unpack blob) $ \bp ->
+      rust_ratchet_import_encrypted rid pp (BS.length passphrase) bp (BS.length blob)
 
 -- === High-level Message System (REAL Double Ratchet + AES-GCM) ===
 
@@ -217,9 +259,3 @@ loadProfileRatchets path = do
     pure $ Just (read content)   -- placeholder deserialization
   else pure Nothing
 
--- Need these for the new functions
-import System.Directory (createDirectoryIfMissing, doesFileExist)
-import System.FilePath (takeDirectory)
-import Data.List (partition)
-import qualified Data.Map.Strict as Map
-import Control.Monad (forM_, when)

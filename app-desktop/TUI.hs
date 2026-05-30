@@ -19,10 +19,18 @@ import HashChat.Core
 import MessageUI
 import Control.Monad (when, void)
 import System.Directory (createDirectoryIfMissing)
-import System.FilePath (combine)
+import System.FilePath (combine, takeDirectory)
 import Data.Time.Clock (getCurrentTime)
+import System.IO (hFlush, stdout, hSetEcho, stdin)
+import qualified Data.List
+import System.Directory (listDirectory, doesFileExist)
+import Control.Monad (foldM)
 
 data Name = ChatInput | ContactList | Help deriving (Eq, Ord, Show)
+
+-- Helper to get the current session passphrase (must be set after unlock)
+passForSession :: AppState -> ByteString
+passForSession = sessionPass
 
 data AppState = AppState
   { currentProfile :: ProfileName
@@ -31,7 +39,8 @@ data AppState = AppState
   , input          :: Editor Text Name
   , currentContact :: String
   , showHelp       :: Bool
-  , ratchets       :: Map String Word32        -- contact -> ratchet ID (persisted)
+  , ratchets       :: Map String Word32        -- contact -> ratchet ID (persisted encrypted)
+  , sessionPass    :: ByteString               -- unlocked once per session for ratchet encryption
   }
 
 initialState :: AppState
@@ -43,22 +52,64 @@ initialState = AppState
   , currentContact = "Alice"
   , showHelp       = False
   , ratchets       = Map.empty
+  , sessionPass    = BS.pack []   -- will be set during unlock in appStartEvent
   }
 
--- Simple persistence for ratchet IDs (in real version this would be encrypted)
-ratchetStateDir :: FilePath
-ratchetStateDir = "hashchat_data/ratchets"
+-- === Real Encrypted Ratchet Persistence (Argon2id + AES-GCM) ===
+ratchetBaseDir :: FilePath
+ratchetBaseDir = "hashchat_data/profiles"
 
-loadRatchets :: IO (Map String Word32)
-loadRatchets = do
-  createDirectoryIfMissing True ratchetStateDir
-  -- For demo we just return empty. Real version reads encrypted files.
-  pure Map.empty
+getProfileDir :: ProfileName -> FilePath
+getProfileDir profile = combine ratchetBaseDir profile
 
-saveRatchet :: String -> Word32 -> IO ()
-saveRatchet contact rid = do
-  createDirectoryIfMissing True ratchetStateDir
-  writeFile (combine ratchetStateDir contact) (show rid)
+getRatchetPath :: ProfileName -> String -> FilePath
+getRatchetPath profile contact =
+  combine (getProfileDir profile) (contact ++ ".ratchet.enc")
+
+-- Prompt for passphrase (simple, echoes for demo; later use haskeline or similar)
+promptPassphrase :: String -> IO ByteString
+promptPassphrase msg = do
+  putStr msg
+  hFlush stdout
+  hSetEcho stdin False
+  line <- getLine
+  hSetEcho stdin True
+  putStrLn ""
+  pure (TE.encodeUtf8 (T.pack line))
+
+-- Load all encrypted ratchets for the current profile using the provided passphrase
+loadEncryptedRatchets :: ProfileName -> ByteString -> IO (Map String Word32)
+loadEncryptedRatchets profile pass = do
+  let pdir = getProfileDir profile
+  createDirectoryIfMissing True pdir
+  files <- safeListDirectory pdir
+  let encFiles = filter (".ratchet.enc" `Data.List.isSuffixOf`) files
+  foldM loadOne Map.empty encFiles
+  where
+    loadOne m f = do
+      let contact = take (length f - 12) f   -- strip .ratchet.enc
+      blob <- BS.readFile (combine (getProfileDir profile) f)
+      rid <- newRatchet
+      ok <- importEncryptedRatchet rid pass blob
+      if ok
+        then pure (Map.insert contact rid m)
+        else do
+          putStrLn $ "[SECURITY] Failed to decrypt ratchet for " ++ contact ++ " (wrong passphrase?)"
+          pure m
+
+-- Save a single ratchet encrypted
+saveEncryptedRatchet :: ProfileName -> String -> Word32 -> ByteString -> IO ()
+saveEncryptedRatchet profile contact rid pass = do
+  createDirectoryIfMissing True (getProfileDir profile)
+  mblob <- exportEncryptedRatchet rid pass
+  case mblob of
+    Just blob -> BS.writeFile (getRatchetPath profile contact) blob
+    Nothing   -> putStrLn "[SECURITY] Failed to export ratchet (memory issue?)"
+
+safeListDirectory :: FilePath -> IO [FilePath]
+safeListDirectory dir = do
+  exists <- doesFileExist dir
+  if exists then listDirectory dir else pure []
 
 drawUI :: AppState -> [Widget Name]
 drawUI st =
@@ -98,18 +149,23 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
   let txt = T.concat (getEditContents (input s))
   when (not $ T.null txt) $ do
     let contact = currentContact s
+    let prof    = currentProfile s
+    let pass    = passForSession s   -- we store the unlocked passphrase in state for this session
 
-    -- Get or create ratchet (persisted)
+    -- Get or create ratchet (now with real encrypted persistence)
     rid <- case Map.lookup contact (ratchets s) of
              Just r  -> pure r
              Nothing -> do
                r <- liftIO newRatchet
-               liftIO $ saveRatchet contact r
+               liftIO $ saveEncryptedRatchet prof contact r pass
                modify $ \st -> st { ratchets = Map.insert contact r (ratchets s) }
                pure r
 
-    -- Use the REAL message system
+    -- Use the REAL message system (Double Ratchet + AES-GCM)
     msg <- liftIO $ sendEncryptedMessage rid (BS.pack []) (TE.encodeUtf8 txt) False Nothing
+
+    -- Immediately persist the advanced ratchet state (forward secrecy)
+    liftIO $ saveEncryptedRatchet prof contact rid pass
 
     modify $ \st -> st
       { messages = Map.insertWith (++) contact [msg] (messages st)
@@ -129,9 +185,28 @@ app = App
   , appChooseCursor = const $ showCursorNamed ChatInput
   , appHandleEvent = handleEvent
   , appStartEvent = do
-      loaded <- liftIO loadRatchets
-      modify $ \s -> s { ratchets = loaded }
-      -- In real version: decrypt ratchet blobs with user passphrase and restore full state
+      -- === Real encrypted ratchet unlock (the key deep improvement) ===
+      liftIO $ putStrLn "\n=== HashChat Secure Ratchet Unlock ==="
+      liftIO $ putStrLn "Enter your profile passphrase to load encrypted ratchet state."
+      liftIO $ putStrLn "WARNING: This is a demo. Use a strong unique passphrase. Never reuse elsewhere."
+      liftIO $ putStrLn "(Type 'demo' for an insecure default that always works.)"
+      pass <- liftIO $ promptPassphrase "Passphrase: "
+
+      let finalPass = if pass == TE.encodeUtf8 (T.pack "demo")
+                      then BS.pack (replicate 32 0x42)  -- obvious insecure default for demos only
+                      else pass
+
+      liftIO $ putStrLn "[SECURITY] Unlocking ratchets with Argon2id + AES-GCM..."
+
+      loaded <- liftIO $ loadEncryptedRatchets "Default" finalPass
+
+      modify $ \s -> s
+        { ratchets    = loaded
+        , sessionPass = finalPass
+        }
+
+      liftIO $ putStrLn $ "[OK] Loaded " ++ show (Map.size loaded) ++ " ratchet(s) with forward secrecy continuity."
+      liftIO $ putStrLn "Ready. Messages you send now use real Double Ratchet keys.\n"
   , appAttrMap = const $ attrMap defAttr []
   }
 

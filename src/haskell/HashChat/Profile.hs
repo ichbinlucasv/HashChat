@@ -11,6 +11,7 @@ module HashChat.Profile
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.ByteString (ByteString)
+import Data.Word (Word32)
 
 type ProfileName = String
 type ContactRatchets = Map String Word32   -- contact name -> ratchet ID

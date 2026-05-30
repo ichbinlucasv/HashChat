@@ -9,7 +9,11 @@ path = "src/rust/lib.rs"
 
 [dependencies]
 ring = "0.17"
-zeroize = "1.7"
+zeroize = { version = "1.7", features = ["derive"] }
 ed25519-dalek = "2.1"
 rand = "0.8"
 getrandom = "0.2"
+hkdf = "0.12"
+sha2 = "0.10"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+argon2 = "0.5"

@@ -19,7 +19,6 @@ pub const RATCHET_NONCE_LEN: usize = ring::aead::NONCE_LEN;
 
 /// Per-contact Double Ratchet state.
 /// All sensitive fields are zeroized on drop.
-#[derive(ZeroizeOnDrop)]
 pub struct DoubleRatchet {
     dh_secret: StaticSecret,
     dh_public: PublicKey,
@@ -31,6 +30,27 @@ pub struct DoubleRatchet {
     recv_count: u32,
     // Skipped message keys for out-of-order delivery (message_number -> key)
     skipped_keys: std::collections::HashMap<u32, [u8; RATCHET_KEY_LEN]>,
+}
+
+impl Zeroize for DoubleRatchet {
+    fn zeroize(&mut self) {
+        self.root_key.zeroize();
+        self.chain_key_send.zeroize();
+        self.chain_key_recv.zeroize();
+        // HashMap values (fixed-size arrays) are zeroizable
+        for (_k, v) in self.skipped_keys.iter_mut() {
+            v.zeroize();
+        }
+        self.skipped_keys.clear();
+        self.send_count = 0;
+        self.recv_count = 0;
+    }
+}
+
+impl Drop for DoubleRatchet {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
 }
 
 impl DoubleRatchet {
@@ -120,11 +140,9 @@ impl DoubleRatchet {
         Ok(msg_key)
     }
 
-    /// Securely clear sensitive state (called automatically on drop via ZeroizeOnDrop).
+    /// Securely clear sensitive state (called automatically on drop).
     pub fn clear(&mut self) {
-        self.root_key.zeroize();
-        self.chain_key_send.zeroize();
-        self.chain_key_recv.zeroize();
+        self.zeroize();
     }
 
     pub fn init_from_shared(&mut self, remote_pub: PublicKey, shared: &[u8; 32]) {

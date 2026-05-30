@@ -235,3 +235,149 @@ pub extern "C" fn rust_ratchet_from_bytes(state_id: u32, data: *const u8, len: u
         }
     }
 }
+
+// ============================================================================
+// ENCRYPTED RATCHET STATE PERSISTENCE (Argon2id + AES-256-GCM)
+// This is the production path. The TUI and Android must use these, never raw to_bytes.
+// ============================================================================
+
+use argon2::{Argon2, Params, Version};
+use ring::aead::{Nonce, UnboundKey, LessSafeKey, Aad, AES_256_GCM};
+use rand::RngCore;
+
+/// Fixed parameters for Argon2id (memory-hard, good defaults for local passphrase)
+const ARGON_MEM_KIB: u32 = 64 * 1024; // 64 MiB
+const ARGON_ITERS: u32 = 3;
+const ARGON_PARALLELISM: u32 = 1;
+const SALT_LEN: usize = 16;
+const NONCE_LEN: usize = 12;
+
+fn derive_key_argon2id(passphrase: &[u8], salt: &[u8; SALT_LEN]) -> Result<[u8; 32], &'static str> {
+    let params = Params::new(ARGON_MEM_KIB, ARGON_ITERS, ARGON_PARALLELISM, Some(32))
+        .map_err(|_| "bad argon params")?;
+    let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
+
+    let mut key = [0u8; 32];
+    argon2.hash_password_into(passphrase, salt, &mut key)
+        .map_err(|_| "argon2 kdf failed")?;
+    Ok(key)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_ratchet_export_encrypted(
+    state_id: u32,
+    passphrase: *const u8,
+    pass_len: usize,
+    out: *mut u8,
+    out_len: *mut usize,
+) -> bool {
+    unsafe {
+        if let Some(ratchet) = RATCHET_STORE.get(state_id as usize) {
+            let pass = std::slice::from_raw_parts(passphrase, pass_len);
+            if pass.is_empty() {
+                return false;
+            }
+
+            // 1. Generate fresh salt + nonce
+            let mut salt = [0u8; SALT_LEN];
+            let mut nonce_bytes = [0u8; NONCE_LEN];
+            rand::thread_rng().fill_bytes(&mut salt);
+            rand::thread_rng().fill_bytes(&mut nonce_bytes);
+
+            // 2. Derive key from passphrase
+            let key = match derive_key_argon2id(pass, &salt) {
+                Ok(k) => k,
+                Err(_) => return false,
+            };
+
+            // 3. Serialize ratchet (sensitive)
+            let plaintext = ratchet.to_bytes();
+
+            // 4. Encrypt with AES-256-GCM
+            let unbound = match UnboundKey::new(&AES_256_GCM, &key) {
+                Ok(u) => u,
+                Err(_) => return false,
+            };
+            let lsk = LessSafeKey::new(unbound);
+            let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+            let mut buf = plaintext;
+            let tag_len = AES_256_GCM.tag_len();
+
+            if lsk.seal_in_place_append_tag(nonce, Aad::empty(), &mut buf).is_err() {
+                return false;
+            }
+
+            // 5. Build envelope: [version(1) | salt(16) | nonce(12) | ciphertext+tag]
+            let mut envelope = Vec::with_capacity(1 + SALT_LEN + NONCE_LEN + buf.len());
+            envelope.push(1u8); // envelope version
+            envelope.extend_from_slice(&salt);
+            envelope.extend_from_slice(&nonce_bytes);
+            envelope.extend_from_slice(&buf);
+
+            let needed = envelope.len();
+            if needed > *out_len {
+                *out_len = needed;
+                return false;
+            }
+            std::ptr::copy_nonoverlapping(envelope.as_ptr(), out, needed);
+            *out_len = needed;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_ratchet_import_encrypted(
+    state_id: u32,
+    passphrase: *const u8,
+    pass_len: usize,
+    data: *const u8,
+    data_len: usize,
+) -> bool {
+    unsafe {
+        if data_len < 1 + SALT_LEN + NONCE_LEN + 16 {
+            return false;
+        }
+        let envelope = std::slice::from_raw_parts(data, data_len);
+        let pass = std::slice::from_raw_parts(passphrase, pass_len);
+        if pass.is_empty() || envelope[0] != 1 {
+            return false;
+        }
+
+        let salt: [u8; SALT_LEN] = envelope[1..1 + SALT_LEN].try_into().unwrap();
+        let nonce_bytes: [u8; NONCE_LEN] = envelope[1 + SALT_LEN..1 + SALT_LEN + NONCE_LEN].try_into().unwrap();
+        let ciphertext = &envelope[1 + SALT_LEN + NONCE_LEN..];
+
+        let key = match derive_key_argon2id(pass, &salt) {
+            Ok(k) => k,
+            Err(_) => return false,
+        };
+
+        let unbound = match UnboundKey::new(&AES_256_GCM, &key) {
+            Ok(u) => u,
+            Err(_) => return false,
+        };
+        let lsk = LessSafeKey::new(unbound);
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+        let mut buf = ciphertext.to_vec();
+
+        match lsk.open_in_place(nonce, Aad::empty(), &mut buf) {
+            Ok(plain) => {
+                match DoubleRatchet::from_bytes(plain) {
+                    Ok(r) => {
+                        if (state_id as usize) < RATCHET_STORE.len() {
+                            RATCHET_STORE[state_id as usize] = r;
+                        } else {
+                            RATCHET_STORE.push(r);
+                        }
+                        true
+                    }
+                    Err(_) => false,
+                }
+            }
+            Err(_) => false,
+        }
+    }
+}
