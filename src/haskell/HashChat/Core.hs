@@ -22,6 +22,7 @@ module HashChat.Core
 import Control.Concurrent.STM
 import Control.Monad (forM_, when)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BC
 import Data.ByteString (ByteString, pack, unpack)
 import Data.List (partition)
 import qualified Data.Map.Strict as Map
@@ -34,7 +35,7 @@ import Foreign.Marshal.Alloc (malloc)
 import Foreign.Marshal.Array (withArray, peekArray, mallocArray, newArray)
 import Foreign.Storable (peek, poke)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
-import System.FilePath (takeDirectory)
+import System.FilePath (takeDirectory, (</>))
 import System.IO.Unsafe
 
 data ProfileKey = ProfileKey ByteString
@@ -287,22 +288,7 @@ deserializeMessage (mid, cont, ct, ts, disc, exp, step) = Message
   , ratchetStep = step
   }
 
--- Save messages for a contact using the same secure envelope as ratchets (Argon2id + AES-GCM)
-saveEncryptedMessages :: FilePath -> ProfileName -> String -> ByteString -> MessageLog -> IO ()
-saveEncryptedMessages baseDir profile contact pass msgs = do
-  let dir = baseDir </> profile </> "messages"
-  createDirectoryIfMissing True dir
-  let path = dir </> (contact ++ ".log.enc")
-  let serialized = map serializeMessage msgs
-  -- Reuse the ratchet encryption FFI for the message log blob (very strong)
-  -- We treat the serialized log as "plaintext" and encrypt it with the user's passphrase
-  let blob = BS.pack $ show serialized   -- simple serialization for now
-  mEnc <- exportEncryptedRatchet 0 pass   -- temporary rid=0 just for key derivation
-  case mEnc of
-    Just encBlob -> BS.writeFile path encBlob
-    Nothing      -> putStrLn "[SECURITY] Failed to encrypt message log"
-
--- High-level passphrase-based blob encryption/decryption (recommended for logs, settings, etc.)
+-- High-level passphrase-based blob encryption/decryption
 encryptWithPassphrase :: ByteString -> ByteString -> IO (Maybe ByteString)
 encryptWithPassphrase pass plaintext = do
   let maxSize = BS.length plaintext + 1024
@@ -333,14 +319,15 @@ decryptWithPassphrase pass ciphertext = do
     pure (Just $ pack blob)
   else pure Nothing
 
--- === Real Encrypted Message Log Persistence ===
+-- === Real Encrypted Message Log Persistence (properly implemented) ===
 
 saveEncryptedMessages :: FilePath -> ProfileName -> String -> ByteString -> MessageLog -> IO ()
 saveEncryptedMessages baseDir profile contact pass msgs = do
   let dir = baseDir </> profile </> "messages"
   createDirectoryIfMissing True dir
   let path = dir </> (contact ++ ".log.enc")
-  let serialized = BS.pack (show (map serializeMessage msgs))
+  -- Use show for now (simple but works for demo). In production use Binary/CBOR.
+  let serialized = BC.pack (show (map serializeMessage msgs))
   mBlob <- encryptWithPassphrase pass serialized
   case mBlob of
     Just blob -> BS.writeFile path blob
@@ -355,11 +342,19 @@ loadEncryptedMessages baseDir profile contact pass = do
     mPlain <- decryptWithPassphrase pass enc
     case mPlain of
       Just plain -> do
-        -- In production we would use a proper binary format (Binary or CBOR)
-        -- For now we return empty on parse issues to avoid crashes
-        pure []   -- TODO: proper deserialization
+        case readMaybe (BC.unpack plain) of
+          Just tuples -> pure (map deserializeMessage tuples)
+          Nothing -> do
+            putStrLn "[SECURITY] Corrupted or unreadable message log"
+            pure []
       Nothing -> do
         putStrLn "[SECURITY] Failed to decrypt message log (wrong passphrase or corruption)"
         pure []
   else pure []
+
+-- Safe read helper
+readMaybe :: Read a => String -> Maybe a
+readMaybe s = case reads s of
+  [(x, "")] -> Just x
+  _ -> Nothing
 
