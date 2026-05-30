@@ -383,3 +383,109 @@ pub extern "C" fn rust_ratchet_import_encrypted(
         }
     }
 }
+
+// === Dedicated Passphrase-based Blob Encryption (for message logs, etc.) ===
+// This is cleaner than reusing ratchet IDs for non-ratchet data.
+
+#[no_mangle]
+pub extern "C" fn rust_encrypt_blob_with_passphrase(
+    passphrase: *const u8,
+    pass_len: usize,
+    data: *const u8,
+    data_len: usize,
+    out: *mut u8,
+    out_len: *mut usize,
+) -> bool {
+    unsafe {
+        let pass = std::slice::from_raw_parts(passphrase, pass_len);
+        let plaintext = std::slice::from_raw_parts(data, data_len);
+
+        let mut salt = [0u8; SALT_LEN];
+        let mut nonce_bytes = [0u8; NONCE_LEN];
+        rand::thread_rng().fill_bytes(&mut salt);
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+
+        let key = match derive_key_argon2id(pass, &salt) {
+            Ok(k) => k,
+            Err(_) => return false,
+        };
+
+        let unbound = match UnboundKey::new(&AES_256_GCM, &key) {
+            Ok(u) => u,
+            Err(_) => return false,
+        };
+        let lsk = LessSafeKey::new(unbound);
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+        let mut buf = plaintext.to_vec();
+
+        if lsk.seal_in_place_append_tag(nonce, Aad::empty(), &mut buf).is_err() {
+            return false;
+        }
+
+        let mut envelope = Vec::with_capacity(1 + SALT_LEN + NONCE_LEN + buf.len());
+        envelope.push(1u8);
+        envelope.extend_from_slice(&salt);
+        envelope.extend_from_slice(&nonce_bytes);
+        envelope.extend_from_slice(&buf);
+
+        if envelope.len() > *out_len {
+            *out_len = envelope.len();
+            return false;
+        }
+        std::ptr::copy_nonoverlapping(envelope.as_ptr(), out, envelope.len());
+        *out_len = envelope.len();
+        true
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_decrypt_blob_with_passphrase(
+    passphrase: *const u8,
+    pass_len: usize,
+    data: *const u8,
+    data_len: usize,
+    out: *mut u8,
+    out_len: *mut usize,
+) -> bool {
+    unsafe {
+        if data_len < 1 + SALT_LEN + NONCE_LEN {
+            return false;
+        }
+        let envelope = std::slice::from_raw_parts(data, data_len);
+        let pass = std::slice::from_raw_parts(passphrase, pass_len);
+
+        if envelope[0] != 1 {
+            return false;
+        }
+
+        let salt: [u8; SALT_LEN] = envelope[1..1+SALT_LEN].try_into().unwrap();
+        let nonce_bytes: [u8; NONCE_LEN] = envelope[1+SALT_LEN..1+SALT_LEN+NONCE_LEN].try_into().unwrap();
+        let ciphertext = &envelope[1+SALT_LEN+NONCE_LEN..];
+
+        let key = match derive_key_argon2id(pass, &salt) {
+            Ok(k) => k,
+            Err(_) => return false,
+        };
+
+        let unbound = match UnboundKey::new(&AES_256_GCM, &key) {
+            Ok(u) => u,
+            Err(_) => return false,
+        };
+        let lsk = LessSafeKey::new(unbound);
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+        let mut buf = ciphertext.to_vec();
+
+        match lsk.open_in_place(nonce, Aad::empty(), &mut buf) {
+            Ok(plain) => {
+                if plain.len() > *out_len {
+                    *out_len = plain.len();
+                    return false;
+                }
+                std::ptr::copy_nonoverlapping(plain.as_ptr(), out, plain.len());
+                *out_len = plain.len();
+                true
+            }
+            Err(_) => false,
+        }
+    }
+}

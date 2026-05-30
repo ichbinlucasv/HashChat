@@ -173,8 +173,9 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
     -- Use the REAL message system (Double Ratchet + AES-GCM)
     msg <- liftIO $ sendEncryptedMessage rid (BS.pack []) (TE.encodeUtf8 txt) False Nothing
 
-    -- Immediately persist the advanced ratchet state (forward secrecy)
+    -- Persist ratchet + message (with ciphertext)
     liftIO $ saveEncryptedRatchet prof contact rid pass
+    liftIO $ saveEncryptedMessages "hashchat_data" prof contact pass [msg]
 
     modify $ \st -> st
       { messages = Map.insertWith (++) contact [msg] (messages st)
@@ -212,11 +213,18 @@ app = App
 
       liftIO $ putStrLn "[SECURITY] Unlocking ratchets with Argon2id + AES-GCM..."
 
-      loaded <- liftIO $ loadEncryptedRatchets "Default" finalPass
+      loadedRatchets <- liftIO $ loadEncryptedRatchets "Default" finalPass
+
+      -- Load message history for each contact we have ratchets for
+      loadedMessages <- foldM (\acc (c, _) -> do
+          msgs <- liftIO $ loadEncryptedMessages "hashchat_data" "Default" c finalPass
+          pure (Map.insert c msgs acc)
+        ) Map.empty (Map.toList loadedRatchets)
 
       modify $ \s -> s
-        { ratchets    = loaded
+        { ratchets    = loadedRatchets
         , sessionPass = finalPass
+        , messages    = loadedMessages
         }
 
       liftIO $ putStrLn $ "[OK] Loaded " ++ show (Map.size loaded) ++ " ratchet(s) with forward secrecy continuity."

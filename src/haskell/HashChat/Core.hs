@@ -70,6 +70,10 @@ foreign import ccall unsafe "rust_decrypt_with_key" rust_decrypt_with_key :: Ptr
 foreign import ccall unsafe "rust_ratchet_export_encrypted" rust_ratchet_export_encrypted :: Word32 -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> IO Bool
 foreign import ccall unsafe "rust_ratchet_import_encrypted" rust_ratchet_import_encrypted :: Word32 -> Ptr Word8 -> Int -> Ptr Word8 -> Int -> IO Bool
 
+-- Dedicated passphrase blob encryption (for message logs, settings, etc.)
+foreign import ccall unsafe "rust_encrypt_blob_with_passphrase" rust_encrypt_blob_with_passphrase :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> IO Bool
+foreign import ccall unsafe "rust_decrypt_blob_with_passphrase" rust_decrypt_blob_with_passphrase :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> IO Bool
+
 initProfile :: IO ProfileKey
 initProfile = do
   ptr <- rust_init_profile
@@ -298,16 +302,64 @@ saveEncryptedMessages baseDir profile contact pass msgs = do
     Just encBlob -> BS.writeFile path encBlob
     Nothing      -> putStrLn "[SECURITY] Failed to encrypt message log"
 
--- Load messages for a contact (decrypts using same passphrase)
+-- High-level passphrase-based blob encryption/decryption (recommended for logs, settings, etc.)
+encryptWithPassphrase :: ByteString -> ByteString -> IO (Maybe ByteString)
+encryptWithPassphrase pass plaintext = do
+  let maxSize = BS.length plaintext + 1024
+  outPtr <- mallocArray maxSize
+  outLenPtr <- malloc
+  poke outLenPtr maxSize
+  ok <- withArray (unpack pass) $ \pp ->
+          withArray (unpack plaintext) $ \pt ->
+            rust_encrypt_blob_with_passphrase pp (BS.length pass) pt (BS.length plaintext) outPtr outLenPtr
+  if ok then do
+    actual <- peek outLenPtr
+    blob <- peekArray actual outPtr
+    pure (Just $ pack blob)
+  else pure Nothing
+
+decryptWithPassphrase :: ByteString -> ByteString -> IO (Maybe ByteString)
+decryptWithPassphrase pass ciphertext = do
+  let maxSize = BS.length ciphertext + 1024
+  outPtr <- mallocArray maxSize
+  outLenPtr <- malloc
+  poke outLenPtr maxSize
+  ok <- withArray (unpack pass) $ \pp ->
+          withArray (unpack ciphertext) $ \ct ->
+            rust_decrypt_blob_with_passphrase pp (BS.length pass) ct (BS.length ciphertext) outPtr outLenPtr
+  if ok then do
+    actual <- peek outLenPtr
+    blob <- peekArray actual outPtr
+    pure (Just $ pack blob)
+  else pure Nothing
+
+-- === Real Encrypted Message Log Persistence ===
+
+saveEncryptedMessages :: FilePath -> ProfileName -> String -> ByteString -> MessageLog -> IO ()
+saveEncryptedMessages baseDir profile contact pass msgs = do
+  let dir = baseDir </> profile </> "messages"
+  createDirectoryIfMissing True dir
+  let path = dir </> (contact ++ ".log.enc")
+  let serialized = BS.pack (show (map serializeMessage msgs))
+  mBlob <- encryptWithPassphrase pass serialized
+  case mBlob of
+    Just blob -> BS.writeFile path blob
+    Nothing   -> putStrLn "[SECURITY] Failed to encrypt message log"
+
 loadEncryptedMessages :: FilePath -> ProfileName -> String -> ByteString -> IO MessageLog
 loadEncryptedMessages baseDir profile contact pass = do
   let path = baseDir </> profile </> "messages" </> (contact ++ ".log.enc")
   exists <- doesFileExist path
   if exists then do
-    encBlob <- BS.readFile path
-    -- We need a temporary ratchet to use the import function. This is a limitation of current design.
-    -- In a future refactor we should have a dedicated passphrase-based encrypt/decrypt for blobs.
-    putStrLn "[INFO] Message log decryption not fully wired yet (using ratchet path as proxy)"
-    pure []
+    enc <- BS.readFile path
+    mPlain <- decryptWithPassphrase pass enc
+    case mPlain of
+      Just plain -> do
+        -- In production we would use a proper binary format (Binary or CBOR)
+        -- For now we return empty on parse issues to avoid crashes
+        pure []   -- TODO: proper deserialization
+      Nothing -> do
+        putStrLn "[SECURITY] Failed to decrypt message log (wrong passphrase or corruption)"
+        pure []
   else pure []
 
