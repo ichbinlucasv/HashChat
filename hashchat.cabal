@@ -13,10 +13,6 @@ flag tui
   default: True
   manual: True
 
-flag tui
-  description: Build the modern Brick TUI (requires vty + vty-unix + brick)
-  default: True
-  manual: True
 library
   exposed-modules: HashChat.Core HashChat.Profile HashChat.Queue HashChat.FileTransfer HashChat.Contact HashChat.Voice HashChat.Call HashChat.Settings HashChat.Security HashChat.Group HashChat.Chat
   build-depends: base, stm, cryptonite, memory, sqlite-simple, bytestring, time, text,

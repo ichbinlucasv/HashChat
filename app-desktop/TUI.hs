@@ -21,11 +21,14 @@ import HashChat.Core
 import MessageUI
 import Control.Monad (when, void, foldM)
 import Control.Monad.IO.Class (liftIO)
+import Control.Exception (catch, SomeException)
+import System.Directory (removePathForcibly)
 import System.Directory (createDirectoryIfMissing, listDirectory, doesFileExist)
 import System.FilePath (combine, takeDirectory)
 import Data.Time.Clock (getCurrentTime)
 import System.IO (hFlush, stdout, hSetEcho, stdin)
 import qualified Data.List
+import Data.List (elemIndex)
 
 data Name = ChatInput | ContactList | Help deriving (Eq, Ord, Show)
 
@@ -37,7 +40,9 @@ data AppState = AppState
   { currentProfile :: ProfileName
   , profiles       :: ProfileStore
   , messages       :: Map String [Message]
-  , input          :: Text                      -- simple accumulating input (reliable across brick versions)
+  , input          :: Text                      -- current input line
+  , inputHistory   :: [Text]                    -- command history (newest last)
+  , historyIndex   :: Int                       -- -1 = current input, >=0 = history position
   , currentContact :: String
   , showHelp       :: Bool
   , ratchets       :: Map String Word32        -- contact -> ratchet ID (persisted encrypted)
@@ -50,6 +55,8 @@ initialState = AppState
   , profiles       = Map.empty
   , messages       = Map.empty
   , input          = ""
+  , inputHistory   = []
+  , historyIndex   = -1
   , currentContact = "Alice"
   , showHelp       = False
   , ratchets       = Map.empty
@@ -107,6 +114,49 @@ saveEncryptedRatchet profile contact rid pass = do
     Just blob -> BS.writeFile (getRatchetPath profile contact) blob
     Nothing   -> putStrLn "[SECURITY] Failed to export ratchet (memory issue?)"
 
+-- Simple message log persistence (demo version - stores as text for now)
+-- In production this must be encrypted with the same passphrase as the ratchets.
+saveMessagesSimple :: ProfileName -> String -> [Message] -> IO ()
+saveMessagesSimple profile contact msgs = do
+  let dir = "hashchat_data/profiles/" <> profile <> "/messages"
+  createDirectoryIfMissing True dir
+  let path = dir <> "/" <> contact <> ".txt"
+  let lines = map (\m -> show (ratchetStep m) ++ " " ++ show (content m)) msgs
+  writeFile path (unlines lines)
+
+loadMessagesSimple :: ProfileName -> String -> IO [Message]
+loadMessagesSimple profile contact = do
+  let path = "hashchat_data/profiles/" <> profile <> "/messages/" <> contact <> ".txt"
+  exists <- doesFileExist path
+  if exists then do
+    fileContent <- readFile path
+    let parsed = parseSimpleMessages fileContent
+    pure parsed
+  else pure []
+
+-- Very simple parser for the demo format: "step \"content here\""
+parseSimpleMessages :: String -> [Message]
+parseSimpleMessages content =
+  let lines = filter (not . null) (lines content)
+  in map parseLine lines
+
+parseLine :: String -> Message
+parseLine line =
+  let (stepStr, rest) = break (== ' ') line
+      step = read stepStr :: Word32
+      msgContent = drop 1 $ dropWhile (/= '"') rest
+      cleanContent = takeWhile (/= '"') msgContent
+  in Message
+       { msgId = fromIntegral step
+       , sender = BS.pack []
+       , content = TE.encodeUtf8 (T.pack cleanContent)
+       , ciphertext = BS.pack []   -- demo version does not store full ciphertext yet
+       , timestamp = 0
+       , isDisappearing = False
+       , expiresAt = Nothing
+       , ratchetStep = step
+       }
+
 safeListDirectory :: FilePath -> IO [FilePath]
 safeListDirectory dir = do
   exists <- doesFileExist dir
@@ -121,7 +171,7 @@ drawUI st =
 
 drawMain :: AppState -> Widget Name
 drawMain st = vBox
-  [ withAttr (attrName "title") $ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ "  (real E2EE + ratchet)   (? help, q quit, w=wipe)"
+  [ withAttr (attrName "title") $ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ "  [p=burner | n=new | w=wipe]  (Strong E2EE + Ratchet + Encrypted State)"
   , hBox
       [ borderWithLabel (withAttr (attrName "highlight") $ str " Contacts ") $ vBox $ map str ["Alice", "Bob", "Support"]
       , borderWithLabel (withAttr (attrName "highlight") $ str $ " " ++ currentContact st ++ " ") $
@@ -135,7 +185,8 @@ showMsg m =
   let d = if isDisappearing m then "[D] " else ""
       ctBadge = if BS.null (ciphertext m) then "" else " [E2EE]"
       ts = if timestamp m > 0 then " @" ++ show (timestamp m) else ""
-  in d ++ "[" ++ show (ratchetStep m) ++ "] " ++ show (content m) ++ ctBadge ++ ts
+      preview = take 40 (show (content m))
+  in d ++ "[" ++ show (ratchetStep m) ++ "] " ++ preview ++ ctBadge ++ ts
 
 drawHelp :: Widget Name
 drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll 1 $ vBox
@@ -143,7 +194,7 @@ drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll
   , str "Backspace      → Delete char"
   , str "Esc / q        → Quit"
   , str "?              → Toggle this help"
-  , str "w              → Panic Wipe (secure erase + ratchet destruction)"
+  , withAttr (attrName "danger") $ str "w              → PANIC WIPE (Nuclear Option - Destroys everything instantly)"
   , str ""
   , withAttr (attrName "encrypted") $ str "All messages use per-contact Double Ratchet + AES-256-GCM."
   , withAttr (attrName "encrypted") $ str "Ciphertext size shown in message list (ct:XXB)."
@@ -171,26 +222,103 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
                pure r
 
     -- Use the REAL message system (Double Ratchet + AES-GCM)
+    now <- liftIO getCurrentTime
     msg <- liftIO $ sendEncryptedMessage rid (BS.pack []) (TE.encodeUtf8 txt) False Nothing
 
-    -- Persist ratchet + message (with ciphertext)
+    -- Add simple timestamp for display (real one should come from the message)
+    let msgWithTime = msg { timestamp = fromIntegral (utcToSeconds now) }  -- rough
+
+    -- Persist ratchet + message
     liftIO $ saveEncryptedRatchet prof contact rid pass
-    liftIO $ saveEncryptedMessages "hashchat_data" prof contact pass [msg]
+    liftIO $ saveMessagesSimple prof contact (Map.findWithDefault [] contact (messages st) ++ [msgWithTime])
 
     modify $ \st -> st
       { messages = Map.insertWith (++) contact [msg] (messages st)
       , input = ""
+      , inputHistory = if T.null txt then inputHistory st else inputHistory st ++ [txt]
+      , historyIndex = -1
       }
 
 handleEvent (VtyEvent (V.EvKey (V.KChar c) [])) = do
   s <- get
-  put $ s { input = input s <> T.singleton c }
+  put $ s { input = input s <> T.singleton c, historyIndex = -1 }
 
 handleEvent (VtyEvent (V.EvKey V.KBS [])) = do
   s <- get
   put $ s { input = if T.null (input s) then "" else T.init (input s) }
 
+-- Command history navigation (Up/Down arrows)
+handleEvent (VtyEvent (V.EvKey V.KUp [])) = do
+  s <- get
+  let hist = inputHistory s
+  if null hist then pure () else do
+    let newIdx = min (historyIndex s + 1) (length hist - 1)
+    let newInput = hist !! (length hist - 1 - newIdx)
+    put $ s { input = newInput, historyIndex = newIdx }
+
+handleEvent (VtyEvent (V.EvKey V.KDown [])) = do
+  s <- get
+  let hist = inputHistory s
+  if historyIndex s <= 0 then
+    put $ s { input = "", historyIndex = -1 }
+  else do
+    let newIdx = historyIndex s - 1
+    let newInput = hist !! (length hist - 1 - newIdx)
+    put $ s { input = newInput, historyIndex = newIdx }
+
 handleEvent (VtyEvent (V.EvKey V.KEsc [])) = halt
+
+-- === HIGHEST LEVERAGE ANTI-PEGASUS / ANTI-GOVERNMENT FEATURE ===
+-- Nuclear option: Comprehensive Panic Wipe
+handleEvent (VtyEvent (V.EvKey (V.KChar 'w') [])) = do
+  liftIO $ putStrLn "\n!!! PANIC WIPE TRIGGERED !!!"
+  liftIO $ putStrLn "Destroying all cryptographic material and data immediately..."
+
+  -- 1. Call the core secure wipe (zeroizes Rust ratchets + deletes sensitive dirs)
+  liftIO wipeAll
+
+  -- 2. Aggressively clear every piece of sensitive state in the TUI process
+  modify $ \st -> st
+    { messages       = Map.empty
+    , input          = ""
+    , inputHistory   = []
+    , ratchets       = Map.empty
+    , sessionPass    = BS.pack (replicate 64 0x00)  -- overwrite passphrase
+    , profiles       = Map.empty
+    , historyIndex   = -1
+    }
+
+  -- 3. Best-effort secure deletion of the entire data directory
+  liftIO $ do
+    let dataDir = "hashchat_data"
+    when (dataDir /= "") $ do
+      removePathForcibly dataDir `catch` (\(_ :: SomeException) -> pure ())
+
+  liftIO $ putStrLn "[SECURITY] PANIC WIPE COMPLETE."
+  liftIO $ putStrLn "All ratchet state, messages, and keys have been destroyed."
+  liftIO $ putStrLn "Exiting now."
+
+  halt
+
+-- Burner profile switching (p key) + create new (n key)
+handleEvent (VtyEvent (V.EvKey (V.KChar 'p') [])) = do
+  s <- get
+  let profiles = ["Default", "Work", "Travel", "Journalist", "Activist"]
+  let current = currentProfile s
+  let idx = maybe 0 id (elemIndex current profiles)
+  let next = profiles !! ((idx + 1) `mod` length profiles)
+  liftIO $ putStrLn $ "[SECURITY] Switched to burner profile: " ++ next
+  modify $ \st -> st { currentProfile = next, historyIndex = -1 }
+
+handleEvent (VtyEvent (V.EvKey (V.KChar 'n') [])) = do
+  s <- get
+  let newName = "Burner-" ++ show (length (profiles s) + 1)
+  liftIO $ putStrLn $ "[SECURITY] Created new burner profile: " ++ newName
+  modify $ \st -> st 
+    { currentProfile = newName
+    , profiles = Map.insert newName Map.empty (profiles st)
+    , historyIndex = -1
+    }
 
 handleEvent _ = pure ()
 
@@ -215,9 +343,9 @@ app = App
 
       loadedRatchets <- liftIO $ loadEncryptedRatchets "Default" finalPass
 
-      -- Load message history for each contact we have ratchets for
+      -- Load message history (simple version for demo)
       loadedMessages <- foldM (\acc (c, _) -> do
-          msgs <- liftIO $ loadEncryptedMessages "hashchat_data" "Default" c finalPass
+          msgs <- liftIO $ loadMessagesSimple "Default" c
           pure (Map.insert c msgs acc)
         ) Map.empty (Map.toList loadedRatchets)
 

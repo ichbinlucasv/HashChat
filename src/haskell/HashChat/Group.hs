@@ -69,6 +69,14 @@ advanceSenderKey gsk =
       newChain = BS.take 32 (BS.replicate 32 (fromIntegral ((newCount + 1) `mod` 256)))
   in (msgKey, gsk { gskChainKey = newChain, gskMsgCount = newCount })
 
+-- Encrypt a group message using a member's sending key (very simplified)
+encryptGroupMessage :: GroupSenderKey -> ByteString -> (ByteString, GroupSenderKey)
+encryptGroupMessage gsk plaintext =
+  let (msgKey, newGsk) = advanceSenderKey gsk
+      -- In real version this would be AES-GCM with msgKey
+      fakeCt = BS.append msgKey (BS.take 16 plaintext)  -- placeholder
+  in (fakeCt, newGsk)
+
 -- TODO (deep ongoing work):
 -- - Proper HKDF-based chain advancement for group sender keys
 -- - Key rotation when members join/leave
