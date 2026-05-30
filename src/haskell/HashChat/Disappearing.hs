@@ -17,3 +17,7 @@ isExpired msg = do
 
 -- In real version, this will be tied to the ratchet so
 -- message keys are deleted after TTL.
+--
+-- Security note: When a message expires, the corresponding ratchet message key
+-- must be securely erased (zeroized) and removed from any skipped key stores.
+-- Never store plaintext or keys longer than necessary.
