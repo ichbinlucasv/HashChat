@@ -2,10 +2,29 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Build HashChat",
+            "label": "Build HashChat (Recommended)",
             "type": "shell",
-            "command": "python3 build.py",
+            "command": "./build.py",
             "group": "build",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Clean Build Artifacts",
+            "type": "shell",
+            "command": "rm -rf target dist-newstyle rust-lib run-cli run-desktop",
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Desktop TUI",
+            "type": "shell",
+            "command": "./run-desktop",
+            "group": "test",
             "problemMatcher": []
         }
     ]

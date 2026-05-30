@@ -1,7 +1,18 @@
 {
     "haskell.manageHLS": "PATH",
     "rust-analyzer.cargo.buildScripts.enable": true,
+    "rust-analyzer.checkOnSave.command": "clippy",
     "files.associations": {
         "*.hs": "haskell"
+    },
+    "editor.formatOnSave": true,
+    "files.exclude": {
+        "**/target": true,
+        "**/dist-newstyle": true,
+        "**/rust-lib": true
+    },
+    "search.exclude": {
+        "**/target": true,
+        "**/dist-newstyle": true
     }
 }

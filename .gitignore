@@ -1,3 +1,4 @@
+# === Build Artifacts (Rust + Haskell) ===
 target/
 dist-newstyle/
 *.o
@@ -5,11 +6,73 @@ dist-newstyle/
 *.so
 *.dylib
 *.dll
+*.a
+*.rlib
+*.rmeta
+*.d
+
+# === Generated Launchers ===
+run-cli
+run-desktop
+
+# === Rust FFI Libraries (never commit compiled artifacts) ===
+rust-lib/
+
+# === Python ===
 __pycache__/
 *.pyc
+*.pyo
+
+# === Android ===
 android/build/
 android/.gradle/
+android/.cxx/
+*.apk
+*.aab
+
+# === Databases & Sensitive Runtime Data ===
 *.db
 *.db-shm
 *.db-wal
+hashchat.db*
+
+# === Tor (EXTREMELY SENSITIVE) ===
 tor/hidden_service/
+tor/data/
+*.onion
+*.key
+
+# === Logs & Temp ===
+*.log
+*.tmp
+*.swp
+*~
+
+# === IDE / Editor ===
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.vscode/ipc/
+
+# === OS Generated ===
+.DS_Store
+Thumbs.db
+
+# === Large Media (bloat) ===
+*.mp4
+*.mov
+*.avi
+grok-*
+1c9a9b13-*.jpg
+
+# === Security Best Practice ===
+.env
+*.pem
+*.key
+id_rsa*
+secrets/
+credentials.json
+
+# === Git LFS (if you ever use it) ===
+*.lfs
