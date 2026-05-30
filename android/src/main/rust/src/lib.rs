@@ -81,3 +81,16 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_ratchetImportEncrypted(
 }
 
 // Tor framing helpers can be added here too (frameForWire equivalent in Rust for Android)
+
+// === Cross-device ratchet export (start of encrypted export for new device sync) ===
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_exportRatchetForDevice(
+    _env: JNIEnv,
+    _class: JClass,
+    state_id: jint,
+    passphrase: jbyteArray,
+) -> jbyteArray {
+    // Real impl: export ratchet state, encrypt with device-specific key or passphrase
+    // For now returns placeholder (ties into Keystore + existing export)
+    _env.new_byte_array(0).unwrap()
+}

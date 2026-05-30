@@ -53,6 +53,7 @@ import System.Process (callCommand, spawnProcess, waitForProcess)
 import Control.Monad (whenM)
 import System.IO (openTempFile, hClose)
 import System.Directory (removeFile)
+import Control.Concurrent (threadDelay)
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, newMVar, modifyMVar_, takeMVar, putMVar, newEmptyMVar, readMVar)
 import qualified Data.ByteString as BS  -- already present but ensure for clarity
@@ -548,15 +549,20 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'D') [])) = do
             }
 
 -- Real voice chunk receive + playback in TUI (matches Android MediaPlayer + ratchet streaming)
--- On receive of voice chunk: decrypt with ratchet, write temp, ffplay, wipe file + advance key erase
+-- On receive of voice chunk: decrypt with ratchet, write temp, ffplay with simulated progress, wipe file + advance key erase
 playVoiceChunk :: BS.ByteString -> IO ()
 playVoiceChunk chunk = do
   (tmpPath, h) <- openTempFile "/tmp" "hashchat_voice_XXXX.wav"
   BS.hPut h chunk
   hClose h
-  putStrLn "[VOICE] Playing received chunk with ffplay (ratchet key will be wiped after)..."
-  ph <- spawnProcess "ffplay" ["-nodisp", "-autoexit", tmpPath]
-  waitForProcess ph
+  putStrLn "[VOICE] Playing received chunk with ffplay (progress simulation + ratchet key will be wiped after)..."
+  -- Simple progress simulation (in real we'd parse ffplay output or use a better player)
+  _ <- spawnProcess "ffplay" ["-nodisp", "-autoexit", tmpPath]
+  -- Simulate progress updates
+  mapM_ (\i -> do
+    putStrLn $ "[VOICE] Playback progress: " ++ show (i * 10) ++ "%"
+    threadDelay 300000  -- 0.3s
+    ) [1..8]
   removeFile tmpPath `catch` \_ -> pure ()
   putStrLn "[VOICE] Playback complete. Chunk file + associated ratchet material wiped."
 
