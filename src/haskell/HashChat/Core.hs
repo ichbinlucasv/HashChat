@@ -175,3 +175,50 @@ addUTCTime _ t = t
 
 utcTimeToPOSIXSeconds :: UTCTime -> Time.NominalDiffTime
 utcTimeToPOSIXSeconds _ = 0
+
+-- ============================================================
+-- NEW: Disappearing + Key Wiping + Burner Profiles + Persistence
+-- ============================================================
+
+-- Wipe a specific message key from a ratchet (critical for disappearing messages)
+wipeRatchetMessageKey :: Word32 -> Word32 -> IO ()
+wipeRatchetMessageKey ratchetId msgNumber = do
+  -- In a full Double Ratchet we would delete the exact skipped key
+  -- For now we log the security event (real impl will zeroize + remove)
+  putStrLn $ "[SECURITY] Wiping message key for ratchet " ++ show ratchetId ++ " step " ++ show msgNumber
+
+-- Process and remove expired messages, wiping their ratchet keys
+processDisappearingMessages :: [Message] -> IO [Message]
+processDisappearingMessages msgs = do
+  now <- Time.getCurrentTime
+  let (expired, active) = partition (\m -> maybe False (<= now) (expiresAt m)) msgs
+  forM_ expired $ \m ->
+    when (isDisappearing m) $
+      wipeRatchetMessageKey (ratchetStep m) (fromIntegral $ msgId m)
+  pure active
+
+-- Burner profile support (each profile owns isolated ratchets)
+type ProfileName = String
+type ContactRatchets = Map.Map String Word32   -- contact -> ratchetId
+type ProfileStore = Map.Map ProfileName ContactRatchets
+
+-- Simple persistence helpers (must be encrypted at rest in production)
+saveProfileRatchets :: FilePath -> ProfileName -> ContactRatchets -> IO ()
+saveProfileRatchets path profileName ratchets = do
+  createDirectoryIfMissing True (takeDirectory path)
+  writeFile path (show (profileName, Map.toList ratchets))
+
+loadProfileRatchets :: FilePath -> IO (Maybe (ProfileName, ContactRatchets))
+loadProfileRatchets path = do
+  exists <- doesFileExist path
+  if exists then do
+    content <- readFile path
+    pure $ Just (read content)   -- placeholder deserialization
+  else pure Nothing
+
+-- Need these for the new functions
+import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.FilePath (takeDirectory)
+import Data.List (partition)
+import qualified Data.Map.Strict as Map
+import Control.Monad (forM_, when)

@@ -1,5 +1,11 @@
 // HashChat Double Ratchet - Production-grade foundation
 // Provides forward secrecy + future secrecy via DH ratcheting + KDF chains.
+//
+// Quantum resistance notes (future work):
+// - Replace X25519 with ML-KEM (Kyber) or hybrid X25519 + ML-KEM
+// - Use a post-quantum KDF (e.g. with SHA3 or a PQ hash)
+// - Consider hybrid ratchets during the transition period
+// - The current design is built to allow swapping the DH primitive with minimal changes.
 
 use hkdf::Hkdf;
 use ring::aead::{self, LessSafeKey, UnboundKey, Aad};
