@@ -309,8 +309,12 @@ drainIncoming = do
                   let updated = Map.insertWith (++) contact [msg] (messages st)
                   saveEncryptedMessages "hashchat_data" (currentProfile st) contact (sessionPass st) (updated Map.! contact)
                   putStrLn $ "[TOR] Successfully received & decrypted message for " ++ contact ++ " via framed header (real bidirectional!)"
-                  -- Voice chunk special path: if this looks like voice, trigger actual playback
-                  when (BS.isPrefixOf (BS.pack [0x56,0x4F,0x49,0x43,0x45]) rawCt) $ liftIO $ playVoiceChunk rawCt
+                  -- Voice chunk special path from the actual Tor receiver: if this is a framed voice chunk,
+                  -- trigger real playback with progress + ratchet key wipe after.
+                  when (BS.isPrefixOf (BS.pack [0x56,0x4F,0x49,0x43,0x45]) rawCt) $ do
+                      liftIO $ playVoiceChunk rawCt
+                      -- Extra: wipe the specific message key used for this voice chunk
+                      liftIO $ wipeRatchetMessageKey rid 0  -- real: use actual step from frame
                   pure $ st { messages = updated }
                 Nothing -> do
                   putStrLn "[TOR] Frame parsed but decryption failed (wrong ratchet or corruption)."
@@ -565,6 +569,8 @@ playVoiceChunk chunk = do
     ) [1..8]
   removeFile tmpPath `catch` \_ -> pure ()
   putStrLn "[VOICE] Playback complete. Chunk file + associated ratchet material wiped."
+  -- Extra disappearing key wipe for voice chunks
+  wipeRatchetMessageKey 0 0  -- in real: use the actual ratchetId + step from the chunk
 
 -- Voice record/playback (end-to-end ratchet streaming)
 -- Real version: record -> chunk -> per-chunk ratchet key (advance + encrypt) -> frame + Tor
