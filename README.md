@@ -9,6 +9,25 @@
 
 No phone numbers. No user IDs. No central servers. No logs. No metadata.
 
+## Quick Start on Fedora (Easiest)
+
+```bash
+git clone https://github.com/ichbinlucasv/HashChat.git
+cd HashChat
+chmod +x install-fedora.sh
+./install-fedora.sh
+```
+
+Then follow the printed instructions to set up Tor (critical).
+
+Full instructions: see [INSTALL.md](INSTALL.md)
+
+## Important: Tor is Required
+
+HashChat is designed as **Tor-only**. You must have a running Tor instance with ControlPort enabled (default 9051) for the anonymous hidden service to work.
+
+See [INSTALL.md](INSTALL.md) for exact steps on Fedora.
+
 ### Core Design
 - Random ed25519/x25519 keypair per profile (never reused)
 - Unidirectional SMP queues (SimpleX style)
