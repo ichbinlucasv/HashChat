@@ -33,12 +33,20 @@ source "$HOME/.cargo/env"
 ```
 
 ### 3. Build the Project (Recommended)
+
+**Best (reproducible, no external scripts):**
 ```bash
-./build.sh          # Builds Rust + Haskell (CLI + library)
-./build.sh tui      # Also builds the desktop TUI
+nix build .#hashchat-flatpak   # Pure Nix .flatpak
+nix build .#hashchat-tui
 ```
 
-This is a pure Bash script — no Python is used or required anywhere in the build process.
+**Quick dev:**
+```bash
+./build.sh tui
+./run-tui
+```
+
+This project uses pure Bash (no Python) for the legacy path. Nix is the preferred modern path.
 
 ### 4. Run
 ```bash

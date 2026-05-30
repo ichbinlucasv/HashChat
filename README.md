@@ -3,11 +3,13 @@
 > **Maximum-anonymity messenger** built with Haskell + Rust.
 > See [SECURITY.md](SECURITY.md) before contributing.
 
-![grok-image-c881f444-cc70-4aff-8b35-55e8f616ba02](https://github.com/user-attachments/assets/dbf8185e-a02d-4dc1-b116-3bb35e92b9b9)
+**Presidential-grade anonymous messenger** — SimplexChat-level UI/UX + Session-style metadata resistance, powered by a Rust Double Ratchet core + Tor v3 hidden services.
 
-**Presidential-grade anonymous messenger** — SimpleX + Session architecture with Rust crypto core.
+**No phone numbers. No user IDs. No central servers. No logs. No metadata.**
 
-No phone numbers. No user IDs. No central servers. No logs. No metadata.
+**Current Status (as of this build)**: Real bidirectional Tor messaging, multi-member groups with sender-key forward secrecy + persistence, end-to-end voice streaming with ratchet-per-chunk + playback + seek bars, Android with RecyclerView + Keystore + biometric + QR/group management, pure-Nix reproducible Flatpak, full Simplex-style button parity (block, report, delete, voice, groups, QR, etc.), dynamic Security Posture with real refusals, nuclear panic wipe, burner + decoy profiles, disappearing messages with key erasure.
+
+We are very close to a production-grade, auditable, paranoid messenger.
 
 ## Quick Start on Fedora (Easiest)
 
@@ -30,15 +32,17 @@ HashChat is designed as **Tor-only**. You must have a running Tor instance with 
 
 See [INSTALL.md](INSTALL.md) for exact steps on Fedora.
 
-### Core Design
-- Random ed25519/x25519 keypair per profile (never reused)
-- Unidirectional SMP queues (SimpleX style)
-- Double-ratchet E2EE + extra HMAC-SHA512 layer
-- Tor hidden service routing by default
-- SQLCipher encrypted local storage (`PRAGMA key='hashchat-secure-passphrase'`)
-- Amnesic design — 2-click Panic Wipe (Rust secure erase + 3-pass shred)
-- Storage capped to prevent DoS
-- Full file transfer (any type, up to 1 GB, chunked + padded)
+### Core Design (Implemented)
+- Per-profile random ed25519/x25519 keys + per-contact Double Ratchet (real KDF + DH + skipped keys)
+- Tor v3 hidden services only (real bidirectional framed messaging with sender hints)
+- Sender-key groups with forward secrecy + encrypted persistence
+- Voice streaming: per-chunk ratchet encryption + playback with seek (Android + TUI)
+- Android: RecyclerView chat + group management + Keystore + biometric ratchet unlock + QR
+- Pure-Nix reproducible Flatpak (no external scripts)
+- Nuclear Panic Wipe (7-pass + mlock + kernel anti-forensics + Rust zeroize)
+- Dynamic Security Posture (real environment inspection + action refusals)
+- Burner + Decoy profiles with auto-wipe
+- SimplexChat button/feature parity (block, report, delete, voice, groups, QR, disappearing, etc.) on both platforms (black + #FFD700 gold theme)
 
 ### Security Features
 - Constant-time crypto in Rust (ring + zeroize)
@@ -55,13 +59,26 @@ See [INSTALL.md](INSTALL.md) for exact steps on Fedora.
 - Windows (via MSYS2)
 - Android (native APK via cargo-ndk + Gradle)
 
-### Build Instructions
+### Build Instructions (Current)
 
-**Fedora / Debian / Arch**
+**Recommended (reproducible):**
 ```bash
-cargo build --release
-cabal build
-./build.sh
+nix build .#hashchat-flatpak   # Full pure-Nix Flatpak
+nix build .#hashchat-tui
+```
+
+**Quick:**
+```bash
+./build.sh tui
+./run-tui
+```
+
+Android cross:
+```bash
+nix build .#hashchat-android-rust
+```
+
+See [INSTALL.md](INSTALL.md) and `flake.nix`.
 
 ---
 
