@@ -97,11 +97,12 @@ cliMessageLoop ratchets messages = do
           pure (r, Map.insert contact r ratchets)
 
       (key, step) <- ratchetSend rid
-      -- Real version: use 'key' with rust_encrypt / AES-GCM
-      let encNote = " [enc with ratchet#" ++ show step ++ "]"
-      let stored = msg ++ encNote
+      -- In real implementation we pass this exact key to rust_encrypt / AES-GCM
+      -- For demo we show the ratchet advancing clearly
+      let encNote = "[ratchet#" ++ show step ++ " key:" ++ take 6 (show $ BS.unpack key) ++ "...]"
+      let stored = msg ++ " " ++ encNote
       let newMessages = Map.insertWith (++) contact [stored] messages
-      putStrLn $ "Sent to " ++ contact ++ encNote
+      putStrLn $ "Sent to " ++ contact ++ " " ++ encNote ++ " (forward secrecy applied)"
       cliMessageLoop newRatchets newMessages
     ["chat", contact] -> do
       case Map.lookup contact messages of

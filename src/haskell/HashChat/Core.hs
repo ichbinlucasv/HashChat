@@ -14,14 +14,15 @@ module HashChat.Core
   ) where
 
 import Control.Concurrent.STM
-import Data.ByteString
+import qualified Data.ByteString as BS
+import Data.ByteString (ByteString, pack, unpack)
 import qualified Data.Time.Clock as Time
 import Data.Time.Clock (UTCTime, NominalDiffTime)
 import Data.Word (Word8, Word32)
 import Database.SQLite.Simple
 import Foreign.Ptr
 import Foreign.Marshal.Alloc (malloc)
-import Foreign.Marshal.Array (withArray, peekArray, mallocArray)
+import Foreign.Marshal.Array (withArray, peekArray, mallocArray, newArray)
 import Foreign.Storable (peek)
 import System.IO.Unsafe
 
@@ -45,10 +46,13 @@ foreign import ccall unsafe "rust_secure_erase" rust_secure_erase :: Ptr () -> I
 foreign import ccall unsafe "rust_wipe_files" rust_wipe_files :: IO ()
 
 -- Ratchet FFI (Double Ratchet)
-foreign import ccall unsafe "rust_ratchet_new"    rust_ratchet_new    :: IO Word32
-foreign import ccall unsafe "rust_ratchet_init"   rust_ratchet_init   :: Word32 -> Ptr Word8 -> Ptr Word8 -> IO ()
-foreign import ccall unsafe "rust_ratchet_send"   rust_ratchet_send   :: Word32 -> Ptr Word8 -> Ptr Word32 -> IO ()
-foreign import ccall unsafe "rust_ratchet_recv"   rust_ratchet_recv   :: Word32 -> Ptr Word8 -> Ptr Word8 -> Ptr Word32 -> IO ()
+foreign import ccall unsafe "rust_ratchet_new"      rust_ratchet_new      :: IO Word32
+foreign import ccall unsafe "rust_ratchet_init"     rust_ratchet_init     :: Word32 -> Ptr Word8 -> Ptr Word8 -> IO ()
+foreign import ccall unsafe "rust_ratchet_send"     rust_ratchet_send     :: Word32 -> Ptr Word8 -> Ptr Word32 -> IO ()
+foreign import ccall unsafe "rust_ratchet_recv"     rust_ratchet_recv     :: Word32 -> Ptr Word8 -> Ptr Word8 -> Ptr Word32 -> IO ()
+
+foreign import ccall unsafe "rust_encrypt_with_key" rust_encrypt_with_key :: Ptr Word8 -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> IO Bool
+foreign import ccall unsafe "rust_decrypt_with_key" rust_decrypt_with_key :: Ptr Word8 -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> IO Bool
 
 initProfile :: IO ProfileKey
 initProfile = do
@@ -90,16 +94,22 @@ ratchetRecv rid remotePub = do
     cnt <- peek cntPtr
     pure (pack key, cnt)
 
--- === High-level Message System (uses Ratchet) ===
+-- === High-level Message System (REAL Double Ratchet + AES-GCM) ===
 
--- Send a message using the contact's ratchet.
--- In a real system this would also handle the network layer.
 sendEncryptedMessage :: Word32 -> ByteString -> ByteString -> Bool -> Maybe NominalDiffTime -> IO Message
 sendEncryptedMessage ratchetId senderPub plaintext disappearing ttl = do
   (msgKey, step) <- ratchetSend ratchetId
 
-  -- For now we use a simple encrypt (in future replace with ratchet key directly via FFI)
-  enc <- encryptMessage senderPub plaintext   -- reuse existing helper
+  -- Actually encrypt with the exact 32-byte key from the ratchet
+  let keyPtr = unsafePerformIO $ newArray (unpack msgKey)
+  let ptPtr  = unsafePerformIO $ newArray (unpack plaintext)
+  let buf    = replicate (BS.length plaintext + 16) 0
+  outPtr <- newArray buf
+  outLenPtr <- malloc
+
+  _ <- rust_encrypt_with_key keyPtr ptPtr (BS.length plaintext) outPtr outLenPtr
+  len <- peek outLenPtr
+  enc <- peekArray len outPtr
 
   now <- Time.getCurrentTime
   let expTime = if disappearing
@@ -116,18 +126,25 @@ sendEncryptedMessage ratchetId senderPub plaintext disappearing ttl = do
     , ratchetStep = step
     }
 
--- Receive and decrypt a message using the ratchet.
 receiveEncryptedMessage :: Word32 -> ByteString -> ByteString -> IO (Maybe Message)
 receiveEncryptedMessage ratchetId senderPub ciphertext = do
   (msgKey, step) <- ratchetRecv ratchetId senderPub
 
-  dec <- decryptMessage senderPub ciphertext
+  let keyPtr = unsafePerformIO $ newArray (unpack msgKey)
+  let ctPtr  = unsafePerformIO $ newArray (unpack ciphertext)
+  let buf    = replicate (BS.length ciphertext) 0
+  outPtr <- newArray buf
+  outLenPtr <- malloc
+
+  _ <- rust_decrypt_with_key keyPtr ctPtr (BS.length ciphertext) outPtr outLenPtr
+  len <- peek outLenPtr
+  dec <- peekArray len outPtr
 
   now <- Time.getCurrentTime
   pure $ Just $ Message
     { msgId = fromIntegral step
     , sender = senderPub
-    , content = dec
+    , content = BS.pack dec
     , timestamp = fromIntegral (utcToSeconds now)
     , isDisappearing = False
     , expiresAt = Nothing
