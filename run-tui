@@ -1,25 +1,22 @@
 #!/usr/bin/env bash
-# Simple launcher for the HashChat Brick TUI
-# Automatically sets LD_LIBRARY_PATH so the Rust FFI library is found.
+# Convenient launcher for the HashChat Brick TUI
+# Sets LD_LIBRARY_PATH correctly and prefers a release build if available.
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/rust-lib"
 
-if [ ! -d "$LIB_DIR" ]; then
-  echo "Error: rust-lib/ directory not found."
-  echo "Run: cargo build --release && mkdir -p rust-lib && cp target/release/libhashchat_rust.so rust-lib/"
-  exit 1
-fi
-
-if [ ! -f "$LIB_DIR/libhashchat_rust.so" ]; then
-  echo "Warning: libhashchat_rust.so not found in rust-lib/. The TUI may fail to start."
+if [ ! -d "$LIB_DIR" ] || [ ! -f "$LIB_DIR/libhashchat_rust.so" ]; then
+  echo "Rust library not found in rust-lib/. Building..."
+  cargo build --release
+  mkdir -p "$LIB_DIR"
+  cp target/release/libhashchat_rust.so "$LIB_DIR/" 2>/dev/null || true
 fi
 
 export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-echo "Starting HashChat TUI..."
-echo "LD_LIBRARY_PATH includes: $LIB_DIR"
+echo "Starting HashChat TUI (real Double Ratchet + encrypted persistence)..."
+echo "LD_LIBRARY_PATH: $LIB_DIR"
 
 exec cabal run hashchat-tui -- "$@"

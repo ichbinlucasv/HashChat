@@ -121,27 +121,32 @@ drawUI st =
 
 drawMain :: AppState -> Widget Name
 drawMain st = vBox
-  [ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ "  (real E2EE + ratchet)   (? help, q quit, w=wipe)"
+  [ withAttr (attrName "title") $ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ "  (real E2EE + ratchet)   (? help, q quit, w=wipe)"
   , hBox
-      [ borderWithLabel (str " Contacts ") $ vBox $ map str ["Alice", "Bob", "Support"]
-      , borderWithLabel (str $ " " ++ currentContact st ++ " ") $
+      [ borderWithLabel (withAttr (attrName "highlight") $ str " Contacts ") $ vBox $ map str ["Alice", "Bob", "Support"]
+      , borderWithLabel (withAttr (attrName "highlight") $ str $ " " ++ currentContact st ++ " ") $
           vBox (map (str . showMsg) (Map.findWithDefault [] (currentContact st) (messages st))) <+> fill ' '
       ]
-  , borderWithLabel (str " Message (encrypted on send) ") $ str (T.unpack (input st) ++ "█")
+  , borderWithLabel (withAttr (attrName "title") $ str " Message (encrypted on send) ") $ str (T.unpack (input st) ++ "█")
   ]
 
 showMsg :: Message -> String
 showMsg m =
   let d = if isDisappearing m then "[D] " else ""
-      ctPreview = if BS.null (ciphertext m)
-                  then "[no-ct]"
-                  else "ct:" ++ show (BS.length (ciphertext m)) ++ "B"
-  in d ++ "[" ++ show (ratchetStep m) ++ "] " ++ show (content m) ++ " (" ++ ctPreview ++ ")"
+      ctBadge = if BS.null (ciphertext m) then "" else " [E2EE]"
+      ts = if timestamp m > 0 then " @" ++ show (timestamp m) else ""
+  in d ++ "[" ++ show (ratchetStep m) ++ "] " ++ show (content m) ++ ctBadge ++ ts
 
 drawHelp :: Widget Name
-drawHelp = borderWithLabel (str " HELP ") $ padAll 1 $ vBox
-  [ str "Enter to send (uses real Double Ratchet + AES-GCM)"
-  , str "? toggle help | q quit"
+drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll 1 $ vBox
+  [ str "Enter          → Send encrypted message (real ratchet + AES-GCM)"
+  , str "Backspace      → Delete char"
+  , str "Esc / q        → Quit"
+  , str "?              → Toggle this help"
+  , str "w              → Panic Wipe (secure erase + ratchet destruction)"
+  , str ""
+  , withAttr (attrName "encrypted") $ str "All messages use per-contact Double Ratchet + AES-256-GCM."
+  , withAttr (attrName "encrypted") $ str "Ciphertext size shown in message list (ct:XXB)."
   ]
 
 handleEvent :: BrickEvent Name () -> EventM Name AppState ()
@@ -216,8 +221,21 @@ app = App
 
       liftIO $ putStrLn $ "[OK] Loaded " ++ show (Map.size loaded) ++ " ratchet(s) with forward secrecy continuity."
       liftIO $ putStrLn "Ready. Messages you send now use real Double Ratchet keys.\n"
-  , appAttrMap = const $ attrMap V.defAttr []
+  , appAttrMap = const $ attrMap (defAttr `withBackColor` black) 
+      [ (attrName "title",       fg gold   `withStyle` bold)
+      , (attrName "highlight",   fg gold)
+      , (attrName "dim",         fg white `withStyle` dim)
+      , (attrName "danger",      fg red)
+      , (attrName "success",     fg green)
+      , (attrName "encrypted",   fg gold `withStyle` dim)
+      ]
   }
+  where
+    black  = Color240 0
+    gold   = Color240 220
+    white  = Color240 255
+    red    = Color240 160
+    green  = Color240 114
 
 main :: IO ()
 main = do

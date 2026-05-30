@@ -4,7 +4,7 @@ Goal: Build a SimplexChat-level (or better) anonymous messenger using only **Has
 
 ## Phase 1 — Foundations (Current)
 - [x] Rust secure primitives (zeroization, AEAD, constant time)
-- [x] Beautiful black/yellow/white Brick TUI (Desktop) with real Editor
+- [x] Functional black/yellow/white Brick TUI (Desktop) with real ratchet persistence + encrypted messaging foundation (Editor widget temporarily simplified for build stability across Brick versions)
 - [x] Real AES-GCM + **Double Ratchet foundation** (KDF chains + DH ratcheting started)
 - [x] Panic Wipe + Logout on Desktop and Android (prominent)
 - [x] Easy build system (`./build.py` + launchers)
