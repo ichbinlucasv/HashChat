@@ -30,13 +30,28 @@ pub extern "system" fn Java_chat_hashchat_HashChatNative_ratchetNew(
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_chat_hashchat_HashChatNative_sendMessage(
-    _env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     ratchet_id: i32,
     message: jstring,
 ) -> jstring {
-    // TODO: Call into the real message system
-    env.new_string("Message sent via ratchet (stub)")
+    // In a full implementation this would call the Haskell message system via FFI
+    // and return the encrypted blob or status.
+    let msg: String = env.get_string(message).unwrap().into();
+    env.new_string(format!("Sent via ratchet {}: {}", ratchet_id, msg))
+        .expect("Couldn't create java string")
+        .into_raw()
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_chat_hashchat_HashChatNative_receiveMessage(
+    env: JNIEnv,
+    _class: JClass,
+    ratchet_id: i32,
+    ciphertext: jstring,
+) -> jstring {
+    env.new_string("Decrypted message (stub)")
         .expect("Couldn't create java string")
         .into_raw()
 }
