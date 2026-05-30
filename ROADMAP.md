@@ -28,6 +28,34 @@ Goal: Build a SimplexChat-level (or better) anonymous messenger using only **Has
 
 3. **Self-destructing / disappearing messages**
    - Per-message TTL
+
+## SimplexChat Button & Feature Parity (Desktop TUI + Android) — Required for User Respect
+The explicit goal is that both the Brick TUI and the Android Kotlin UI feel *very close* in look, keyboard/mouse/touch flow, and available actions to SimplexChat.
+
+**Minimum button / action set that must exist and behave similarly on both platforms:**
+- Contact list with status (blocked, last seen, E2EE badge)
+- Long-press / 'a' key / overflow on contact → menu with:
+  - Block user (persist, drop messages, show [BLOCKED])
+  - Mute notifications
+  - Delete chat (local wipe only)
+  - Report suspicious / mark for review
+  - Set disappearing message timer (integrate with ratchet key wipe)
+  - View security info / verify (ratchet public key fingerprint, QR in future)
+  - Export encrypted transcript (for backup / legal)
+- Chat input bar (bottom on Android, bottom on TUI) with send (Enter)
+- Global top / menu actions:
+  - Switch / create burner profiles (p/n)
+  - Decoy / plausible deniability mode (D)
+  - Security Posture dashboard (live, dynamic)
+  - Tor / Network status
+  - Panic Wipe (prominent red, confirmation)
+  - Settings (disappearing defaults, self-destruct on wipe, etc.)
+- Message-level actions (long-press on a message): Delete this message, Make disappearing, Copy (redacted), View ratchet step used.
+- Visual style: Black background (#000), gold/yellow accents (#FFD700), white text, clear [E2EE], [D] for disappearing, security score in title bar on both platforms.
+
+All of the above have been started in the TUI (action menu, blocked list, decoy, dynamic posture) and Android layout (gold theme + action buttons + docs). Full RecyclerView chat + exact menu parity is the next concrete UI task.
+
+This level of parity + the 8 major paranoid features is what gives the project "respect of users" comparable to SimplexChat.
    - Burn after reading
 
 4. **Voice messages with forward secrecy**

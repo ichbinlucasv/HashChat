@@ -1,18 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- HashChat Android — black + gold theme to match desktop Brick TUI.
+     Goal: very close visual/functional parity with SimplexChat contact list + chat + long-press actions.
+     Real production version must use RecyclerView for messages + contacts, bottom input bar,
+     Material dark theme with #FFD700 accents, and long-press/overflow menus containing:
+     Block, Mute, Delete, Report suspicious, Disappearing messages, Verify security (QR/fingerprint), Export encrypted chat, etc.
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#000000"
-    android:orientation="vertical">
-    <Button android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="New Chat" android:textColor="#E7E9EA" />
-    <Button android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Add Contact (link/QR)" android:textColor="#E7E9EA" />
-    <Button android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Send File" android:textColor="#E7E9EA" />
-    <Button android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Voice Message" android:textColor="#E7E9EA" />
-    <Button android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Audio Call" android:textColor="#E7E9EA" />
-    <Button android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Video Call" android:textColor="#E7E9EA" />
-    <Button android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Settings" android:textColor="#E7E9EA" />
-    <Button android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Privacy Settings" android:textColor="#E7E9EA" />
-    <Button android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Network Settings" android:textColor="#E7E9EA" />
-    <Button android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Panic Wipe - Step 1" android:textColor="#E7E9EA" />
-    <Button android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Panic Wipe - Step 2 (final)" android:textColor="#E7E9EA" />
+    android:orientation="vertical"
+    android:padding="8dp">
+    <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:text="New Chat (Simplex-style)" android:textColor="#FFD700" android:background="#1A1A1A"/>
+    <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Add Contact (link/QR)" android:textColor="#FFD700" android:background="#1A1A1A"/>
+    <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Send File (E2EE streaming)" android:textColor="#FFD700" android:background="#1A1A1A"/>
+    <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Voice Message (forward secrecy)" android:textColor="#FFD700" android:background="#1A1A1A"/>
+    <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Audio / Video Call (future)" android:textColor="#FFD700" android:background="#1A1A1A"/>
+    <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Contact Actions (long-press equiv): Block / Mute / Delete / Report / Disappear" android:textColor="#FFFFFF" android:background="#222"/>
+    <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Security Dashboard (posture, ratchet status)" android:textColor="#FFD700" android:background="#1A1A1A"/>
+    <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Burner Profiles / Decoy (plausible deniability)" android:textColor="#FFD700" android:background="#1A1A1A"/>
+    <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Settings + Tor + Disappearing defaults" android:textColor="#FFD700" android:background="#1A1A1A"/>
+    <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:text="PANIC WIPE (nuclear)" android:textColor="#FF4444" android:background="#1A1A1A"/>
 </LinearLayout>

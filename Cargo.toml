@@ -17,3 +17,4 @@ hkdf = "0.12"
 sha2 = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 argon2 = "0.5"
+libc = "0.2"   # for mlockall / seccomp primitives on Linux (used under cfg(target_os="linux"))

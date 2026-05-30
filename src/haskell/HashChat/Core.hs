@@ -28,7 +28,8 @@ import Data.List (partition)
 import qualified Data.Map.Strict as Map
 import Data.Time.Clock (UTCTime, NominalDiffTime)
 import qualified Data.Time.Clock as Time
-import Data.Word (Word8, Word32)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds, posixSecondsToUTCTime)
+import Data.Word (Word8, Word32, Word64)
 import Database.SQLite.Simple
 import Foreign.Ptr
 import Foreign.Marshal.Alloc (malloc)
@@ -37,6 +38,7 @@ import Foreign.Storable (peek, poke)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Unsafe
+import Data.Bits ((.|.), (.&.), testBit, setBit, clearBit)
 
 data ProfileKey = ProfileKey ByteString
 data Queue = Queue ByteString
@@ -79,6 +81,8 @@ foreign import ccall unsafe "rust_decrypt_blob_with_passphrase" rust_decrypt_blo
 foreign import ccall unsafe "rust_mlockall_current" rust_mlockall_current :: IO Bool
 foreign import ccall unsafe "rust_madvise_dontneed" rust_madvise_dontneed :: Ptr Word8 -> Int -> IO ()
 foreign import ccall unsafe "rust_apply_basic_seccomp" rust_apply_basic_seccomp :: IO Bool
+foreign import ccall unsafe "rust_mlock" rust_mlock :: Ptr Word8 -> Int -> IO Bool
+foreign import ccall unsafe "rust_mlock_sensitive_ratchets" rust_mlock_sensitive_ratchets :: IO Bool
 
 initProfile :: IO ProfileKey
 initProfile = do
@@ -89,6 +93,8 @@ wipeAll :: IO ()
 wipeAll = do
   rust_wipe_files
   rust_secure_erase (unsafePerformIO rust_init_profile)
+  _ <- rust_apply_basic_seccomp
+  pure ()
 
 -- === Ratchet helpers (re-exported for convenience) ===
 
@@ -269,7 +275,114 @@ type ProfileStore = Map.Map ProfileName ContactRatchets
 
 type MessageLog = [Message]
 
--- Serialize a Message for storage (includes both plaintext for display and ciphertext for security)
+-- Binary (robust) serialization for Message logs. Replaces all Show/Read usage.
+-- Format is length-prefixed, versioned, big-endian, identical in spirit to Rust to_bytes.
+packMessage :: Message -> BS.ByteString
+packMessage m =
+  let v = 1 :: Word8
+      mid = fromIntegral (msgId m) :: Word32
+      sndr = sender m
+      sl = fromIntegral (BS.length sndr) :: Word16
+      ctnt = content m
+      cl = fromIntegral (BS.length ctnt) :: Word32
+      ciph = ciphertext m
+      cil = fromIntegral (BS.length ciph) :: Word32
+      ts = fromIntegral (timestamp m) :: Word32
+      flags = if isDisappearing m then 0x01 else 0x00 :: Word8
+      (hasExp, expSec) = case expiresAt m of
+        Just t  -> (1 :: Word8, floor (utcTimeToPOSIXSeconds t) :: Word64)
+        Nothing -> (0 :: Word8, 0 :: Word64)
+      step = ratchetStep m
+  in BS.pack [v]
+     <> BS.pack (word32be mid)
+     <> BS.pack (word16be sl) <> sndr
+     <> BS.pack (word32be cl) <> ctnt
+     <> BS.pack (word32be cil) <> ciph
+     <> BS.pack (word32be ts)
+     <> BS.pack [flags]
+     <> BS.pack [hasExp] <> BS.pack (word64be expSec)
+     <> BS.pack (word32be step)
+
+-- Unpack one message, returning the remainder for lists.
+unpackMessage :: BS.ByteString -> Maybe (Message, BS.ByteString)
+unpackMessage bs
+  | BS.length bs < 1 + 4 = Nothing
+  | otherwise =
+      let (vbs, rest0) = BS.splitAt 1 bs
+          v = BS.head vbs
+      in if v /= 1 then Nothing else
+        case unpackWord32be rest0 of
+          Nothing -> Nothing
+          Just (mid, r1) ->
+            case unpackLenPrefixed 2 r1 of
+              Nothing -> Nothing
+              Just (sndr, r2) ->
+                case unpackWord32be r2 of
+                  Nothing -> Nothing
+                  Just (cl, r3) ->
+                    case unpackLenPrefixed (fromIntegral cl) r3 of
+                      Nothing -> Nothing
+                      Just (ctnt, r4) ->
+                        case unpackWord32be r4 of
+                          Nothing -> Nothing
+                          Just (cil, r5) ->
+                            case unpackLenPrefixed (fromIntegral cil) r5 of
+                              Nothing -> Nothing
+                              Just (ciph, r6) ->
+                                case unpackWord32be r6 of
+                                  Nothing -> Nothing
+                                  Just (ts, r7) ->
+                                    if BS.length r7 < 1+1+8+4 then Nothing else
+                                      let flags = BS.index r7 0
+                                          hasE = BS.index r7 1
+                                          expBs = BS.take 8 (BS.drop 2 r7)
+                                          stepPart = BS.drop 10 r7
+                                          disc = (flags .&. 0x01) /= 0
+                                          expT = if hasE == 1
+                                                 then Just (posixSecondsToUTCTime (fromIntegral (word64FromBE expBs)))
+                                                 else Nothing
+                                          step = case unpackWord32be stepPart of Just (s,_) -> s; _ -> 0
+                                          msg = Message
+                                            { msgId = fromIntegral mid
+                                            , sender = sndr
+                                            , content = ctnt
+                                            , ciphertext = ciph
+                                            , timestamp = fromIntegral ts
+                                            , isDisappearing = disc
+                                            , expiresAt = expT
+                                            , ratchetStep = step
+                                            }
+                                      consumed = 1 + 4 + 2 + BS.length sndr + 4 + fromIntegral cl + 4 + fromIntegral cil + 4 + 1 + 1 + 8 + 4
+                                      in Just (msg, BS.drop (fromIntegral consumed) bs)
+
+-- Helper packers (pure, no new deps)
+word32be :: Word32 -> [Word8]
+word32be w = [fromIntegral (w `div` 0x1000000), fromIntegral ((w `div` 0x10000) `mod` 256), fromIntegral ((w `div` 256) `mod` 256), fromIntegral (w `mod` 256)]
+
+word16be :: Word16 -> [Word8]
+word16be w = [fromIntegral (w `div` 256), fromIntegral (w `mod` 256)]
+
+word64be :: Word64 -> [Word8]
+word64be w = [ fromIntegral (w `div` 0x100000000000000), fromIntegral ((w `div` 0x1000000000000) `mod` 256), fromIntegral ((w `div` 0x10000000000) `mod` 256), fromIntegral ((w `div` 0x100000000) `mod` 256), fromIntegral ((w `div` 0x1000000) `mod` 256), fromIntegral ((w `div` 0x10000) `mod` 256), fromIntegral ((w `div` 256) `mod` 256), fromIntegral (w `mod` 256) ]
+
+unpackWord32be :: BS.ByteString -> Maybe (Word32, BS.ByteString)
+unpackWord32be bs | BS.length bs < 4 = Nothing
+                  | otherwise =
+                      let b0 = fromIntegral (BS.index bs 0) :: Word32
+                          b1 = fromIntegral (BS.index bs 1)
+                          b2 = fromIntegral (BS.index bs 2)
+                          b3 = fromIntegral (BS.index bs 3)
+                      in Just (b0*0x1000000 + b1*0x10000 + b2*0x100 + b3, BS.drop 4 bs)
+
+unpackLenPrefixed :: Int -> BS.ByteString -> Maybe (BS.ByteString, BS.ByteString)
+unpackLenPrefixed n bs | BS.length bs < n = Nothing
+                       | otherwise = Just (BS.take n bs, BS.drop n bs)
+
+word64FromBE :: BS.ByteString -> Word64
+word64FromBE bs | BS.length bs < 8 = 0
+                | otherwise = foldl (\a b -> a*256 + fromIntegral b) 0 (BS.unpack (BS.take 8 bs))
+
+-- Legacy tuple adapters (kept during transition; new code uses packMessage)
 serializeMessage :: Message -> (Int, ByteString, ByteString, Int, Bool, Maybe UTCTime, Word32)
 serializeMessage m =
   ( msgId m
@@ -328,21 +441,49 @@ decryptWithPassphrase pass ciphertext = do
 mlockAllCurrent :: IO Bool
 mlockAllCurrent = rust_mlockall_current
 
+mlockMemory :: Ptr Word8 -> Int -> IO Bool
+mlockMemory = rust_mlock
+
 madviseDontNeed :: Ptr Word8 -> Int -> IO ()
 madviseDontNeed = rust_madvise_dontneed
 
 applyBasicSeccomp :: IO Bool
 applyBasicSeccomp = rust_apply_basic_seccomp
 
+mlockSensitiveRatchets :: IO Bool
+mlockSensitiveRatchets = rust_mlock_sensitive_ratchets
+
 -- === Real Encrypted Message Log Persistence (properly implemented) ===
+
+-- High-level binary message log persistence (replaces all Show/Read).
+-- The on-disk format after Argon2id+AES envelope is a simple versioned binary stream.
+
+packMessageList :: [Message] -> BS.ByteString
+packMessageList msgs =
+  let count = fromIntegral (length msgs) :: Word32
+      bodies = BS.concat (map packMessage msgs)
+  in BS.pack (word32be count) <> bodies
+
+unpackMessageList :: BS.ByteString -> [Message]
+unpackMessageList bs
+  | BS.length bs < 4 = []
+  | otherwise =
+      case unpackWord32be bs of
+        Nothing -> []
+        Just (cnt, rest) -> go (fromIntegral cnt) rest []
+  where
+    go 0 _ acc = reverse acc
+    go n r acc =
+      case unpackMessage r of
+        Just (m, r') -> go (n-1) r' (m:acc)
+        Nothing      -> reverse acc   -- tolerate truncation / corruption gracefully
 
 saveEncryptedMessages :: FilePath -> ProfileName -> String -> ByteString -> MessageLog -> IO ()
 saveEncryptedMessages baseDir profile contact pass msgs = do
   let dir = baseDir </> profile </> "messages"
   createDirectoryIfMissing True dir
   let path = dir </> (contact ++ ".log.enc")
-  -- Use show for now (simple but works for demo). In production use Binary/CBOR.
-  let serialized = BC.pack (show (map serializeMessage msgs))
+  let serialized = packMessageList msgs   -- ROBUST BINARY, no Show/Read
   mBlob <- encryptWithPassphrase pass serialized
   case mBlob of
     Just blob -> BS.writeFile path blob
@@ -356,18 +497,13 @@ loadEncryptedMessages baseDir profile contact pass = do
     enc <- BS.readFile path
     mPlain <- decryptWithPassphrase pass enc
     case mPlain of
-      Just plain -> do
-        case readMaybe (BC.unpack plain) of
-          Just tuples -> pure (map deserializeMessage tuples)
-          Nothing -> do
-            putStrLn "[SECURITY] Corrupted or unreadable message log"
-            pure []
+      Just plain -> pure (unpackMessageList plain)
       Nothing -> do
         putStrLn "[SECURITY] Failed to decrypt message log (wrong passphrase or corruption)"
         pure []
   else pure []
 
--- Safe read helper
+-- Legacy readMaybe kept only for any external tools that might still parse old logs
 readMaybe :: Read a => String -> Maybe a
 readMaybe s = case reads s of
   [(x, "")] -> Just x

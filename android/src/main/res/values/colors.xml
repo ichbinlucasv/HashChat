@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="background">#000000</color>
-    <color name="surface">#1F1F1F</color>
-    <color name="text">#E7E9EA</color>
-    <color name="accent">#1DA1F2</color>
+    <color name="surface">#1A1A1A</color>
+    <color name="text">#FFFFFF</color>
+    <color name="accent">#FFD700</color>
+    <color name="gold">#FFD700</color>
+    <color name="danger">#FF4444</color>
 </resources>

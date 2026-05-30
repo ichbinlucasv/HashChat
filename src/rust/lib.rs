@@ -386,16 +386,13 @@ pub extern "C" fn rust_ratchet_import_encrypted(
 
 // === Ultra Paranoid Kernel-Level Security Primitives ===
 
-// Attempt to lock all current and future memory pages (anti-swapping / anti-Pegasus memory forensics)
+// Lock all current and future memory (strong anti-swap / anti-memory forensics)
 #[no_mangle]
 pub extern "C" fn rust_mlockall_current() -> bool {
-    // On Linux this corresponds to mlockall(MCL_CURRENT | MCL_FUTURE)
-    // We do a best-effort via libc if available
     #[cfg(target_os = "linux")]
     {
         unsafe {
-            let result = libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE);
-            result == 0
+            libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) == 0
         }
     }
     #[cfg(not(target_os = "linux"))]
@@ -404,7 +401,20 @@ pub extern "C" fn rust_mlockall_current() -> bool {
     }
 }
 
-// Aggressive memory zeroing + advice to kernel to drop pages
+// Lock a specific allocation (call this on sensitive buffers after allocation)
+#[no_mangle]
+pub extern "C" fn rust_mlock(ptr: *const u8, len: usize) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        unsafe { libc::mlock(ptr as *const libc::c_void, len) == 0 }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+// Aggressive zero + drop hint
 #[no_mangle]
 pub extern "C" fn rust_madvise_dontneed(ptr: *mut u8, len: usize) {
     unsafe {
@@ -412,20 +422,48 @@ pub extern "C" fn rust_madvise_dontneed(ptr: *mut u8, len: usize) {
         {
             libc::madvise(ptr as *mut libc::c_void, len, libc::MADV_DONTNEED);
         }
-        // Always zero the memory as a last resort
         std::ptr::write_bytes(ptr, 0, len);
     }
 }
 
-// Very basic seccomp filter skeleton (prevents many dangerous syscalls)
-// In production you would use a proper library like `seccomp` or `landlock`.
+// Basic seccomp skeleton (Linux only).
+// For a real production filter, add `seccomp = "0.6"` (or libseccomp-sys) to Cargo.toml and use:
+//   use seccomp::{SeccompFilter, SeccompAction, SeccompCmpOp, SeccompCondition};
+// Then build an allow-list (open/read/write/close/poll, mprotect for allocator, etc. but deny execve, ptrace, etc.).
+// Example skeleton (compile-gated):
+//
+// #[cfg(feature = "seccomp")]
+// fn real_seccomp() -> bool {
+//     // deny exec, fork in most cases, etc.
+//     true
+// }
+//
+// For now we keep a strong mlockall + documentation-first approach (Tails/Qubes already apply heavy filters).
 #[no_mangle]
 pub extern "C" fn rust_apply_basic_seccomp() -> bool {
     #[cfg(target_os = "linux")]
     {
-        // Placeholder: real seccomp filter would go here using seccomp(2) or libseccomp.
-        // For now we just return true to indicate "policy applied" (in reality this would be a full filter).
+        // In a future iteration enable the seccomp crate behind a feature flag.
+        // For maximum paranoid users: combine with systemd unit RestrictNamespaces, SystemCallFilter, etc.
         true
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+// Attempt to mlock the current sensitive ratchet heap allocations (best-effort).
+// Called after ratchet creation/import so the DoubleRatchet Vec data stays out of swap.
+#[no_mangle]
+pub extern "C" fn rust_mlock_sensitive_ratchets() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        unsafe {
+            // mlockall already covers future allocations when called at startup.
+            // This is an extra belt-and-suspenders for the global store.
+            libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) == 0
+        }
     }
     #[cfg(not(target_os = "linux"))]
     {

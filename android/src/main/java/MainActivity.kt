@@ -68,7 +68,12 @@ class MainActivity : AppCompatActivity() {
     // Call the real sendEncryptedMessage / receiveEncryptedMessage from Haskell side.
     // Persist ratchet state encrypted (using Android Keystore + passphrase).
     //
-    // Recommended UI: RecyclerView for messages + EditText for input,
-    // styled in black/yellow to match desktop.
-    // Each contact = own ratchet ID. Burner profiles = separate stores.
+    // Recommended UI (to achieve SimplexChat parity on Android):
+    // - RecyclerView chat list with black/gold bubbles (match desktop TUI exactly)
+    // - Bottom input + send (Enter equivalent)
+    // - Long-press on contact or message → AlertDialog with: Block, Mute, Delete, Report suspicious,
+    //   Disappearing timer, View security info (ratchet fingerprint), Export encrypted transcript.
+    // - Top bar: current profile (burner/decoy), security posture indicator, Tor status.
+    // - Global menu: New burner, Decoy mode (plausible deniability), Panic wipe, Security dashboard.
+    // All of the above buttons and flows are the minimum to earn user respect and "feel like Simplex".
 }
