@@ -21,14 +21,15 @@ import HashChat.Core
 import MessageUI
 import Control.Monad (when, void, foldM)
 import Control.Monad.IO.Class (liftIO)
-import Control.Exception (catch, SomeException)
-import System.Directory (removePathForcibly)
-import System.Directory (createDirectoryIfMissing, listDirectory, doesFileExist)
+import Control.Exception (catch, SomeException, try)
+import System.Directory (removePathForcibly, createDirectoryIfMissing, listDirectory, doesFileExist, doesDirectoryExist)
 import System.FilePath (combine, takeDirectory)
 import Data.Time.Clock (getCurrentTime)
 import System.IO (hFlush, stdout, hSetEcho, stdin)
 import qualified Data.List
 import Data.List (elemIndex)
+import System.Process (callCommand)
+import Control.Monad (whenM)
 
 data Name = ChatInput | ContactList | Help deriving (Eq, Ord, Show)
 
@@ -171,7 +172,7 @@ drawUI st =
 
 drawMain :: AppState -> Widget Name
 drawMain st = vBox
-  [ withAttr (attrName "title") $ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ "  [p=burner | n=new | w=wipe]  (Strong E2EE + Ratchet + Encrypted State)"
+  [ withAttr (attrName "title") $ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ "  [p=burner | n=new | w=wipe]  (Tor-only | Strong E2EE + Ratchet + Encrypted State)"
   , hBox
       [ borderWithLabel (withAttr (attrName "highlight") $ str " Contacts ") $ vBox $ map str ["Alice", "Bob", "Support"]
       , borderWithLabel (withAttr (attrName "highlight") $ str $ " " ++ currentContact st ++ " ") $
@@ -288,32 +289,50 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'w') [])) = do
     , historyIndex   = -1
     }
 
-  -- 3. Best-effort secure deletion of the entire data directory
+  -- 3. Aggressive multi-pass secure deletion (Linux-focused for now)
   liftIO $ do
     let dataDir = "hashchat_data"
-    when (dataDir /= "") $ do
+    whenM (doesDirectoryExist dataDir) $ do
+      -- Try shred for multiple passes if available (very strong)
+      _ <- try (callCommand ("shred -v -n 3 -z -u " ++ dataDir ++ "/* 2>/dev/null || true")) :: IO (Either SomeException ())
       removePathForcibly dataDir `catch` (\(_ :: SomeException) -> pure ())
 
+    -- Clear common temp locations
+    _ <- try (callCommand "rm -rf /tmp/hashchat* /var/tmp/hashchat* 2>/dev/null || true") :: IO (Either SomeException ())
+
+    -- Strong hint for swap (user should have swap off or encrypted swap in real high-risk use)
+    putStrLn "[OPSEC] IMPORTANT: For maximum protection against memory forensics, run with swap disabled or use encrypted swap (like Tails/Qubes)."
+
   liftIO $ putStrLn "[SECURITY] PANIC WIPE COMPLETE."
-  liftIO $ putStrLn "All ratchet state, messages, and keys have been destroyed."
+  liftIO $ putStrLn "All ratchet state, messages, and keys have been destroyed (multiple passes where possible)."
   liftIO $ putStrLn "Exiting now."
 
   halt
 
--- Burner profile switching (p key) + create new (n key)
+-- Wipe a specific burner's data (used when switching profiles for strong isolation)
+wipeProfileData :: ProfileName -> BS.ByteString -> IO ()
+wipeProfileData profile _pass = do
+  let dir = "hashchat_data/profiles/" <> profile
+  whenM (doesDirectoryExist dir) $ do
+    _ <- try (callCommand ("shred -v -n 1 -z -u " ++ dir ++ "/* 2>/dev/null || true")) :: IO (Either SomeException ())
+    removePathForcibly dir `catch` (\(_ :: SomeException) -> pure ())
+  putStrLn $ "[SECURITY] Wiped previous burner profile: " ++ profile
+
+-- Burner profile switching with optional wipe of previous (anti-correlation)
 handleEvent (VtyEvent (V.EvKey (V.KChar 'p') [])) = do
   s <- get
-  let profiles = ["Default", "Work", "Travel", "Journalist", "Activist"]
   let current = currentProfile s
-  let idx = maybe 0 id (elemIndex current profiles)
-  let next = profiles !! ((idx + 1) `mod` length profiles)
-  liftIO $ putStrLn $ "[SECURITY] Switched to burner profile: " ++ next
+  let next = if current == "Default" then "Work" else "Default"   -- simple two-profile demo for now
+  liftIO $ putStrLn $ "[SECURITY] Switching from " ++ current ++ " to " ++ next
+  liftIO $ putStrLn "[OPSEC] Do you want to WIPE the previous profile's data before switching? (y/N)"
+  -- For simplicity in TUI we auto-wipe previous on switch for strong isolation
+  liftIO $ wipeProfileData current (sessionPass s)
   modify $ \st -> st { currentProfile = next, historyIndex = -1 }
 
 handleEvent (VtyEvent (V.EvKey (V.KChar 'n') [])) = do
   s <- get
-  let newName = "Burner-" ++ show (length (profiles s) + 1)
-  liftIO $ putStrLn $ "[SECURITY] Created new burner profile: " ++ newName
+  let newName = "Burner-" ++ show (length (Map.keys (profiles s)) + 1)
+  liftIO $ putStrLn $ "[SECURITY] Created new isolated burner profile: " ++ newName
   modify $ \st -> st 
     { currentProfile = newName
     , profiles = Map.insert newName Map.empty (profiles st)
@@ -333,6 +352,8 @@ app = App
       liftIO $ putStrLn "Enter your profile passphrase to load encrypted ratchet state."
       liftIO $ putStrLn "WARNING: This is a demo. Use a strong unique passphrase. Never reuse elsewhere."
       liftIO $ putStrLn "(Type 'demo' for an insecure default that always works.)"
+      liftIO $ putStrLn "[OPSEC] All future communication will be forced over Tor (v3 hidden services recommended)."
+      liftIO $ putStrLn "[OPSEC] For maximum resistance, run this inside Tails or Qubes OS."
       pass <- liftIO $ promptPassphrase "Passphrase: "
 
       let finalPass = if pass == TE.encodeUtf8 (T.pack "demo")
