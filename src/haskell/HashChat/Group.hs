@@ -58,6 +58,14 @@ createMemberSendingRatchet rid = GroupSenderKey
   { gskRatchetId = rid
   , gskChainKey  = BS.replicate 32 0
   , gskMsgCount  = 0
+
+-- Advance sender key (real version would call into the DoubleRatchet send path per member)
+advanceSenderKey :: GroupSenderKey -> (ByteString, GroupSenderKey)
+advanceSenderKey gsk =
+  let newCount = gskMsgCount gsk + 1
+      -- In production: derive next msg key from gskChainKey using HKDF like the main ratchet
+      msgKey = BS.replicate 32 (fromIntegral (newCount `mod` 256))
+  in (msgKey, gsk { gskMsgCount = newCount, gskChainKey = BS.replicate 32 (fromIntegral newCount) })
   }
 
 -- Advance the sender chain (simplified HKDF-style for now)

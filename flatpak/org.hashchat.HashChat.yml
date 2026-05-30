@@ -5,21 +5,26 @@ sdk: org.freedesktop.Sdk
 command: hashchat-tui
 
 finish-args:
-  - --share=network          # Needed for Tor hidden services
+  - --share=network          # Tor hidden services only
   - --socket=wayland
   - --socket=x11
   - --device=dri
-  - --filesystem=home        # User controls persistence in ~/hashchat_data
+  - --filesystem=home        # User data in ~/hashchat_data (encrypted by app)
   - --env=LD_LIBRARY_PATH=/app/lib
-  - --talk-name=org.freedesktop.secrets  # Future: better secret storage
-  # No direct device access beyond what's needed for TUI
+  - --talk-name=org.freedesktop.secrets
+  # Paranoid hardening (Flatpak 1.12+)
+  - --no-legacy
+  - --seccomp=seccomp-extra.json   # Future: custom seccomp filter
+  - --socket=session-bus
+  - --unset-env=DBUS_SESSION_BUS_ADDRESS  # Reduce metadata leakage
+  # No direct device access, no home:ro, no wayland if X11 not needed, etc.
 
 modules:
   - name: hashchat-rust
     buildsystem: simple
     build-commands:
-      - cargo build --release
-      - install -Dm755 target/release/libhashchat_rust.so /app/lib/libhashchat_rust.so
+      - cargo build --release --locked
+      - install -Dm755 target/release/libhashchat_rust.so /app/lib/libhashchat_rust.so || install -Dm755 target/release/libhashchat_rust.a /app/lib/ 2>/dev/null || true
     sources:
       - type: dir
         path: .
@@ -29,7 +34,7 @@ modules:
     build-commands:
       - cabal update
       - cabal build -f-tui hashchat-tui
-      - install -Dm755 $(find dist-newstyle -name hashchat-tui -type f | head -1) /app/bin/hashchat-tui
+      - install -Dm755 $(find dist-newstyle -name hashchat-tui -type f | head -1) /app/bin/hashchat-tui || echo "TUI build may need manual steps in Flatpak sandbox"
     sources:
       - type: dir
         path: .

@@ -21,12 +21,22 @@ cd "$(dirname "$0")/.."
 flatpak-builder --force-clean build-dir flatpak/org.hashchat.HashChat.yml
 
 echo ""
+echo "=== Building distributable .flatpak bundle (installable) ==="
+flatpak build-export --force export-dir build-dir
+flatpak build-bundle --arch=$(uname -m) export-dir hashchat-tui.flatpak org.hashchat.HashChat
+
+echo ""
 echo "Build complete."
 echo ""
-echo "To install for the current user:"
+echo "Installable bundle created: hashchat-tui.flatpak"
+echo ""
+echo "To install the bundle:"
+echo "  flatpak install --user hashchat-tui.flatpak"
+echo ""
+echo "Run with: flatpak run org.hashchat.HashChat"
+echo ""
+echo "For repo-style install (after build):"
 echo "  flatpak-builder --user --install build-dir flatpak/org.hashchat.HashChat.yml"
 echo ""
-echo "Run with:"
-echo "  flatpak run org.hashchat.HashChat"
-echo ""
-echo "For Flathub submission later, you'll need proper icons and a verified app ID."
+echo "Fedora-first. For Qubes/Tails: copy the .flatpak into the target qube and install there."
+echo "Full reproducible (pinned GHC + rustup inside sandbox) is the next hardening step."

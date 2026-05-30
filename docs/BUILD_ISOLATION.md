@@ -53,6 +53,22 @@ Tails is amnesic by design. Every boot is a clean slate.
 
 We are moving toward official Nix flakes + Qubes/Tails build scripts so that a single command can produce a fully reproducible and isolated build.
 
+## Flatpak on Qubes / Tails
+
+1. Build the .flatpak in a disposable Fedora VM (see build-flatpak.sh).
+2. `qvm-copy` the resulting `hashchat-tui.flatpak` into your TemplateVM or AppVM.
+3. In the target qube: `flatpak install --user hashchat-tui.flatpak`
+4. On Tails: copy the bundle to the persistent volume (if any) and install with flatpak.
+
+Always run `./scripts/clean-security.sh` after building in any VM.
+
+## Extra Paranoid Tips for Tails + Qubes
+
+- After build: `echo 3 | sudo tee /proc/sys/vm/drop_caches`
+- Prefer running the Flatpak version (stronger sandbox) over the raw binary.
+- For the TUI on Qubes: run inside a disposable qube with network only to Tor.
+- Never build the final user-facing binary on the same machine you will run sensitive conversations on.
+
 ---
 
 **"If you wouldn't run the resulting binary on your machine, you shouldn't build it on your machine either."** — HashChat OPSEC philosophy

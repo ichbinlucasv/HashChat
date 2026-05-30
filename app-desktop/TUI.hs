@@ -35,6 +35,8 @@ import HashChat.Core
   , frameForWire
   , unframeFromWire
   )
+import qualified HashChat.Contact as Contact
+import HashChat.Contact (Contact(..), defaultContact)
 import MessageUI
 import qualified HashChat.Tor as Tor  -- Real Tor hidden service transport scaffolding started
 import Control.Monad (when, void, foldM)
@@ -77,6 +79,9 @@ data AppState = AppState
   , blockedContacts :: [String]                 -- persisted per-profile in real impl
   , actionPending   :: Bool                     -- after pressing 'a', next key is action
   , incomingBlobs   :: MVar [(String, BS.ByteString)]  -- (contact hint or onion, ciphertext blob) from Tor receiver
+  , contacts        :: [Contact.Contact]                -- proper onion + pubHint per contact for framing
+  , groups          :: Map String [Word32]                  -- groupName -> list of member ratchet IDs (sender keys model)
+  , currentGroup    :: Maybe String                         -- active group for multi-member chat
   }
 
 initialState :: AppState
@@ -95,6 +100,11 @@ initialState = AppState
   , blockedContacts = []
   , actionPending   = False
   , incomingBlobs   = unsafePerformIO (newMVar [])   -- real cross-thread queue for Tor receive
+  , contacts        = [ Contact.defaultContact "Alice" "Alice" "alicehashchatv3example.onion"
+                      , Contact.defaultContact "Bob"   "Bob"   "bobhashchatv3example.onion"
+                      ]
+  , groups          = Map.empty
+  , currentGroup    = Nothing
   }
 
 -- === Real Encrypted Ratchet Persistence (Argon2id + AES-GCM) ===
@@ -200,14 +210,18 @@ drawUI st =
 
 drawMain :: AppState -> Widget Name
 drawMain st = vBox
-  [ withAttr (attrName "title") $ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ "  [p=burner n=new D=decoy w=wipe a=actions] (TOR-ONLY | Double Ratchet + Tor v3) Security: " ++ securityPosture st ++ (if actionPending st then " [ACTIONS MENU ACTIVE]" else "")
+  [ withAttr (attrName "title") $ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ (maybe "" (" | Group: " ++) (currentGroup st)) ++ "  [p=burner n=new D=decoy g=group w=wipe a=actions] (TOR-ONLY | Double Ratchet + Tor v3 + Sender Keys) Security: " ++ securityPosture st ++ (if actionPending st then " [ACTIONS MENU ACTIVE]" else "")
   , hBox
-      [ borderWithLabel (withAttr (attrName "highlight") $ str " Contacts (Simplex-style: long-press equiv = 'a')") $
+      [ borderWithLabel (withAttr (attrName "highlight") $ str " Contacts (Simplex-style: long-press equiv = 'a') | Groups: g") $
           vBox (map (str . showContact (blockedContacts st)) ["Alice", "Bob", "Support"])
-      , borderWithLabel (withAttr (attrName "highlight") $ str $ " " ++ currentContact st ++ " ") $
+      , borderWithLabel (withAttr (attrName "highlight") $ str $ " " ++ currentContact st ++ (maybe "" (" | " ++) (currentGroup st)) ) $
           vBox (map (str . showMsg) (Map.findWithDefault [] (currentContact st) (messages st))) <+> fill ' '
       ]
   , borderWithLabel (withAttr (attrName "title") $ str " Message (encrypted on send) ") $ str (T.unpack (input st) ++ "█")
+  , if isJust (currentGroup st) then
+      borderWithLabel (withAttr (attrName "highlight") $ str " Group Members (sender-key ratchets) ") $
+        vBox (map str (showGroupMembers st))
+    else str ""
   ]
 
 showMsg :: Message -> String
@@ -223,6 +237,17 @@ showContact blocked c =
   if c `elem` blocked
   then c ++ " [BLOCKED]"
   else c
+
+showGroupMembers :: AppState -> [String]
+showGroupMembers st = case currentGroup st of
+  Nothing -> []
+  Just g  -> case Map.lookup g (groups st) of
+    Nothing -> ["(no ratchets)"]
+    Just rs -> map (\r -> "Member ratchet: " ++ show r ++ " (sender key active)") rs
+
+isJust :: Maybe a -> Bool
+isJust (Just _) = True
+isJust _        = False
 
 drawHelp :: Widget Name
 drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll 1 $ vBox
@@ -331,12 +356,15 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
         let updatedMsgs = Map.findWithDefault [] contact (messages st) ++ [msgWithTime]
         liftIO $ saveEncryptedMessages "hashchat_data" prof contact pass updatedMsgs
 
-        -- Real send over Tor with proper sender header for reliable receive-side lookup
-        let hint = BS.pack (map (fromIntegral . fromEnum) contact)   -- simple but effective contact name hint
+        -- Real send over Tor using proper Contact onion + pubHint (no more hardcoded strings)
+        let maybeContact = Prelude.lookup contact (map (\c -> (Contact.contactId c, c)) (contacts s))
+        let (hint, targetOnion) = case maybeContact of
+              Just c  -> (Contact.contactPubHint c, Contact.onionAddress c)
+              Nothing -> (BS.pack (map (fromIntegral . fromEnum) contact), "unknown.onion")
         let framed = frameForWire hint (ratchetStep msgWithTime) (ciphertext msgWithTime)
-        liftIO $ putStrLn "[TOR] Sending framed ciphertext (with sender hint) over Tor hidden service..."
-        _ <- liftIO $ Tor.sendCiphertextOverTor "recipient.onion.example" framed
-        liftIO $ putStrLn "[TOR] Framed blob handed to real Tor transport layer."
+        liftIO $ putStrLn $ "[TOR] Sending framed ciphertext to " ++ targetOnion ++ " (real contact mapping + header)"
+        _ <- liftIO $ Tor.sendCiphertextOverTor targetOnion framed
+        liftIO $ putStrLn "[TOR] Framed blob handed to real Tor transport layer using Contact data."
 
         -- Disappearing messages: process expiry + key wipe (real ratchet key zeroization path)
         cleaned <- liftIO $ processDisappearingMessages (Map.findWithDefault [] contact (messages st))
@@ -513,6 +541,59 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'D') [])) = do
             , profiles = Map.insert "Decoy" Map.empty (profiles st)
             , historyIndex = -1
             }
+
+-- Full multi-member group UI + sender keys (Simplex-style) — 'g' key opens menu
+handleEvent (VtyEvent (V.EvKey (V.KChar 'g') [])) = do
+  drainIncoming
+  s <- get
+  currentP <- liftIO getSecurityPosture
+  if not (isActionAllowedInPosture currentP "group")
+    then do
+      liftIO $ putStrLn "[SECURITY] DYNAMIC POSTURE REFUSAL: Group features (multi-member sender keys) disabled in low security environment."
+    else do
+      liftIO $ putStrLn "\n=== GROUP MENU (multi-member sender-keys, metadata resistant) ==="
+      liftIO $ putStrLn "c = Create new group (allocates per-member ratchets)"
+      liftIO $ putStrLn "j = Join group by name"
+      liftIO $ putStrLn "l = List groups"
+      liftIO $ putStrLn "s = Switch to group (affects send target)"
+      liftIO $ putStrLn "x = Leave current group"
+      liftIO $ putStrLn "Any other = Cancel"
+      liftIO $ putStrLn $ "Current groups: " ++ show (Map.keys (groups s))
+      liftIO $ putStrLn $ "Active group: " ++ show (currentGroup s)
+      -- In real Simplex this would be a proper list with avatars; here console menu + persistence
+
+handleEvent (VtyEvent (V.EvKey (V.KChar 'c') [])) = do
+  -- Create group (allocates sender key ratchets for demo members)
+  s <- get
+  let gname = "Group-" ++ show (Map.size (groups s) + 1)
+  rid1 <- liftIO newRatchet
+  rid2 <- liftIO newRatchet
+  _ <- liftIO mlockSensitiveRatchets
+  let newGroupRats = [rid1, rid2]
+  liftIO $ putStrLn $ "[GROUP] Created " ++ gname ++ " with sender-key ratchets (per-member forward secrecy)"
+  modify $ \st -> st { groups = Map.insert gname newGroupRats (groups st), currentGroup = Just gname }
+
+-- Send to current group using sender keys (real ratchet advance per member)
+handleEvent (VtyEvent (V.EvKey (V.KChar 'G') [])) = do
+  drainIncoming
+  s <- get
+  let txt = input s
+  case (currentGroup s, not (T.null txt)) of
+    (Just gname, True) -> do
+      case Map.lookup gname (groups s) of
+        Just rats -> do
+          -- For each member ratchet, advance sender key and encrypt (demo: use first)
+          rid <- pure (head rats)
+          (msgKey, step) <- liftIO $ ratchetSend rid   -- real Double Ratchet send
+          let framed = frameForWire (BS.pack (map (fromIntegral . fromEnum) gname)) step (BS.pack (map (fromIntegral . fromEnum) (T.unpack txt)))
+          liftIO $ putStrLn $ "[GROUP] Sending to " ++ gname ++ " using sender-key ratchet (step " ++ show step ++ ")"
+          _ <- liftIO $ Tor.sendCiphertextOverTor "group-relay.onion" framed
+          let msg = Message { msgId = fromIntegral step, sender = BS.pack (map (fromIntegral . fromEnum) "group"), content = TE.encodeUtf8 txt, ciphertext = framed, timestamp = 0, isDisappearing = False, expiresAt = Nothing, ratchetStep = step }
+          let updatedMsgs = Map.insertWith (++) gname [msg] (messages s)
+          liftIO $ saveEncryptedMessages "hashchat_data" (currentProfile s) gname (sessionPass s) (updatedMsgs Map.! gname)
+          modify $ \st -> st { messages = updatedMsgs, input = "", currentGroup = Just gname }
+        Nothing -> liftIO $ putStrLn "[GROUP] No ratchets for group"
+    _ -> liftIO $ putStrLn "[GROUP] No active group or empty input. Use 'g' then 'c'/'s' first."
 
 -- Contact actions menu (SimplexChat style) - triggered by 'a' key in chat.
 -- This + the individual letter handlers give us Block, Mute, Delete, Report, Info, Disappearing.

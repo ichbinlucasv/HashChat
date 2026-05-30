@@ -50,6 +50,18 @@
             ${pkgs.bash}/bin/bash ./build.sh tui
             echo "Run with: ./run-tui"
           '';
+
+          # End-to-end Flatpak (the primary easy, sandboxed, installable distribution)
+          # Builds the .flatpak bundle reproducibly (Fedora-first, Qubes/Tails friendly)
+          hashchat-flatpak = pkgs.writeShellScriptBin "build-hashchat-flatpak" ''
+            set -euo pipefail
+            echo "=== HashChat Nix-driven Flatpak end-to-end build ==="
+            ${pkgs.flatpak-builder}/bin/flatpak-builder --force-clean build-dir flatpak/org.hashchat.HashChat.yml
+            ${pkgs.flatpak}/bin/flatpak build-export --force export-dir build-dir
+            ${pkgs.flatpak}/bin/flatpak build-bundle --arch=x86_64 export-dir hashchat-tui.flatpak org.hashchat.HashChat
+            echo "Installable bundle ready: hashchat-tui.flatpak"
+            echo "flatpak install --user hashchat-tui.flatpak"
+          '';
         };
 
         devShells.default = pkgs.mkShell {
@@ -59,13 +71,19 @@
             pkg-config openssl
             # For Tor testing
             tor
+            # For end-to-end Flatpak builds (reproducible distribution)
+            flatpak-builder
+            flatpak
           ];
 
           shellHook = ''
             echo "=== HashChat Nix dev shell (maximum reproducible OPSEC) ==="
-            echo "Rust + GHC + Cabal ready."
+            echo "Rust + GHC + Cabal + flatpak-builder ready."
+            echo "To build the full installable Flatpak end-to-end:"
+            echo "  cd flatpak && ./build-flatpak.sh"
+            echo "  # Produces hashchat-tui.flatpak (user-installable)"
             echo "Recommended: still use ./build.sh tui for the full paranoid build inside Tails/Qubes."
-            echo "The flake packages.hashchat-tui and rust-lib are the start of a 100% Nix path."
+            echo "This flake now supports reproducible Flatpak as the primary easy distribution path."
           '';
         };
 
