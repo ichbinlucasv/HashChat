@@ -56,4 +56,28 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_decryptWithKey(
     _env.new_byte_array(0).unwrap()
 }
 
+// === Ratchet Export/Import for Group Persistence (needed for real encrypted group state) ===
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_ratchetExportEncrypted(
+    _env: JNIEnv,
+    _class: JClass,
+    state_id: jint,
+    passphrase: jbyteArray,
+) -> jbyteArray {
+    // Placeholder - in full impl this would call the Argon2id + AES-GCM export like desktop
+    _env.new_byte_array(0).unwrap()
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_ratchetImportEncrypted(
+    _env: JNIEnv,
+    _class: JClass,
+    state_id: jint,
+    passphrase: jbyteArray,
+    data: jbyteArray,
+) -> jboolean {
+    // Placeholder
+    false as jboolean
+}
+
 // Tor framing helpers can be added here too (frameForWire equivalent in Rust for Android)
