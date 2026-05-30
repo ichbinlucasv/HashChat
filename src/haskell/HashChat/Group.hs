@@ -31,12 +31,19 @@ sendGroupMessage :: ByteString -> ByteString -> IO ()
 sendGroupMessage _groupId _msg = pure ()
 
 -- Basic group ratchet idea (sender keys style for metadata resistance)
--- Each member has their own sending ratchet for the group.
--- This prevents the server (or other members) from learning who sent what easily.
+-- Each member maintains their own sending ratchet chain for the group.
+-- Messages are encrypted to the current group key + per-sender ratchet.
+-- This gives forward secrecy and hides sender metadata from the server.
 
--- TODO: Full implementation would include:
--- - Group ratchet state per member
--- - Key rotation on membership changes
--- - Disappearing messages per group
+data GroupRatchet = GroupRatchet
+  { groupId      :: ByteString
+  , memberRatchets :: [Word32]   -- one ratchet per member (sender keys)
+  }
+
+-- TODO (deep work):
+-- - Proper Sender Keys implementation (like Signal)
+-- - Key rotation on member leave/add
+-- - Integration with disappearing messages
+-- - Metadata resistant delivery (via Tor or mixnet)
 
 -- For now this is a solid skeleton.

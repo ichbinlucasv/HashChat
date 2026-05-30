@@ -197,3 +197,41 @@ pub extern "C" fn rust_decrypt_with_key(
         }
     }
 }
+
+// === Encrypted Ratchet State Persistence FFI ===
+
+#[no_mangle]
+pub extern "C" fn rust_ratchet_to_bytes(state_id: u32, out: *mut u8, out_len: *mut usize) -> bool {
+    unsafe {
+        if let Some(r) = RATCHET_STORE.get(state_id as usize) {
+            let bytes = r.to_bytes();
+            if bytes.len() > *out_len {
+                *out_len = bytes.len();
+                return false;
+            }
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
+            *out_len = bytes.len();
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_ratchet_from_bytes(state_id: u32, data: *const u8, len: usize) -> bool {
+    unsafe {
+        let bytes = std::slice::from_raw_parts(data, len);
+        match DoubleRatchet::from_bytes(bytes) {
+            Ok(r) => {
+                if (state_id as usize) < RATCHET_STORE.len() {
+                    RATCHET_STORE[state_id as usize] = r;
+                } else {
+                    RATCHET_STORE.push(r);
+                }
+                true
+            }
+            Err(_) => false,
+        }
+    }
+}

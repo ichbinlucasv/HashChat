@@ -58,6 +58,26 @@ pub extern "system" fn Java_chat_hashchat_HashChatNative_receiveMessage(
 
 #[cfg(target_os = "android")]
 #[no_mangle]
+pub extern "system" fn Java_chat_hashchat_HashChatNative_saveRatchetState(
+    _env: JNIEnv,
+    _class: JClass,
+    ratchet_id: i32,
+) {
+    // Call rust_ratchet_to_bytes then encrypt with user passphrase before writing to secure storage (e.g. Android Keystore + EncryptedFile)
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_chat_hashchat_HashChatNative_loadRatchetState(
+    _env: JNIEnv,
+    _class: JClass,
+    ratchet_id: i32,
+) {
+    // Decrypt from secure storage then call rust_ratchet_from_bytes
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
 pub extern "system" fn Java_chat_hashchat_HashChatNative_getOnion(
     env: JNIEnv,
     _class: JClass,

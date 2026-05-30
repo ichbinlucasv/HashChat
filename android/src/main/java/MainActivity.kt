@@ -65,14 +65,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     // === New Message System Integration (via JNI) ===
-    // The desktop now has a full ratchet-based message system.
-    // Android should call:
-    //   - sendEncryptedMessage(ratchetId, sender, plaintext, disappearing, ttl)
-    //   - receiveEncryptedMessage(ratchetId, sender, ciphertext)
+    // Call the real sendEncryptedMessage / receiveEncryptedMessage from Haskell side.
+    // Persist ratchet state encrypted (using Android Keystore + passphrase).
     //
-    // Recommended: Add chat screens using RecyclerView or Jetpack Compose
-    // that mirror the desktop TUI (black/yellow theme).
-    //
-    // Each contact should have its own ratchet ID (persisted encrypted).
-    // Burner profiles = completely separate ratchet stores.
+    // Recommended UI: RecyclerView for messages + EditText for input,
+    // styled in black/yellow to match desktop.
+    // Each contact = own ratchet ID. Burner profiles = separate stores.
 }

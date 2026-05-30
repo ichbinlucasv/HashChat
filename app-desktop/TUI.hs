@@ -131,6 +131,7 @@ app = App
   , appStartEvent = do
       loaded <- liftIO loadRatchets
       modify $ \s -> s { ratchets = loaded }
+      -- In real version: decrypt ratchet blobs with user passphrase and restore full state
   , appAttrMap = const $ attrMap defAttr []
   }
 

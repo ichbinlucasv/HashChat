@@ -226,3 +226,98 @@ pub fn decrypt_with_key(key: &[u8; RATCHET_KEY_LEN], ct: &[u8]) -> Result<Vec<u8
     let pt = lsk.open_in_place(nonce, Aad::empty(), &mut buf).map_err(|_| "open")?;
     Ok(pt.to_vec())
 }
+
+// === Full Ratchet State Serialization for Encrypted Persistence ===
+
+impl DoubleRatchet {
+    /// Serialize the COMPLETE ratchet state.
+    /// The resulting blob MUST be encrypted (e.g. with Argon2id(passphrase) + AES-GCM) before writing to disk.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.push(1u8); // version
+
+        out.extend_from_slice(self.dh_secret.as_bytes());
+        out.extend_from_slice(self.dh_public.as_bytes());
+
+        match &self.remote_dh {
+            Some(pk) => {
+                out.push(1);
+                out.extend_from_slice(pk.as_bytes());
+            }
+            None => out.push(0),
+        }
+
+        out.extend_from_slice(&self.root_key);
+        out.extend_from_slice(&self.chain_key_send);
+        out.extend_from_slice(&self.chain_key_recv);
+        out.extend_from_slice(&self.send_count.to_be_bytes());
+        out.extend_from_slice(&self.recv_count.to_be_bytes());
+
+        // Skipped keys
+        let len = self.skipped_keys.len() as u32;
+        out.extend_from_slice(&len.to_be_bytes());
+        for (&num, key) in &self.skipped_keys {
+            out.extend_from_slice(&num.to_be_bytes());
+            out.extend_from_slice(key);
+        }
+
+        out
+    }
+
+    /// Restore from a decrypted blob.
+    pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
+        if data.is_empty() || data[0] != 1 {
+            return Err("bad version");
+        }
+        let mut pos = 1;
+
+        let dh_sec: [u8; 32] = data[pos..pos+32].try_into().map_err(|_| "bad dh sec")?;
+        pos += 32;
+        let dh_pub: [u8; 32] = data[pos..pos+32].try_into().map_err(|_| "bad dh pub")?;
+        pos += 32;
+
+        let has_remote = data[pos] == 1;
+        pos += 1;
+        let remote_dh = if has_remote {
+            let b: [u8; 32] = data[pos..pos+32].try_into().map_err(|_| "bad remote")?;
+            pos += 32;
+            Some(PublicKey::from(b))
+        } else { None };
+
+        let root: [u8; 32] = data[pos..pos+32].try_into().map_err(|_| "bad root")?;
+        pos += 32;
+        let csend: [u8; 32] = data[pos..pos+32].try_into().map_err(|_| "bad csend")?;
+        pos += 32;
+        let crecv: [u8; 32] = data[pos..pos+32].try_into().map_err(|_| "bad crecv")?;
+        pos += 32;
+
+        let send = u32::from_be_bytes(data[pos..pos+4].try_into().unwrap());
+        pos += 4;
+        let recv = u32::from_be_bytes(data[pos..pos+4].try_into().unwrap());
+        pos += 4;
+
+        let sk_len = u32::from_be_bytes(data[pos..pos+4].try_into().unwrap()) as usize;
+        pos += 4;
+
+        let mut skipped = std::collections::HashMap::new();
+        for _ in 0..sk_len {
+            let num = u32::from_be_bytes(data[pos..pos+4].try_into().unwrap());
+            pos += 4;
+            let k: [u8; 32] = data[pos..pos+32].try_into().map_err(|_| "bad skey")?;
+            pos += 32;
+            skipped.insert(num, k);
+        }
+
+        Ok(Self {
+            dh_secret: StaticSecret::from(dh_sec),
+            dh_public: PublicKey::from(dh_pub),
+            remote_dh,
+            root_key: root,
+            chain_key_send: csend,
+            chain_key_recv: crecv,
+            send_count: send,
+            recv_count: recv,
+            skipped_keys: skipped,
+        })
+    }
+}
