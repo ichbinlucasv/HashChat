@@ -267,6 +267,7 @@ drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll
   , withAttr (attrName "encrypted") $ str "Ciphertext size shown in message list (ct:XXB)."
   , str "Plausible deniability: Decoy profiles + hidden volume concept (see docs)."
   , str "v              → Record/play voice (end-to-end ratchet streaming + chunk wipe)"
+  , str "f              → Send/receive file (chunked ratchet streaming - started)"
   ]
 
 handleEvent :: BrickEvent Name () -> EventM Name AppState ()
