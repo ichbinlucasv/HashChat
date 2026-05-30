@@ -139,6 +139,17 @@ pub extern "C" fn rust_ratchet_recv(state_id: u32, remote_pub: *const u8, out_ke
     }
 }
 
+/// Wipe a skipped key for disappearing message support.
+/// Called when a message expires so the corresponding ratchet material is erased.
+#[no_mangle]
+pub extern "C" fn rust_ratchet_wipe_skipped_key(state_id: u32, msg_number: u32) {
+    unsafe {
+        if let Some(r) = RATCHET_STORE.get_mut(state_id as usize) {
+            r.wipe_skipped_key(msg_number);
+        }
+    }
+}
+
 // ==================== Encrypt/Decrypt with raw ratchet key (critical for real messages) ====================
 
 #[no_mangle]

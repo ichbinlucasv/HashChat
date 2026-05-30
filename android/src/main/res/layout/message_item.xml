@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Custom message bubble for HashChat Android.
+     Matches desktop TUI visual style: black background, gold (#FFD700) for our messages,
+     white for others, [E2EE] badges, disappearing indicators.
+     Used by the RecyclerView adapter for true Simplex-like chat look.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="4dp">
+
+    <TextView
+        android:id="@+id/messageText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:maxWidth="280dp"
+        android:padding="10dp"
+        android:textColor="#FFFFFF"
+        android:textSize="15sp"
+        android:background="#1F1F1F" />
+
+    <TextView
+        android:id="@+id/metaText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="#888888"
+        android:textSize="10sp"
+        android:paddingStart="8dp" />
+
+</LinearLayout>

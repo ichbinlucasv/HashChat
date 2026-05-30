@@ -105,6 +105,15 @@ impl DoubleRatchet {
         self.skipped_keys.remove(&msg_number)
     }
 
+    /// Securely wipe a specific skipped message key (for disappearing messages / key erasure).
+    /// Zeroizes the key material and removes it from the map. Critical for forward secrecy on expiry.
+    pub fn wipe_skipped_key(&mut self, msg_number: u32) {
+        if let Some(mut key) = self.skipped_keys.remove(&msg_number) {
+            key.zeroize();
+            // The array is now zeroed; removal already happened.
+        }
+    }
+
     /// Advanced ratchet receive that properly handles skipped keys and out-of-order delivery.
     /// This is a more complete version for real messaging.
     pub fn ratchet_recv_advanced(&mut self, remote: &PublicKey, msg_number: u32) -> Result<[u8; RATCHET_KEY_LEN], &'static str> {

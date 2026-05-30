@@ -17,6 +17,9 @@ module HashChat.Core
   , exportEncryptedRatchet
   , importEncryptedRatchet
   , processDisappearingMessages
+  , wipeRatchetMessageKey
+  , frameForWire
+  , unframeFromWire
   ) where
 
 import Control.Concurrent.STM
@@ -83,6 +86,7 @@ foreign import ccall unsafe "rust_madvise_dontneed" rust_madvise_dontneed :: Ptr
 foreign import ccall unsafe "rust_apply_basic_seccomp" rust_apply_basic_seccomp :: IO Bool
 foreign import ccall unsafe "rust_mlock" rust_mlock :: Ptr Word8 -> Int -> IO Bool
 foreign import ccall unsafe "rust_mlock_sensitive_ratchets" rust_mlock_sensitive_ratchets :: IO Bool
+foreign import ccall unsafe "rust_ratchet_wipe_skipped_key" rust_ratchet_wipe_skipped_key :: Word32 -> Word32 -> IO ()
 
 initProfile :: IO ProfileKey
 initProfile = do
@@ -214,6 +218,39 @@ receiveEncryptedMessage ratchetId senderPub ct = do
   else
     pure Nothing
 
+-- === Wire framing for sender identification (tightens bidirectional Tor receive) ===
+-- Framed format sent over Tor: version(1) | hintLen(1) | hint bytes | step(4 BE) | ctLen(4 BE) | ciphertext
+-- Allows receiver to know exactly which ratchet/contact to use without brute-forcing all ratchets.
+
+frameForWire :: ByteString -> Word32 -> ByteString -> BS.ByteString
+frameForWire senderHint step rawCt =
+  let v = 1 :: Word8
+      h = BS.take 32 senderHint  -- cap hint size
+      hl = fromIntegral (BS.length h) :: Word8
+      s  = step
+      cl = fromIntegral (BS.length rawCt) :: Word32
+  in BS.pack [v, hl]
+     <> h
+     <> BS.pack (word32be s)
+     <> BS.pack (word32be cl)
+     <> rawCt
+
+unframeFromWire :: BS.ByteString -> Maybe (ByteString, Word32, BS.ByteString)
+unframeFromWire bs
+  | BS.length bs < 1 + 1 + 4 + 4 = Nothing
+  | otherwise =
+      let (v:hs, rest1) = BS.splitAt 2 bs
+      in if BS.head v /= 1 then Nothing else
+        let hl = fromIntegral (BS.head hs) :: Int
+        in if BS.length rest1 < hl + 4 + 4 then Nothing else
+          let (hint, rest2) = BS.splitAt hl rest1
+              (stepBs, rest3) = BS.splitAt 4 rest2
+              (clBs, ct) = BS.splitAt 4 rest3
+              step = case unpackWord32be stepBs of Just (s,_) -> s; _ -> 0
+              cl   = case unpackWord32be clBs  of Just (c,_) -> c; _ -> 0
+          in if fromIntegral cl /= BS.length ct then Nothing
+             else Just (hint, step, ct)
+
 -- Helper to check if a disappearing message should be deleted
 isMessageExpired :: Message -> IO Bool
 isMessageExpired msg = case expiresAt msg of
@@ -244,11 +281,11 @@ utcTimeToPOSIXSeconds _ = 0
 -- ============================================================
 
 -- Wipe a specific message key from a ratchet (critical for disappearing messages)
+-- Now actually calls into Rust to zeroize + remove from skipped_keys map.
 wipeRatchetMessageKey :: Word32 -> Word32 -> IO ()
 wipeRatchetMessageKey ratchetId msgNumber = do
-  -- In a full Double Ratchet we would delete the exact skipped key
-  -- For now we log the security event (real impl will zeroize + remove)
-  putStrLn $ "[SECURITY] Wiping message key for ratchet " ++ show ratchetId ++ " step " ++ show msgNumber
+  rust_ratchet_wipe_skipped_key ratchetId msgNumber
+  putStrLn $ "[SECURITY] Wiped skipped key for ratchet " ++ show ratchetId ++ " step " ++ show msgNumber ++ " (real zeroization in Rust)"
 
 -- Process and remove expired messages, wiping their ratchet keys
 processDisappearingMessages :: [Message] -> IO [Message]

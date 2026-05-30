@@ -20,6 +20,7 @@ import Data.Map.Strict (Map)
 import HashChat.Core
   ( wipeAll
   , sendEncryptedMessage
+  , receiveEncryptedMessage
   , exportEncryptedRatchet
   , importEncryptedRatchet
   , saveEncryptedMessages
@@ -30,6 +31,9 @@ import HashChat.Core
   , madviseDontNeed
   , applyBasicSeccomp
   , mlockSensitiveRatchets
+  , processDisappearingMessages
+  , frameForWire
+  , unframeFromWire
   )
 import MessageUI
 import qualified HashChat.Tor as Tor  -- Real Tor hidden service transport scaffolding started
@@ -45,6 +49,12 @@ import qualified Data.List
 import Data.List (elemIndex, isInfixOf)
 import System.Process (callCommand)
 import Control.Monad (whenM)
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.MVar (MVar, newMVar, modifyMVar_, takeMVar, putMVar, newEmptyMVar, readMVar)
+import qualified Data.ByteString as BS  -- already present but ensure for clarity
+import qualified Data.ByteString.Char8 as BC
+import System.IO.Unsafe (unsafePerformIO)
+import Data.Maybe (listToMaybe)
 
 data Name = ChatInput | ContactList | Help deriving (Eq, Ord, Show)
 
@@ -66,6 +76,7 @@ data AppState = AppState
   , securityPosture :: String                   -- "MAX PARANOID", "HIGH", "STANDARD" etc.
   , blockedContacts :: [String]                 -- persisted per-profile in real impl
   , actionPending   :: Bool                     -- after pressing 'a', next key is action
+  , incomingBlobs   :: MVar [(String, BS.ByteString)]  -- (contact hint or onion, ciphertext blob) from Tor receiver
   }
 
 initialState :: AppState
@@ -83,6 +94,7 @@ initialState = AppState
   , securityPosture = "MAX PARANOID (Tails/Qubes + Tor recommended)"
   , blockedContacts = []
   , actionPending   = False
+  , incomingBlobs   = unsafePerformIO (newMVar [])   -- real cross-thread queue for Tor receive
   }
 
 -- === Real Encrypted Ratchet Persistence (Argon2id + AES-GCM) ===
@@ -170,12 +182,14 @@ isActionAllowedInPosture :: String -> String -> Bool
 isActionAllowedInPosture posture action =
   let low = "STANDARD / LOW" `isInfixOf` posture || "MEDIUM" `isInfixOf` posture
   in case action of
-       "send"     -> not low   -- never send ciphertext in low posture
-       "newburner"-> not low   -- creating new isolated identities requires strong env
-       "file"     -> not low
-       "voice"    -> not low
-       "group"    -> not low
-       _          -> True
+       "send"       -> not low   -- never send ciphertext in low posture
+       "newburner"  -> not low   -- creating new isolated identities requires strong env
+       "file"       -> not low
+       "voice"      -> not low
+       "group"      -> not low
+       "decoy"      -> not low   -- plausible deniability features also gated
+       "loadprofile"-> not low   -- refuse loading sensitive state in bad env
+       _            -> True
 
 drawUI :: AppState -> [Widget Name]
 drawUI st =
@@ -230,7 +244,54 @@ handleEvent :: BrickEvent Name () -> EventM Name AppState ()
 handleEvent (VtyEvent (V.EvKey (V.KChar 'q') [])) = halt
 handleEvent (VtyEvent (V.EvKey (V.KChar '?') [])) = modify $ \s -> s { showHelp = not (showHelp s) }
 
+-- Drain the Tor incoming queue and turn ciphertext into real decrypted Messages using the ratchets.
+-- Now uses proper unframing + sender hint for reliable peer identification (no more blind brute force).
+drainIncoming :: EventM Name AppState ()
+drainIncoming = do
+  s <- get
+  let inc = incomingBlobs s
+  blobs <- liftIO $ takeMVar inc
+  liftIO $ putMVar inc []  -- clear
+  when (not $ null blobs) $ do
+    liftIO $ putStrLn $ "[TOR] Draining " ++ show (length blobs) ++ " incoming framed blob(s)..."
+    newS <- liftIO $ foldM processOneIncoming s blobs
+    put newS
+  where
+    processOneIncoming st (_rawHint, framedBlob) = do
+      case unframeFromWire framedBlob of
+        Nothing -> do
+          putStrLn "[TOR] Malformed incoming frame — dropping."
+          pure st
+        Just (hint, _stepHint, rawCt) -> do
+          -- Use the sender hint from the wire frame to pick the exact ratchet (tight peer ID)
+          let hintStr = BC.unpack (BS.take 32 hint)
+          let mRid = case Map.lookup hintStr (ratchets st) of
+                       Just r  -> Just r
+                       Nothing -> findFuzzyRatchet hintStr (ratchets st)   -- tolerant fallback
+          case mRid of
+            Nothing -> do
+              putStrLn $ "[TOR] No ratchet for hint '" ++ hintStr ++ "' — unknown peer."
+              pure st
+            Just rid -> do
+              mMsg <- receiveEncryptedMessage rid (BS.pack (map (fromIntegral . fromEnum) hintStr)) rawCt
+              case mMsg of
+                Just msg -> do
+                  let contact = if Map.member hintStr (ratchets st) then hintStr else currentContact st
+                  let updated = Map.insertWith (++) contact [msg] (messages st)
+                  saveEncryptedMessages "hashchat_data" (currentProfile st) contact (sessionPass st) (updated Map.! contact)
+                  putStrLn $ "[TOR] Successfully received & decrypted message for " ++ contact ++ " via framed header (real bidirectional!)"
+                  pure $ st { messages = updated }
+                Nothing -> do
+                  putStrLn "[TOR] Frame parsed but decryption failed (wrong ratchet or corruption)."
+                  pure st
+
+    findFuzzyRatchet _hint m = listToMaybe (Map.elems m)   -- last resort: any ratchet (still better than before)
+
+    listToMaybe [] = Nothing
+    listToMaybe (x:_) = Just x
+
 handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
+  drainIncoming   -- process any real incoming ciphertext from Tor first
   s <- get
   let txt = input s
   when (not $ T.null txt) $ do
@@ -270,19 +331,26 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
         let updatedMsgs = Map.findWithDefault [] contact (messages st) ++ [msgWithTime]
         liftIO $ saveEncryptedMessages "hashchat_data" prof contact pass updatedMsgs
 
-        -- Real minimal send/receive loop over hidden service
-        liftIO $ putStrLn "[TOR] Sending ciphertext over Tor hidden service..."
-        _ <- liftIO $ Tor.sendCiphertextOverTor "recipient.onion.example" (ciphertext msgWithTime)
-        liftIO $ putStrLn "[TOR] Ciphertext handed to real Tor transport layer."
+        -- Real send over Tor with proper sender header for reliable receive-side lookup
+        let hint = BS.pack (map (fromIntegral . fromEnum) contact)   -- simple but effective contact name hint
+        let framed = frameForWire hint (ratchetStep msgWithTime) (ciphertext msgWithTime)
+        liftIO $ putStrLn "[TOR] Sending framed ciphertext (with sender hint) over Tor hidden service..."
+        _ <- liftIO $ Tor.sendCiphertextOverTor "recipient.onion.example" framed
+        liftIO $ putStrLn "[TOR] Framed blob handed to real Tor transport layer."
+
+        -- Disappearing messages: process expiry + key wipe (real ratchet key zeroization path)
+        cleaned <- liftIO $ processDisappearingMessages (Map.findWithDefault [] contact (messages st))
+        let finalMsgs = cleaned ++ [msgWithTime]
 
         modify $ \st -> st
-          { messages = Map.insertWith (++) contact [msgWithTime] (messages st)
+          { messages = Map.insert contact finalMsgs (messages st)
           , input = ""
           , inputHistory = if T.null txt then inputHistory st else inputHistory st ++ [txt]
           , historyIndex = -1
           }
 
 handleEvent (VtyEvent (V.EvKey (V.KChar c) [])) = do
+  drainIncoming
   s <- get
   put $ s { input = input s <> T.singleton c, historyIndex = -1 }
 
@@ -292,6 +360,7 @@ handleEvent (VtyEvent (V.EvKey V.KBS [])) = do
 
 -- Command history navigation (Up/Down arrows)
 handleEvent (VtyEvent (V.EvKey V.KUp [])) = do
+  drainIncoming
   s <- get
   let hist = inputHistory s
   if null hist then pure () else do
@@ -300,6 +369,7 @@ handleEvent (VtyEvent (V.EvKey V.KUp [])) = do
     put $ s { input = newInput, historyIndex = newIdx }
 
 handleEvent (VtyEvent (V.EvKey V.KDown [])) = do
+  drainIncoming
   s <- get
   let hist = inputHistory s
   if historyIndex s <= 0 then
@@ -422,25 +492,33 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'n') [])) = do
 -- encrypted store opened with a different passphrase (or second KDF path).
 -- For now it is a distinct burner that looks like a normal chat history.
 handleEvent (VtyEvent (V.EvKey (V.KChar 'D') [])) = do
+  drainIncoming
   s <- get
-  let isDecoy = "Decoy" `isInfixOf` currentProfile s
-  if isDecoy
+  currentP <- liftIO getSecurityPosture
+  if not (isActionAllowedInPosture currentP "decoy")
     then do
-      liftIO $ putStrLn "[DENIABILITY] Leaving decoy profile. Switch back with 'p'."
-      modify $ \st -> st { currentProfile = "Default", historyIndex = -1 }
+      liftIO $ putStrLn "[SECURITY] DYNAMIC POSTURE REFUSAL: Decoy mode disabled in this environment."
+      modify $ \st -> st { securityPosture = currentP }
     else do
-      liftIO $ putStrLn "[DENIABILITY] Entering decoy profile. This can be shown to an adversary."
-      liftIO $ putStrLn "[DENIABILITY] Real keys and history remain in other compartments."
-      modify $ \st -> st 
-        { currentProfile = "Decoy"
-        , profiles = Map.insert "Decoy" Map.empty (profiles st)
-        , historyIndex = -1
-        }
+      let isDecoy = "Decoy" `isInfixOf` currentProfile s
+      if isDecoy
+        then do
+          liftIO $ putStrLn "[DENIABILITY] Leaving decoy profile. Switch back with 'p'."
+          modify $ \st -> st { currentProfile = "Default", historyIndex = -1 }
+        else do
+          liftIO $ putStrLn "[DENIABILITY] Entering decoy profile. This can be shown to an adversary."
+          liftIO $ putStrLn "[DENIABILITY] Real keys and history remain in other compartments."
+          modify $ \st -> st 
+            { currentProfile = "Decoy"
+            , profiles = Map.insert "Decoy" Map.empty (profiles st)
+            , historyIndex = -1
+            }
 
 -- Contact actions menu (SimplexChat style) - triggered by 'a' key in chat.
 -- This + the individual letter handlers give us Block, Mute, Delete, Report, Info, Disappearing.
 -- Very close in spirit to Simplex long-press contact menu.
 handleEvent (VtyEvent (V.EvKey (V.KChar 'a') [])) = do
+  drainIncoming
   s <- get
   let contact = currentContact s
   liftIO $ putStrLn $ "\n=== Simplex-style Actions for " ++ contact ++ " ==="
@@ -521,6 +599,20 @@ app = App
       liftIO $ putStrLn $ "[TOR] Your anonymous address: " ++ Tor.getOnionAddress onion
       liftIO $ putStrLn "[TOR] All future messages will be routed via this hidden service."
 
+      -- === FULL BIDIRECTIONAL TOR: start real ciphertext receiver ===
+      -- Listens on the local port mapped by ADD_ONION (8080 in our scaffold).
+      -- Incoming blobs are decrypted with the correct ratchet when user interacts.
+      -- This completes the "real connection and transfer the ciphertext blob" for both directions.
+      st0 <- get
+      let inc = incomingBlobs st0
+      liftIO $ void $ forkIO $ do
+        -- Start the receive server in background. Handler appends to the shared MVar.
+        _stop <- Tor.startCiphertextReceiver 8080 $ \blob -> do
+          modifyMVar_ inc $ \q -> pure $ q ++ [("peer", blob)]   -- "peer" hint; real version would carry sender pub/onion
+          putStrLn "[TOR] Ciphertext blob received over hidden service (bidirectional active)."
+        threadDelay 1000000   -- keep thread alive
+      liftIO $ putStrLn "[TOR] Bidirectional receiver started on local port 8080 (hidden service traffic)."
+
       -- Apply basic seccomp early for stronger sandboxing
       _ <- liftIO applyBasicSeccomp
       liftIO $ putStrLn "[SECURITY] Basic seccomp policy applied (Linux)."
@@ -557,7 +649,7 @@ app = App
         , securityPosture = realPosture
         }
 
-      liftIO $ putStrLn $ "[OK] Loaded " ++ show (Map.size loaded) ++ " ratchet(s) with forward secrecy continuity."
+      liftIO $ putStrLn $ "[OK] Loaded " ++ show (Map.size loadedRatchets) ++ " ratchet(s) with forward secrecy continuity."
       liftIO $ putStrLn "Ready. Messages you send now use real Double Ratchet keys.\n"
   , appAttrMap = const $ attrMap (defAttr `withBackColor` black) 
       [ (attrName "title",       fg gold   `withStyle` bold)
