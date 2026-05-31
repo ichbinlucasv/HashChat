@@ -239,10 +239,9 @@ class MainActivity : AppCompatActivity() {
                     while (true) {
                         val chunk = voiceChunkQueue.take()
                         try {
-                            // Official voice path: processVoiceChunk in Rust.
-                            // Progress (Tier 3): The Rust side now has VoiceStream structure + simulated step advancement.
-                            // Goal: Move full ratchet lookup + decrypt + advance + key wipe entirely into Rust.
-                            // Kotlin should eventually only do: receive queue → call this → get plaintext → UI playback.
+                            // Official voice path: processVoiceChunk in Rust (A2 progress).
+                            // The Rust side now owns VoiceStream + step advancement simulation.
+                            // Next: replace placeholder with real per-stream DoubleRatchet state.
                             val decrypted = HashChatNative.processVoiceChunk(chunk)
 
                             runOnUiThread {

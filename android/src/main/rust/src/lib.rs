@@ -550,10 +550,7 @@ impl GroupSenderKey {
     }
 }
 
-// Simple in-memory store for group sender keys on Android (separate from main ratchets for clarity).
-static mut ANDROID_GROUP_SENDER_KEYS: Vec<GroupSenderKey> = Vec::new();
-
-// Separate store for group sender keys (per-member sending chains)
+// Store for group sender keys (per-member sending chains) — this is the one we'll use
 static mut ANDROID_GROUP_SENDER_KEY_STORE: Vec<GroupSenderKey> = Vec::new();
 
 #[no_mangle]
@@ -563,8 +560,8 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_createGroupSenderKey(
     ratchet_id: jint,
 ) -> jint {
     unsafe {
-        let idx = ANDROID_GROUP_SENDER_KEYS.len();
-        ANDROID_GROUP_SENDER_KEYS.push(GroupSenderKey::new(ratchet_id as u32));
+        let idx = ANDROID_GROUP_SENDER_KEY_STORE.len();
+        ANDROID_GROUP_SENDER_KEY_STORE.push(GroupSenderKey::new(ratchet_id as u32));
         idx as jint
     }
 }
@@ -576,9 +573,8 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_advanceGroupSenderKey(
     group_key_id: jint,
 ) -> jbyteArray {
     unsafe {
-        if (group_key_id as usize) < ANDROID_GROUP_SENDER_KEYS.len() {
-            let msg_key = ANDROID_GROUP_SENDER_KEYS[group_key_id as usize].advance();
-            // For now return the message key. Real version can return more structured data.
+        if (group_key_id as usize) < ANDROID_GROUP_SENDER_KEY_STORE.len() {
+            let msg_key = ANDROID_GROUP_SENDER_KEY_STORE[group_key_id as usize].advance();
             return vec_to_java_byte_array(&mut _env, &msg_key);
         }
     }
@@ -597,13 +593,11 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_exportGroupSenderKey(
         if (group_key_id as usize) < ANDROID_GROUP_SENDER_KEY_STORE.len() {
             let gsk = &ANDROID_GROUP_SENDER_KEY_STORE[group_key_id as usize];
 
-            // Serialize simply (in real we can improve this)
-            let serialized = [
-                gsk.gsk_ratchet_id.to_be_bytes(),
-                gsk.gsk_chain_key,
-                gsk.gsk_msg_count.to_be_bytes(),
-            ]
-            .concat();
+            // Simple but consistent serialization: ratchet_id (4) + chain_key (32) + msg_count (4)
+            let mut serialized = Vec::with_capacity(40);
+            serialized.extend_from_slice(&gsk.gsk_ratchet_id.to_be_bytes());
+            serialized.extend_from_slice(&gsk.gsk_chain_key);
+            serialized.extend_from_slice(&gsk.gsk_msg_count.to_be_bytes());
 
             let pass_jba = unsafe { wrap_byte_array(passphrase) };
             let pass_len = _env.get_array_length(&pass_jba).unwrap_or(0) as usize;
@@ -649,7 +643,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_importGroupSenderKey(
 
     match unwrap_ratchet_blob(&buf, &pass_bytes) {
         Ok(serialized) => {
-            if serialized.len() < 40 { return -1; }
+            if serialized.len() != 40 { return -1; }
 
             let ratchet_id = u32::from_be_bytes(serialized[0..4].try_into().unwrap());
             let mut chain_key = [0u8; 32];
