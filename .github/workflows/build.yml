@@ -12,24 +12,44 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install dependencies (pinned GHC 9.8.4 + Rust - direct ghcup binary to avoid /usr/local permission issues)
+
+      - name: Cache ghcup and cargo toolchains (supply chain + speed)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ghcup
+            ~/.cargo
+          key: ${{ runner.os }}-ghcup-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-ghcup-cargo-
+
+      - name: Install dependencies (pinned GHC 9.8.4 + Rust - improved supply chain hygiene)
         run: |
           sudo apt-get update
           sudo apt-get install -y curl gcc make libgmp-dev zlib1g-dev libncurses-dev pkg-config
 
-          # Completely bypass the ghcup bootstrap script.
-          # Download the binary directly and use `install` (instead of chmod +x) because
-          # GitHub runners sometimes return "Operation not permitted" on chmod after writing with >.
+          # Supply chain hardened direct ghcup download with SHA256 verification.
+          # This hash must be refreshed when we intentionally upgrade ghcup.
+          # Current hash (x86_64-linux-ghcup) as of last verification.
+          GHCUP_SHA256="480e05e414d2efa5abbda0006984a3343cd4973ead7b5c48d65a55a47b40ce59"
+
           mkdir -p "$HOME/.ghcup/bin"
           curl -sSL "https://downloads.haskell.org/~ghcup/$(uname -m)-linux-ghcup" -o /tmp/ghcup
+
+          echo "$GHCUP_SHA256  /tmp/ghcup" | sha256sum -c --status || {
+            echo "!!! ghcup binary checksum verification FAILED !!!"
+            echo "This is a supply chain integrity failure. Aborting."
+            exit 1
+          }
+
           install -m 755 /tmp/ghcup "$HOME/.ghcup/bin/ghcup"
           export PATH="$HOME/.ghcup/bin:$PATH"
 
           ghcup install ghc 9.8.4 --set
           ghcup install cabal 3.10.3.0 --set
 
-          # Rust - user-local
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
+          # Rust - controlled user-local install
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none
           source "$HOME/.cargo/env"
 
           echo "Using GHC: $(ghc --version)"
