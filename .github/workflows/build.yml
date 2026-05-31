@@ -84,9 +84,11 @@ jobs:
           # You can test it locally with: cabal build hashchat-tui
           echo "TUI build skipped in CI (use -f+tui locally with proper system deps)."
 
-          # T3 paranoid CI note: Before any signed tag the committer MUST have run
+          # Wave 5 deep CI paranoia: Before any signed tag the committer MUST have run
           # ./scripts/pre-tag-check.sh --strict locally and created the local-run marker file.
-          # This is currently a strong recommendation; will be turned into a blocking step post-v0.2.
+          # In future we can add a step that fails the build if the marker for this SHA is missing.
+          # Currently enforced via pre-tag-check hard gates (evidence + no new TODOs).
+          # This is moving from recommendation toward actual blocking for v0.2 final.
 
           # Note: We no longer use Python. All builds are done with pure Bash + Cargo + Cabal.
 

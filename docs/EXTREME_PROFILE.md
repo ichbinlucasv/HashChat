@@ -41,6 +41,15 @@ See ROADMAP.md "Post-v0.2 Philosophy Decision".
 
 If we choose "Accept Android is weaker", this Extreme profile becomes a first-class supported mode for the highest-risk users.
 
-**Owner**: Update this document after the philosophy decision and before any implementation work begins.
+**Wave 5 Implementation Progress**:
+- Android: `EXTREME_MODE` flag + hard gates now active on voice recording, group QR/join, cross-device export, and remaining demo-pass group paths.
+- Decoy profile fully disabled under Extreme.
+- TUI: Consistency notes added for future gating.
+- pre-tag-check and CI notes reference Extreme requirements.
+- Real zeroize added to VoiceStream as part of minimal surface work.
 
-Last updated: during the "all recommendations" execution wave.
+This is no longer pure design — first real code enforcement exists.
+
+**Owner**: Continue expanding gates in subsequent waves. Update after philosophy decision.
+
+Last updated: Wave 5 deep push on all recommendations.
