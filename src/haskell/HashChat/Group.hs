@@ -58,6 +58,7 @@ createMemberSendingRatchet rid = GroupSenderKey
   { gskRatchetId = rid
   , gskChainKey  = BS.replicate 32 0
   , gskMsgCount  = 0
+  }
 
 -- Advance sender key (per-member sending ratchet step for groups)
 -- This is the single canonical implementation.

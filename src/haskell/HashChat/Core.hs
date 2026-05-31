@@ -32,7 +32,7 @@ import qualified Data.Map.Strict as Map
 import Data.Time.Clock (UTCTime, NominalDiffTime)
 import qualified Data.Time.Clock as Time
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds, posixSecondsToUTCTime)
-import Data.Word (Word8, Word32, Word64)
+import Data.Word (Word8, Word16, Word32, Word64)
 import Database.SQLite.Simple
 import Foreign.Ptr
 import Foreign.Marshal.Alloc (malloc)
@@ -273,8 +273,9 @@ decryptMessage _ c = pure c
 addUTCTime :: NominalDiffTime -> UTCTime -> UTCTime
 addUTCTime _ t = t
 
-utcTimeToPOSIXSeconds :: UTCTime -> Time.NominalDiffTime
-utcTimeToPOSIXSeconds _ = 0
+-- Note: We intentionally do NOT define a local utcTimeToPOSIXSeconds here
+-- to avoid shadowing the real one from Data.Time.Clock.POSIX.
+-- The real function is used in packMessage for disappearing message expiry.
 
 -- ============================================================
 -- NEW: Disappearing + Key Wiping + Burner Profiles + Persistence
