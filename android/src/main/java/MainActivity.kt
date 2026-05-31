@@ -358,6 +358,11 @@ class MainActivity : AppCompatActivity() {
                     4 -> Toast.makeText(this, "E2EE: Double Ratchet + AES-256-GCM over Tor v3. Posture: MAX.", Toast.LENGTH_LONG).show()
                     5 -> Toast.makeText(this, "Disappearing enabled (ties to ratchet key wipe on expiry).", Toast.LENGTH_SHORT).show()
                     6 -> {
+                        // Deep Wave: Extreme mode refuses export
+                        if (EXTREME_MODE) {
+                            Toast.makeText(this, "EXTREME MODE: Cross-device export disabled.", Toast.LENGTH_LONG).show()
+                            return@setItems
+                        }
                         // Tier 1 Very High: strict mode gate for cross-device ratchet export (very high risk)
                         if (HashChatNative.shouldRefuseInStrictMode("export")) {
                             Toast.makeText(this, "STRICT MODE: Cross-device export REFUSED (bad environment - keys could leak)", Toast.LENGTH_LONG).show()
@@ -459,6 +464,11 @@ class MainActivity : AppCompatActivity() {
     private var currentVoiceRecordingFile: File? = null   // OPSEC: app-private cacheDir only; deleted after ratchet processing
 
     fun onVoiceMessage(v: View) {
+        // Deep Wave: Extreme mode completely disables voice for minimal surface
+        if (EXTREME_MODE) {
+            Toast.makeText(this, "EXTREME MODE: Voice disabled for smallest attack surface.", Toast.LENGTH_LONG).show()
+            return
+        }
         // Tier 1 Very High: strict mode gate (refuse voice in debug/emulator/rooted/qemu envs)
         if (HashChatNative.shouldRefuseInStrictMode("voice")) {
             Toast.makeText(this, "STRICT MODE: Voice recording REFUSED (bad environment detected)", Toast.LENGTH_LONG).show()
@@ -653,6 +663,11 @@ class MainActivity : AppCompatActivity() {
 
     // === Full group QR scanning (Simplex-style, matches TUI 'g' + QR) ===
     fun onScanGroupQR(v: View) {
+        // Deep Wave: Extreme mode refuses all groups
+        if (EXTREME_MODE) {
+            Toast.makeText(this, "EXTREME MODE: Groups completely disabled for minimal attack surface.", Toast.LENGTH_LONG).show()
+            return
+        }
         // Tier 1 Very High: strict mode gate for groups (expands attack surface + persistence)
         if (HashChatNative.shouldRefuseInStrictMode("groups")) {
             Toast.makeText(this, "STRICT MODE: Group operations REFUSED (bad environment: debug/emulator/rooted)", Toast.LENGTH_LONG).show()

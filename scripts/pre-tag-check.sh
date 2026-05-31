@@ -87,8 +87,10 @@ fi
 CRITICAL_FILES="android/src/main/rust/src/lib.rs android/src/main/java/MainActivity.kt scripts/clean-security.sh scripts/pre-tag-check.sh src/rust/*.rs src/haskell/HashChat/Group.hs"
 NEW_TODOS=$(git diff --name-only HEAD~5 -- $CRITICAL_FILES 2>/dev/null | xargs -I{} git diff HEAD~5 -- {} 2>/dev/null | grep -E '^\+.*(TODO|FIXME|XXX|HACK)' | grep -v 'TODO (deep ongoing work)' || true)
 if [ -n "$NEW_TODOS" ]; then
-    echo "  WARNING (will hard-fail post-v0.2): New TODO/FIXME added in security-critical files:"
+    echo "  HARD FAIL (Deep Wave): New TODO/FIXME added in security-critical files since recent commits:"
     echo "$NEW_TODOS"
+    echo "  Fix or remove the new TODOs/FIXMEs before tagging."
+    exit 1
 fi
 
 if [ "$MISSING" -eq 1 ]; then

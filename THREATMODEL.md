@@ -140,6 +140,8 @@ Moving large amounts of sensitive logic into the Android Rust crate (Double Ratc
 
 This section must be re-read and updated after every significant Rust migration batch. The model assumes the attacker eventually gets code execution on the device; our job is to make extracting long-term keys, linking sessions, or surviving wipes as expensive and noisy as possible.
 
+**Deep Wave update (current state):** Extreme profile flag + gates now exist in Android for groups/voice/export/decoy. VoiceStream has real HKDF + zeroize. pre-tag-check has hard blocks on missing evidence and new TODOs in critical files. demo-pass surface is heavily isolated behind strict + Extreme gates. GroupSenderKey uses real HKDF. All changes pushed with full ritual. See EXTREME_PROFILE.md and latest commits for details.
+
 ### Why This Is Strong Against the Threats You Mentioned
 
 **Against nation-state / intelligence agencies / "branches" (Pegasus-class, Sandvine, etc.):**
