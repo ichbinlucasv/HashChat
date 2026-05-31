@@ -720,11 +720,10 @@ class MainActivity : AppCompatActivity() {
                                 // In a full implementation we would store and pass the actual exported blob here
                                 // =====================================================================
                                 // EXTREME OPSEC WARNING (crit-2 / Tier 1): HARDCODED DEMO PASSPHRASE
-                                // This is a well-known audit finding. Never use in any real deployment.
-                                // Must be replaced with user-derived passphrase + Android Keystore
-                                // (HashChatKeystore) before v0.2 or any serious usage.
+                                // Now routed through the single guarded helper (tied to strict mode).
+                                // This is the last remaining usage surface for groups.
                                 // =====================================================================
-                                HashChatNative.ratchetImportEncrypted(rid, DEMO_INSECURE_RATCHET_PASSPHRASE.toByteArray(), ByteArray(0))
+                                HashChatNative.ratchetImportEncrypted(rid, getInsecureGroupDemoPassphrase(), ByteArray(0))
                             }
                         }
                     }
@@ -741,12 +740,28 @@ class MainActivity : AppCompatActivity() {
     }
 
     // =====================================================================
-    // EXTREME OPSEC / AUDIT FINDING (Tier 1)
-    // This hardcoded value is ONLY for demo / development persistence.
-    // It must be replaced with a user-derived passphrase + Android Keystore
-    // before any real or production use. See RELEASE_PROCESS.md and THREATMODEL.md.
+    // EXTREME OPSEC / AUDIT FINDING (Tier 1 + Tier 2)
+    // LAST REMAINING "demo-pass" usage surface for groups.
+    // This is the single controlled point. All callers must go through the helper below.
+    // Goal: replace entirely with real user-derived passphrase + HashChatKeystore
+    // roundtrip (or hard-fail outside explicit demo builds).
     // =====================================================================
-    private val DEMO_INSECURE_RATCHET_PASSPHRASE = "demo-pass"
+    private const val DEMO_INSECURE_RATCHET_PASSPHRASE = "demo-pass"
+
+    /**
+     * The last controlled access point for the group persistence demo passphrase.
+     * Now tied to the new strict mode: in sufficiently paranoid environments we
+     * refuse to even attempt the insecure path (forces migration or explicit demo).
+     */
+    private fun getInsecureGroupDemoPassphrase(): ByteArray {
+        if (HashChatNative.isStrictModeEnabled()) {
+            // In a clean/paranoid environment we refuse the last demo-pass path.
+            // This is progress toward removing it entirely.
+            throw IllegalStateException("STRICT MODE: demo-pass group persistence path is refused. Migrate to user-derived + Keystore.")
+        }
+        // Still allowed only in clearly bad/dev environments (the original intent of the demo).
+        return DEMO_INSECURE_RATCHET_PASSPHRASE.toByteArray()
+    }
 
     // Save group state encrypted (Keystore + JNI export - real roundtrip)
     private fun persistGroups() {
@@ -757,12 +772,11 @@ class MainActivity : AppCompatActivity() {
                 // Real export via JNI + Keystore wrap for persistence
                 // =====================================================================
                 // EXTREME OPSEC WARNING (crit-2 / Tier 1): HARDCODED DEMO PASSPHRASE
-                // This is a well-known audit finding. Never use in any real deployment.
-                // Must be replaced with user-derived passphrase + Android Keystore
-                // (HashChatKeystore) before v0.2 or any serious usage.
+                // Now routed through the single guarded helper (tied to strict mode).
+                // This is the last remaining usage surface for groups.
                 // =====================================================================
                 // Using the new higher-level group sender key export when possible (A1 + A3)
-                val exported = HashChatNative.exportGroupSenderKey(rid, DEMO_INSECURE_RATCHET_PASSPHRASE.toByteArray())
+                val exported = HashChatNative.exportGroupSenderKey(rid, getInsecureGroupDemoPassphrase())
                 val wrapped = HashChatKeystore.encryptForStorage(exported)
                 // In a full version we would store the 'wrapped' blob per ratchet for perfect roundtrip import
             }
