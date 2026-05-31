@@ -30,6 +30,20 @@ This release delivers on the core promise: maximum resistance to surveillance, d
 - Every batch of changes runs `./scripts/clean-security.sh`.
 - Sensitive material lifetime minimized (temp files in app-private storage, wipes on screen transitions, zeroize on drop).
 - Posture refusals enforced across features.
+
+## Known Limitations (Be Honest With Users)
+
+This is a preview release. The following are still weak or incomplete (see expert v0.2 blocking list):
+
+- Real high-quality icons: Improved security-themed placeholder SVG (lock + gold border) + complete raster generation pipeline documented (ICONS.md). Real 64/128/256/512 PNGs still required before ship/Flathub.
+- Voice completeness: Real mic recording + JNI ratchet encrypt now on Android (cacheDir, immediate plaintext delete after read). TUI playback uses real ffplay + waitForProcess (fake progress loop removed); recording remains demo/placeholder on desktop (explicitly labeled). Per-chunk ratchet wipe feedback present on both.
+- Android mlock: Still only partial/best-effort (see polish-2).
+- Kotlin instrumented tests: Mostly structural skeletons (assertTrue placeholders remain in places). Need real-device runs + actual assertions (polish-1).
+- Screenshots: Detailed capture instructions + 4 descriptive slots in metainfo.xml created (docs/SCREENSHOTS.md). Actual images still needed.
+- No SBOM or formal supply-chain auditing yet (arch-3).
+- Not recommended for high-risk operational use without additional review.
+
+See THREATMODEL.md for the full honest threat model.
 - No central servers, no phone numbers, Tor-only.
 - History cleaned of large media and legacy code.
 

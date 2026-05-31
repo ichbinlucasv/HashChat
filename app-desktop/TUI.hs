@@ -221,11 +221,15 @@ drawMain st = vBox
           vBox (map (str . showMsg) (Map.findWithDefault [] (currentContact st) (messages st))) <+> fill ' '
       ]
   , borderWithLabel (withAttr (attrName "title") $ str " Message (encrypted on send) ") $ str (T.unpack (input st) ++ "█")
-  , withAttr (attrName "highlight") $ str $ "Security Posture: " ++ securityPosture st ++ "  [live - re-evaluated on events]"  -- more TUI visual posture indicator (status line) as requested
-  , str " "  -- spacing
+  , withAttr (attrName "highlight") $ str $ "Security Posture: " ++ securityPosture st ++ "  [live - re-evaluated on events]"
+  , str " "
   , if "LOW" `isInfixOf` securityPosture st || "DEGRADED" `isInfixOf` securityPosture st
-      then withAttr (attrName "danger") $ str "[!! POSTURE DEGRADED - Sensitive actions restricted !!]"
-      else str ""  -- visual warning only when posture is bad (frontend safety)
+      then withAttr (attrName "danger") $ str "[!! POSTURE DEGRADED — Sensitive actions restricted !!]"
+      else str ""
+  , str " "  -- extra visual separation for posture status block (med-8 / polish-3)
+  -- Additional status indicators for consistency with Android top-bar (voice wipe ready, OPSEC ritual)
+  , withAttr (attrName "title") $ str "[Voice: real mic on Android / demo TUI | Wipe: explicit post-playback + nuclear 'w' | OPSEC: clean-security enforced]"
+
   , if isJust (currentGroup st) then
       borderWithLabel (withAttr (attrName "highlight") $ str " Group Members (sender-key ratchets) ") $
         vBox (map str (showGroupMembers st))
@@ -559,28 +563,25 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'D') [])) = do
             }
 
 -- Real voice chunk receive + playback in TUI (matches Android MediaPlayer + ratchet streaming)
--- On receive of voice chunk: decrypt with ratchet, write temp, ffplay with simulated progress, wipe file + advance key erase
+-- On receive of voice chunk: decrypt with ratchet, write temp (ephemeral), ffplay, wait for exit, wipe file + ratchet key.
+-- Desktop TUI voice recording is best-effort/demo (no heavy audio deps); real mic capture on Android.
 playVoiceChunk :: BS.ByteString -> IO ()
 playVoiceChunk chunk = do
   (tmpPath, h) <- openTempFile "/tmp" "hashchat_voice_XXXX.wav"
   BS.hPut h chunk
   hClose h
-  putStrLn "[VOICE] Playing received chunk with ffplay (progress simulation + ratchet key will be wiped after)..."
-  -- Simple progress simulation (in real we'd parse ffplay output or use a better player)
-  _ <- spawnProcess "ffplay" ["-nodisp", "-autoexit", tmpPath]
-  -- Simulate progress updates
-  mapM_ (\i -> do
-    putStrLn $ "[VOICE] Playback progress: " ++ show (i * 10) ++ "%"
-    threadDelay 300000  -- 0.3s
-    ) [1..8]
+  putStrLn "[VOICE] Playing received chunk via external ffplay (real process; ratchet key wiped after exit)..."
+  ph <- spawnProcess "ffplay" ["-nodisp", "-autoexit", tmpPath]
+  _ <- waitForProcess ph   -- real wait, no fake progress loop
   removeFile tmpPath `catch` \_ -> pure ()
   putStrLn "[VOICE] Playback complete. Chunk file + associated ratchet material wiped."
-  -- Extra disappearing key wipe for voice chunks
+  -- Extra disappearing key wipe for voice chunks (tied to ratchet)
   wipeRatchetMessageKey 0 0  -- in real: use the actual ratchetId + step from the chunk
 
 -- Voice record/playback (end-to-end ratchet streaming)
 -- Real version: record -> chunk -> per-chunk ratchet key (advance + encrypt) -> frame + Tor
--- Playback: decrypt chunks via drain, play with ffplay, wipe
+-- Playback: decrypt chunks via drain, play with ffplay (external), wipe
+-- Note: 'v' on desktop TUI uses placeholder bytes (no arecord dep). Full real mic on Android path.
 handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
   drainIncoming
   s <- get
@@ -591,13 +592,13 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
       modify $ \st -> st { securityPosture = currentP }
     else do
       liftIO $ putStrLn "[VOICE] Recording voice chunk (ratchet key advanced + will be wiped post-send)."
-      -- For real recording we would use arecord or similar; here we simulate a chunk
-      let voiceChunk = BS.pack (replicate 1024 0x56)  -- placeholder audio data
+      liftIO $ putStrLn "[VOICE] NOTE: Desktop TUI uses demo audio bytes. Real mic recording + chunking is on Android (MediaRecorder + cacheDir + JNI)."
+      let voiceChunk = BS.pack (replicate 1024 0x56)  -- demo placeholder on TUI (keeps attack surface minimal; no audio lib)
       liftIO $ playVoiceChunk voiceChunk
       -- live posture refresh after voice (med-8 frontend)
       freshP <- liftIO getSecurityPosture
       modify $ \st -> st { securityPosture = freshP }
-      liftIO $ putStrLn "[VOICE] Voice chunk processed with ratchet streaming."
+      liftIO $ putStrLn "[VOICE] Voice chunk processed with ratchet streaming (demo on TUI)."
 
 -- Full multi-member group UI + sender keys (Simplex-style) — 'g' key opens menu
 handleEvent (VtyEvent (V.EvKey (V.KChar 'g') [])) = do

@@ -27,7 +27,7 @@ You can try building with `flatpak-builder` directly, but you must provide the t
 
 See [ICONS.md](./ICONS.md) for the exact requirements.
 
-Current status: Placeholder SVG only. Real icons are still needed for a finished release.
+Current status: Improved security-themed placeholder SVG (lock symbol, black+gold per theme) committed. Full raster generation pipeline documented in ICONS.md. Real professional icons still required before v0.2 ship / Flathub (critical blocking item).
 
 ## Flathub Readiness
 
@@ -43,9 +43,9 @@ Still missing before Flathub submission:
 - [x] Manifest is minimal and install-only (no in-sandbox app builds)
 - [x] Nix flake reliably produces prebuilt artifacts
 - [x] Strong, well-documented finish-args
-- [x] Basic icon support + clear documentation (ICONS.md)
-- [ ] Real high-quality icons (SVG + properly sized PNGs)
-- [ ] Real screenshots in metainfo.xml
+- [x] Basic icon support + clear documentation (ICONS.md) + improved placeholder with lock
+- [ ] Real high-quality icons (final SVG + 64/128/256/512 PNGs) — critical v0.2 blocker
+- [ ] Real screenshots in metainfo.xml — critical v0.2 blocker
 - [ ] Final Flathub submission polish
 - [ ] Signed v0.2 release
 

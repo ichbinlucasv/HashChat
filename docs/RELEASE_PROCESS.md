@@ -29,14 +29,23 @@
 
 **Pre-Tag Checklist (Run this sequence):**
 ```bash
-# NEVER relax this ritual
+# NEVER relax this ritual (protect clean-security + force-with-lease discipline)
 ./scripts/clean-security.sh
 git status --short
 cargo test --release                    # Must be 9+ tests passing
 (cd android/src/main/rust && cargo test --release)
 cabal build hashchat-cli -f-tui
+# Supply chain (arch-3): Run audit before any real release
+cargo install cargo-audit 2>/dev/null || true
+cargo audit || echo "Review audit warnings manually before tagging"
 # Optional: nix build .#hashchat-flatpak
 # Flatpak (if testing): result/hashchat-tui.flatpak should exist and install cleanly
+
+# Critical before v0.2 signed tag:
+# - Real icons generated (or confirm improved placeholder + docs sufficient for preview)
+# - Real screenshots captured per docs/SCREENSHOTS.md (or confirm placeholders + instructions)
+# - At least one full real-hardware test pass (Tails + physical Android) per TESTING_STRATEGY.md
+# - Honest limitations refreshed in RELEASE_NOTES_v0.2.md
 ```
 
 **Creating the Signed Tag:**

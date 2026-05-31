@@ -44,16 +44,21 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_init(_env: JNIEnv, _class: J
     mlock_android_ratchet_store();
 }
 
-// Partial but real mlock attempt for Android Rust (high-5 / expert request).
-// Locks the sensitive ratchet store in memory where possible.
+// Partial/best-effort mlock for Android Rust (high-5 / expert v0.2 blocking item).
+// On Android, full MCL_CURRENT | MCL_FUTURE mlockall is not reliable without root or special SELinux policies.
+// This only attempts to lock the global ratchet store pointer (may silently fail).
+// Real protection on Android comes primarily from: Keystore hardware-backed keys, app-private storage,
+// process death on wipe, and explicit ZeroizeOnDrop + clear() on sensitive structures.
+// Limitation is documented in RELEASE_NOTES_v0.2.md, THREATMODEL.md, and TESTING_STRATEGY.md.
+// If full mlock is ever achievable (future work), replace this with stronger libc::mlockall.
 #[cfg(target_os = "android")]
 fn mlock_android_ratchet_store() {
     unsafe {
         let ptr = ANDROID_RATCHET_STORE.as_ptr() as *const libc::c_void;
         let len = std::mem::size_of_val(&ANDROID_RATCHET_STORE);
-        // Best-effort mlock (may fail on some Android builds without privileges)
+        // Best-effort only — ignore result. No panic on failure (would break init on many devices).
         let _ = libc::mlock(ptr, len);
-        // Note: munlock on wipe would be ideal but is omitted for now to keep scope minimal.
+        // Future: pair with munlock on explicit wipe paths + madvise(MADV_DONTNEED).
     }
 }
 
@@ -70,7 +75,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_getSecurityPosture(
     // Richer posture signal for Android. Returns structured info that Kotlin can combine
     // with its own checks (debugger, emulator, airplane). Future: add real /proc inspection
     // when running under sufficient privileges or with JNI helpers.
-    let msg = b"Android-Rust-Posture: JVM-delegated (combine with Kotlin debugger/emulator/airplane checks; mlock limited on Android)";
+    let msg = b"Android-Rust-Posture: JVM-delegated (mlock best-effort only; real strength = Keystore + app-private + explicit wipe + Zeroize. See docs for limitations)";
     vec_to_java_byte_array(&mut _env, msg)
 }
 

@@ -49,15 +49,28 @@
     </release>
   </releases>
 
-  <!-- TODO: Replace these placeholder screenshots with real ones before Flathub submission -->
+  <!-- 
+    TODO (Critical for v0.2 / Flathub):
+    Replace these placeholders with REAL screenshots before any public release or Flathub submission.
+    Capture on clean Tails/Qubes/Fedora with proper terminal size + Android emulator or real device.
+    See docs/SCREENSHOTS.md for exact step-by-step capture instructions (posture banner, voice wipe, group QR, refusal flows).
+  -->
   <screenshots>
     <screenshot type="default">
-      <caption>Main chat interface with live Security Posture indicator</caption>
-      <image>https://example.com/screenshots/hashchat-main.png</image>
+      <caption>Desktop TUI main chat with live Security Posture (MAX PARANOID banner + status line) in black + gold theme</caption>
+      <image>https://example.com/screenshots/hashchat-tui-main.png</image>
     </screenshot>
     <screenshot>
-      <caption>Voice message playback with progress and post-playback wipe notification</caption>
-      <image>https://example.com/screenshots/hashchat-voice.png</image>
+      <caption>Android voice message playback with real SeekBar progress + explicit "ratchet key advanced + wiped after playback" feedback</caption>
+      <image>https://example.com/screenshots/hashchat-android-voice.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Android long-press actions menu (Block / Report / Delete / Disappear timer / Security Info) matching TUI 'a' parity</caption>
+      <image>https://example.com/screenshots/hashchat-android-actions.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Desktop TUI showing DYNAMIC POSTURE REFUSAL for voice in low-security environment (with clear warning)</caption>
+      <image>https://example.com/screenshots/hashchat-tui-posture-refusal.png</image>
     </screenshot>
   </screenshots>
 

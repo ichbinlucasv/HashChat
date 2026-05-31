@@ -133,7 +133,7 @@ flatpak install --user result/hashchat-tui.flatpak
 flatpak run org.hashchat.HashChat
 ```
 
-**Current status**: The manifest is minimal (install-only). Real icons are still needed for a fully polished release. See `flatpak/README.md` and `flatpak/ICONS.md` for details.
+**Current status**: Manifest minimal install-only (no in-sandbox builds). Improved black+gold lock SVG placeholder committed + exact raster pipeline in ICONS.md. Real professional icons (64/128/256/512 PNGs) still critical blocker before v0.2/Flathub. See flatpak/ for details.
 
 ---
 

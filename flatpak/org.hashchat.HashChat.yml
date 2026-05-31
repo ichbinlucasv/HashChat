@@ -23,8 +23,9 @@ finish-args:
   - --unset-env=SESSION_MANAGER
   # Future work
   # - --seccomp=seccomp-extra.json     # Custom strict syscall filter
-  # Icons
-  # TODO: Add real high-quality icons before any public distribution
+  # Icons (Critical for v0.2)
+  # TODO: Add real high-quality 64/128/256/512 PNG + final SVG before any public distribution or Flathub.
+  # Current improved placeholder (lock in black+gold) is in icons/hicolor/scalable. See ICONS.md for pipeline.
 
 # Note: We intentionally do not set broad build-options like no-network here anymore,
 # because the Nix-driven path already builds everything outside the Flatpak sandbox.
@@ -67,18 +68,23 @@ modules:
     build-commands:
       - install -Dm644 flatpak/org.hashchat.HashChat.desktop /app/share/applications/org.hashchat.HashChat.desktop
       - install -Dm644 flatpak/org.hashchat.HashChat.metainfo.xml /app/share/metainfo/org.hashchat.HashChat.metainfo.xml
-      # Install scalable icon (primary)
+      # Install scalable icon (primary, vector, correct for all sizes)
       - install -Dm644 flatpak/icons/hicolor/scalable/apps/org.hashchat.HashChat.svg \
           /app/share/icons/hicolor/scalable/apps/org.hashchat.HashChat.svg
 
-      # Install the scalable icon as fallback for raster sizes
-      # Real production PNGs should replace these before any public release
-      - install -Dm644 flatpak/icons/hicolor/scalable/apps/org.hashchat.HashChat.svg \
-          /app/share/icons/hicolor/128x128/apps/org.hashchat.HashChat.svg
-      - install -Dm644 flatpak/icons/hicolor/scalable/apps/org.hashchat.HashChat.svg \
-          /app/share/icons/hicolor/64x64/apps/org.hashchat.HashChat.svg
-
-      # TODO: Replace with real high-quality SVG + properly sized PNGs (64, 128, 256, 512) before Flathub or public distribution
+      # RASTER ICONS (Critical v0.2 / Flathub blocking item)
+      # TODO: Generate real 64/128/256/512 PNGs from the improved SVG using rsvg-convert / ImageMagick / Inkscape
+      # (see flatpak/ICONS.md for exact commands). Then replace the loop below with proper PNG installs.
+      # Current: Only scalable is installed. No silent fallbacks or || true allowed (fail-hard OPSEC).
+      # The loop below is intentionally a no-op placeholder that will be replaced when real PNGs exist.
+      - |
+        # Real PNGs must be added here before Flathub. See ICONS.md.
+        # Example (once PNGs exist):
+        # for size in 64 128 256 512; do
+        #   install -Dm644 flatpak/icons/hicolor/${size}x${size}/apps/org.hashchat.HashChat.png \
+        #     /app/share/icons/hicolor/${size}x${size}/apps/org.hashchat.HashChat.png
+        # done
+        echo "Icon rasters not yet present (see ICONS.md) - only scalable vector installed."
     sources:
       - type: dir
         path: .

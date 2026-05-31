@@ -40,6 +40,13 @@ jobs:
           # Must cover: test_disappearing_wipe_integration, test_skipped_keys_and_wipe,
           # test_framing_and_mlock_safety_simulation, test_full_send_recv_roundtrip, etc.
           cargo test --release
+
+          # Supply-chain (arch-3): Dependency audit (cargo-audit).
+          # Not yet failing the build (many dev-only advisories in Haskell/Rust ecosystem),
+          # but must be run manually before signed v0.2 tag and any real release.
+          # TODO: Promote to `|| true` removal + SBOM generation (e.g. cargo sbom) for production.
+          cargo install cargo-audit 2>/dev/null || echo "cargo-audit not installed in this env"
+          cargo audit || echo "Audit completed with warnings or skipped (run locally with 'cargo install cargo-audit && cargo audit' before tagging)"
         env:
           CARGO_TERM_COLOR: always
 

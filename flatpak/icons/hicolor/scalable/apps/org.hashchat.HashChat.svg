@@ -1,21 +1,33 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <!-- Black background with rounded corners -->
+  <!-- Solid black background (#000000 per project theme) -->
   <rect width="128" height="128" rx="22" fill="#000000"/>
   
-  <!-- Thin gold border for a secure, premium feel -->
-  <rect x="5" y="5" width="118" height="118" rx="18" fill="none" stroke="#FFD700" stroke-width="2.5"/>
+  <!-- Strong gold security border (#FFD700) -->
+  <rect x="3" y="3" width="122" height="122" rx="19" fill="none" stroke="#FFD700" stroke-width="4"/>
   
-  <!-- Inner subtle ring -->
-  <rect x="14" y="14" width="100" height="100" rx="12" fill="none" stroke="#FFD700" stroke-width="1" opacity="0.3"/>
+  <!-- Subtle inner gold ring (depth) -->
+  <rect x="10" y="10" width="108" height="108" rx="14" fill="none" stroke="#FFD700" stroke-width="1.5" opacity="0.22"/>
   
-  <!-- "HC" text - clean, bold, centered -->
+  <!-- Simple lock icon (shackle + body) in gold - signals maximum security / OPSEC -->
+  <!-- Shackle -->
+  <path d="M 46 42 Q 46 32 54 32 Q 62 32 62 42" fill="none" stroke="#FFD700" stroke-width="4.5" stroke-linecap="round"/>
+  <!-- Lock body -->
+  <rect x="40" y="48" width="28" height="26" rx="3" fill="#FFD700"/>
+  <!-- Keyhole -->
+  <circle cx="54" cy="56" r="4" fill="#000000"/>
+  <rect x="52.5" y="58" width="3" height="8" fill="#000000"/>
+  
+  <!-- HC monogram below lock (small, clean) -->
   <text 
     x="64" 
-    y="84" 
+    y="100" 
     font-family="monospace" 
-    font-size="54" 
-    font-weight="700"
+    font-size="22" 
+    font-weight="bold" 
     fill="#FFD700" 
     text-anchor="middle" 
-    letter-spacing="1">HC</text>
+    letter-spacing="3">HC</text>
+  
+  <!-- Very subtle bottom security line -->
+  <line x1="30" y1="112" x2="98" y2="112" stroke="#FFD700" stroke-width="1" opacity="0.35"/>
 </svg>

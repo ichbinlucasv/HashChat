@@ -93,13 +93,14 @@
 - Cross-device encrypted ratchet export is functional (with strong OPSEC warnings).
 - Tests + CI now exercise many paranoid paths (wipe, posture, disappearing, export).
 
-**Remaining Expert Priorities:**
-- Full port of real DoubleRatchet (to_bytes/from_bytes + zeroization) to Android Rust side.
-- mlock + seccomp on Android Rust.
-- Expanded Rust test coverage (disappearing key wipe, group sender-key export, framing roundtrips, envelope).
-- Android: real Screen enum + backstack in onBackPressed + improved posture helpers (debugger, emulator, airplane + gating). JNI getSecurityPosture hook implemented and wired into Kotlin reEvaluate. Desktop TUI: posture refresh on more events (profile, decoy, voice/file mentions), title shows "live posture". Voice wipe feedback explicit in Android UI. 8 Rust tests + Kotlin skeletons. Posture more visible + gating in both frontends.
-- Real Argon2id + AES-GCM envelope now used for all Android ratchet export/import paths.
-- Formal verification or stronger property testing of the ratchet core.
+**Remaining Expert Priorities (v0.2 blocking + high polish):**
+- Real professional icons (64/128/256/512 PNG + final SVG) + real screenshots (see ICONS.md + docs/SCREENSHOTS.md).
+- Voice: real end-to-end chunking on both (Android mic now reads real bytes; TUI recording labeled demo).
+- Android mlock: Explicitly best-effort only (libc::mlock on ratchet store; full mlockall unreliable without privileges). Primary Android memory protection = Keystore + app-private cache + explicit delete on wipe/lifecycle + Rust ZeroizeOnDrop. Documented in code, RELEASE_NOTES, TESTING_STRATEGY.
+- Kotlin instrumented tests exercised regularly on real devices (not just emulators) with actual assertions.
+- Move more logic (voice chunking, persistence helpers) into Rust while keeping JNI thin.
+- SBOM / cargo-audit step before real release.
+- Signed v0.2 tag execution after above + final clean + real-hardware test pass.
 
 ## Pegasus / Nation-State Resistance Philosophy
 
