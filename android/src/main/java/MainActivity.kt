@@ -36,6 +36,11 @@ object HashChatNative {
     // Goal: Move per-chunk ratchet advance, decryption, and key wipe into Rust.
     // This keeps the JNI surface thin and moves sensitive logic out of Kotlin.
     external fun processVoiceChunk(encryptedChunk: ByteArray): ByteArray
+
+    // Higher-level group ratchet export (migration target).
+    // Goal: Move the full export + outer encryption logic into Rust so Kotlin
+    // doesn't have to handle the passphrase + wrapping directly for groups.
+    external fun exportGroupRatchet(stateId: Int, passphrase: ByteArray): ByteArray
     // Future: full framed Tor send, etc.
 }
 
@@ -639,7 +644,9 @@ class MainActivity : AppCompatActivity() {
                 // Must be replaced with user-derived passphrase + Android Keystore
                 // (HashChatKeystore) before v0.2 or any serious usage.
                 // =====================================================================
-                val exported = HashChatNative.ratchetExportEncrypted(rid, DEMO_INSECURE_RATCHET_PASSPHRASE.toByteArray())
+                // Using the new higher-level exportGroupRatchet entry point (migration target).
+                // This allows us to move more of the export + wrapping logic into Rust over time.
+                val exported = HashChatNative.exportGroupRatchet(rid, DEMO_INSECURE_RATCHET_PASSPHRASE.toByteArray())
                 val wrapped = HashChatKeystore.encryptForStorage(exported)
                 // In a full version we would store the 'wrapped' blob per ratchet for perfect roundtrip import
             }

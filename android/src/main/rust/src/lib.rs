@@ -455,6 +455,25 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_processVoiceChunk(
     Java_chat_hashchat_HashChatNative_decryptWithKey(env, _class, key_jba, encrypted)
 }
 
+// === Higher-level group ratchet export (Tier 3 migration target) ===
+// This is the canonical entry point for exporting a group member's ratchet.
+// Current implementation delegates to the existing ratchetExportEncrypted.
+// Future goal: This function can encapsulate the full export + outer encryption
+// logic inside Rust, so Kotlin only passes the state_id and passphrase and
+// receives a fully protected blob. This reduces sensitive passphrase handling
+// surface in Kotlin.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_exportGroupRatchet(
+    mut env: JNIEnv,
+    _class: JClass,
+    state_id: jint,
+    passphrase: jbyteArray,
+) -> jbyteArray {
+    // During migration, delegate to the existing (already strong) export path.
+    // When we want to move more logic, we can implement the full flow here.
+    Java_chat_hashchat_HashChatNative_ratchetExportEncrypted(env, _class, state_id, passphrase)
+}
+
 // === Cross-device ratchet export (for new device / recovery) ===
 // Delegates to the real ratchetExportEncrypted path now that high-4 DoubleRatchet is present.
 #[no_mangle]
