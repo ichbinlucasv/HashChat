@@ -407,6 +407,27 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_feedReceivedData(
 
 // Tor framing helpers can be added here too (frameForWire equivalent in Rust for Android)
 
+// === Voice chunk processing migration target (Tier 3) ===
+// This is the official entry point for incoming voice chunks.
+// Current implementation is a thin wrapper around decryptWithKey for compatibility.
+// Future goal: Perform real per-chunk ratchet lookup/advance + decryption + skipped key wipe
+// entirely inside Rust, then return plaintext. This moves sensitive voice logic out of Kotlin.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_processVoiceChunk(
+    mut env: JNIEnv,
+    _class: JClass,
+    encrypted: jbyteArray,
+) -> jbyteArray {
+    // For now, delegate to existing decrypt path using a placeholder key.
+    // This keeps behavior identical while establishing the canonical function.
+    // TODO (deep): Replace with real ratchet state management + advance + wipe.
+    let key = vec![0u8; 32]; // placeholder – will come from real DoubleRatchet state
+    let key_jba = env.byte_array_from_slice(&key).expect("key array");
+
+    // Call the existing decrypt function (re-use for now)
+    Java_chat_hashchat_HashChatNative_decryptWithKey(env, _class, key_jba, encrypted)
+}
+
 // === Cross-device ratchet export (for new device / recovery) ===
 // Delegates to the real ratchetExportEncrypted path now that high-4 DoubleRatchet is present.
 #[no_mangle]

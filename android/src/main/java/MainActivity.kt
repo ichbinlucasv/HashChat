@@ -31,6 +31,11 @@ object HashChatNative {
     external fun exportRatchetForDevice(stateId: Int, passphrase: ByteArray): ByteArray
     external fun pushReceivedVoiceChunk(data: ByteArray)
     external fun getSecurityPosture(): String   // richer posture from Rust side (high-5)
+
+    // Voice chunk processing migration target (Tier 3 architectural improvement).
+    // Goal: Move per-chunk ratchet advance, decryption, and key wipe into Rust.
+    // This keeps the JNI surface thin and moves sensitive logic out of Kotlin.
+    external fun processVoiceChunk(encryptedChunk: ByteArray): ByteArray
     // Future: full framed Tor send, etc.
 }
 
@@ -197,9 +202,9 @@ class MainActivity : AppCompatActivity() {
                     while (true) {
                         val chunk = voiceChunkQueue.take()
                         try {
-                            // Per-chunk ratchet key (in real: obtained from current DoubleRatchet via JNI)
-                            val key = ByteArray(32) { it.toByte() }
-                            val decrypted = HashChatNative.decryptWithKey(key, chunk)
+                            // Migration target: Use the new canonical processVoiceChunk entry point.
+                            // This moves per-chunk ratchet logic into Rust over time (thin JNI goal).
+                            val decrypted = HashChatNative.processVoiceChunk(chunk)
 
                             runOnUiThread {
                                 addMessage("Peer [VOICE]: chunk from Tor receiver (JNI + ratchet advanced)", false)
@@ -207,7 +212,7 @@ class MainActivity : AppCompatActivity() {
                             }
 
                             // After playback, the key for this chunk should be wiped (disappearing/forward secrecy)
-                            // In real: call into JNI to wipe the specific skipped key
+                            // In real: the Rust side of processVoiceChunk will handle the wipe.
                         } catch (_: Exception) {}
                     }
                 }.apply { isDaemon = true }.start()
