@@ -447,6 +447,24 @@ struct VoiceStream {
     _placeholder: (),
 }
 
+impl VoiceStream {
+    fn new(id: u32) -> Self {
+        VoiceStream { id, current_step: 0, _placeholder: () }
+    }
+
+    // Future real method — this will contain the actual ratchet decrypt + advance + wipe
+    fn process_chunk(&mut self, encrypted: &[u8]) -> Vec<u8> {
+        // Placeholder for now
+        let key = [0u8; 32];
+        let plaintext = decrypt_with_key(&key, encrypted).unwrap_or_default();
+
+        // Simulate advancement (real version will do real DoubleRatchet advance + wipe)
+        self.current_step = self.current_step.wrapping_add(1);
+
+        plaintext
+    }
+}
+
 static mut VOICE_STREAMS: Vec<VoiceStream> = Vec::new();
 
 // Internal Rust function for voice chunk processing.
@@ -461,18 +479,14 @@ fn process_voice_chunk_internal(encrypted: &[u8]) -> Vec<u8> {
     // 4. Wipe the used key (and prune skipped keys if needed)
     // 5. Return plaintext
 
-    // Ensure at least one VoiceStream exists (simulating stream creation)
     unsafe {
         if VOICE_STREAMS.is_empty() {
-            VOICE_STREAMS.push(VoiceStream { id: 0, current_step: 0, _placeholder: () });
+            VOICE_STREAMS.push(VoiceStream::new(0));
         }
-        // Simulate ratchet step advancement inside Rust
-        VOICE_STREAMS[0].current_step = VOICE_STREAMS[0].current_step.wrapping_add(1);
-    }
 
-    // Placeholder logic — will be replaced by real ratchet operations from the VoiceStream
-    let key = [0u8; 32];
-    decrypt_with_key(&key, encrypted).unwrap_or_default()
+        // Use the VoiceStream's own method — this is the architectural direction
+        VOICE_STREAMS[0].process_chunk(encrypted)
+    }
 }
 
 #[no_mangle]
