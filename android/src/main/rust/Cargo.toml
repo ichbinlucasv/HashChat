@@ -18,4 +18,8 @@ sha2 = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 jni = "0.21"   # For proper JNI glue to Kotlin MainActivity + HashChatKeystore
 argon2 = "0.5" # Real KDF for ratchet export envelope (high-4 / crit-2 OPSEC)
+
+# OPSEC-critical (mirrored from root crate): Constant-time comparison.
+# Replaces deprecated internal ring API. subtle is the recommended audited primitive.
+subtle = "2.6"
 # Note: no Python, no gi-gtk, pure Rust + Haskell as per project rules.

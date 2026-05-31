@@ -4,6 +4,7 @@ use ring::hmac;
 use ring::rand::{SecureRandom, SystemRandom};
 use zeroize::Zeroize;
 use ed25519_dalek::SigningKey;
+use subtle::ConstantTimeEq;  // OPSEC: audited constant-time comparison (replaces deprecated ring internal API)
 use std::fs;
 use std::os::raw::c_void;
 use std::ptr;
@@ -60,7 +61,9 @@ pub extern "C" fn rust_secure_random(buf: *mut u8, len: usize) {
 pub extern "C" fn rust_constant_time_eq(a: *const u8, b: *const u8, len: usize) -> bool {
     let a_slice = unsafe { std::slice::from_raw_parts(a, len) };
     let b_slice = unsafe { std::slice::from_raw_parts(b, len) };
-    ring::constant_time::verify_slices_are_equal(a_slice, b_slice).is_ok()
+    // OPSEC: Constant-time comparison using the audited subtle crate.
+    // This removes dependency on ring's deprecated internal API (no side-channel guarantees).
+    a_slice.ct_eq(b_slice).into()
 }
 
 #[no_mangle]
@@ -95,7 +98,9 @@ pub extern "C" fn rust_secure_zero(ptr: *mut u8, len: usize) {
 pub extern "C" fn rust_secure_compare(a: *const u8, b: *const u8, len: usize) -> bool {
     let a_slice = unsafe { std::slice::from_raw_parts(a, len) };
     let b_slice = unsafe { std::slice::from_raw_parts(b, len) };
-    ring::constant_time::verify_slices_are_equal(a_slice, b_slice).is_ok()
+    // OPSEC: Constant-time comparison using the audited subtle crate.
+    // This removes dependency on ring's deprecated internal API (no side-channel guarantees).
+    a_slice.ct_eq(b_slice).into()
 }
 
 // ==================== Double Ratchet FFI (for message system) ====================

@@ -19,6 +19,12 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 argon2 = "0.5"
 libc = "0.2"   # for mlockall / seccomp primitives on Linux (used under cfg(target_os="linux"))
 
+# OPSEC-critical: Constant-time comparison primitive.
+# Replaces deprecated ring::constant_time::verify_slices_are_equal (internal API, no side-channel promises).
+# subtle is the standard, audited crate used across the Rust crypto ecosystem (dalek, RustCrypto, etc.).
+# It is tiny, has no extra runtime deps in recent versions, and makes security intent explicit for auditors.
+subtle = "2.6"
+
 [features]
 default = []
 # long-13: optional gated quantum resistance (stub only in v0.2).
