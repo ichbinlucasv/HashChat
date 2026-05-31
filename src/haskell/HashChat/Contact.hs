@@ -34,6 +34,12 @@ defaultContact cid name onion = Contact
   , ratchetId    = Nothing
   }
 
+-- Expanded rec-14: Minimal protocol message format example (for future implementation)
+-- type IntroBlob = (ByteString, ByteString, Word64, ByteString)  -- (onion, pubHint, timestamp, sig)
+-- Functions to implement later:
+-- createIntroductionBlob :: Contact -> ByteString -> IO ByteString
+-- verifyIntroductionBlob :: ByteString -> ByteString -> IO (Maybe Contact)
+
 addContact :: Contact -> [Contact] -> [Contact]
 addContact c cs = c : filter ((/= contactId c) . contactId) cs
 

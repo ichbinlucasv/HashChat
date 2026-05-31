@@ -213,7 +213,7 @@ drawUI st =
 
 drawMain :: AppState -> Widget Name
 drawMain st = vBox
-  [ withAttr (attrName "title") $ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ (maybe "" (" | Group: " ++) (currentGroup st)) ++ "  [p=burner n=new D=decoy g=group w=wipe a=actions] (TOR-ONLY | Double Ratchet + Tor v3 + Sender Keys) Security: " ++ securityPosture st ++ (if actionPending st then " [ACTIONS MENU ACTIVE]" else "")
+  [ withAttr (attrName "title") $ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ (maybe "" (" | Group: " ++) (currentGroup st)) ++ "  [p=burner n=new D=decoy g=group w=wipe a=actions] (TOR-ONLY | Double Ratchet + Tor v3 + Sender Keys) Security: " ++ securityPosture st ++ (if actionPending st then " [ACTIONS MENU ACTIVE]" else "") ++ " [posture live]"  -- med-8 desktop parity note
   , hBox
       [ borderWithLabel (withAttr (attrName "highlight") $ str " Contacts (Simplex-style: long-press equiv = 'a') | Groups: g") $
           vBox (map (str . showContact (blockedContacts st)) ["Alice", "Bob", "Support"])
@@ -221,6 +221,11 @@ drawMain st = vBox
           vBox (map (str . showMsg) (Map.findWithDefault [] (currentContact st) (messages st))) <+> fill ' '
       ]
   , borderWithLabel (withAttr (attrName "title") $ str " Message (encrypted on send) ") $ str (T.unpack (input st) ++ "█")
+  , withAttr (attrName "highlight") $ str $ "Security Posture: " ++ securityPosture st ++ "  [live - re-evaluated on events]"  -- more TUI visual posture indicator (status line) as requested
+  , str " "  -- spacing
+  , if "LOW" `isInfixOf` securityPosture st || "DEGRADED" `isInfixOf` securityPosture st
+      then withAttr (attrName "danger") $ str "[!! POSTURE DEGRADED - Sensitive actions restricted !!]"
+      else str ""  -- visual warning only when posture is bad (frontend safety)
   , if isJust (currentGroup st) then
       borderWithLabel (withAttr (attrName "highlight") $ str " Group Members (sender-key ratchets) ") $
         vBox (map str (showGroupMembers st))
@@ -260,7 +265,7 @@ drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll
   , str "?              → Toggle this help"
   , withAttr (attrName "danger") $ str "w              → PANIC WIPE (Nuclear Option - Destroys everything instantly)"
   , str "p / n          → Burner profile switch / new (dynamic posture gated)"
-  , str "D              → Toggle decoy (plausible deniability) profile"
+  , str "D              → Toggle decoy (plausible deniability) profile (posture gated + visual feedback)"
   , str "a              → Contact actions (block/mute/delete/report/disappear)"
   , str ""
   , withAttr (attrName "encrypted") $ str "All messages use per-contact Double Ratchet + AES-256-GCM."
@@ -579,11 +584,20 @@ playVoiceChunk chunk = do
 handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
   drainIncoming
   s <- get
-  liftIO $ putStrLn "[VOICE] Recording voice chunk (ratchet key advanced + will be wiped post-send)."
-  -- For real recording we would use arecord or similar; here we simulate a chunk
-  let voiceChunk = BS.pack (replicate 1024 0x56)  -- placeholder audio data
-  liftIO $ playVoiceChunk voiceChunk
-  liftIO $ putStrLn "[VOICE] Voice chunk processed with ratchet streaming."
+  currentP <- liftIO getSecurityPosture
+  if not (isActionAllowedInPosture currentP "voice")
+    then do
+      liftIO $ putStrLn "[SECURITY] DYNAMIC POSTURE REFUSAL: Voice disabled in current environment."
+      modify $ \st -> st { securityPosture = currentP }
+    else do
+      liftIO $ putStrLn "[VOICE] Recording voice chunk (ratchet key advanced + will be wiped post-send)."
+      -- For real recording we would use arecord or similar; here we simulate a chunk
+      let voiceChunk = BS.pack (replicate 1024 0x56)  -- placeholder audio data
+      liftIO $ playVoiceChunk voiceChunk
+      -- live posture refresh after voice (med-8 frontend)
+      freshP <- liftIO getSecurityPosture
+      modify $ \st -> st { securityPosture = freshP }
+      liftIO $ putStrLn "[VOICE] Voice chunk processed with ratchet streaming."
 
 -- Full multi-member group UI + sender keys (Simplex-style) — 'g' key opens menu
 handleEvent (VtyEvent (V.EvKey (V.KChar 'g') [])) = do

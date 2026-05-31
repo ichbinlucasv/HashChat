@@ -67,18 +67,44 @@
               export XDG_CACHE_HOME=$TMPDIR/.cache
               mkdir -p $out
 
-              # Pure reproducible build of the bundle (pinned tools from this flake)
+              # === KEY HARDENING: Build both Rust lib and TUI reliably outside the Flatpak sandbox ===
+              echo "Building Rust library reliably..."
+              (cd src/rust && cargo build --release --locked) || (echo "ERROR: Reliable Rust build failed" && exit 1)
+
+              echo "Building TUI reliably using project build system (outside Flatpak sandbox)..."
+              ${pkgs.bash}/bin/bash ./build.sh tui || (echo "ERROR: Reliable TUI build failed" && exit 1)
+
+              # Prepare the two prebuilt artifacts the minimal manifest needs
+              mkdir -p prebuilt
+
+              # TUI
+              TUI_BIN=$(find . -name hashchat-tui -type f | head -1)
+              [ -n "$TUI_BIN" ] || (echo "ERROR: TUI binary missing" && exit 1)
+              cp "$TUI_BIN" prebuilt/hashchat-tui && chmod +x prebuilt/hashchat-tui
+
+              # Rust lib (prefer .so)
+              cp src/rust/target/release/libhashchat_rust.so prebuilt/ 2>/dev/null || \
+                cp src/rust/target/release/libhashchat_rust.a prebuilt/
+
+              echo "Prebuilts ready for Flatpak manifest"
+
+              # Now run flatpak-builder. The manifest will prefer the prebuilt binary.
               ${pkgs.flatpak-builder}/bin/flatpak-builder \
                 --force-clean \
                 --repo=repo \
                 build-dir ${flatpakManifest}
 
-              ${pkgs.flatpak}/bin/flatpak build-export --force repo-dir build-dir
+              ${pkgs.flatpak}/bin/flatpak build-export --force repo build-dir
               ${pkgs.flatpak}/bin/flatpak build-bundle \
                 --arch=x86_64 \
-                repo-dir \
+                repo \
                 $out/hashchat-tui.flatpak \
                 org.hashchat.HashChat
+
+              if [ ! -f "$out/hashchat-tui.flatpak" ]; then
+                echo "ERROR: Flatpak bundle was not produced" >&2
+                exit 1
+              fi
 
               echo "Pure-Nix Flatpak bundle produced: $out/hashchat-tui.flatpak"
             '';
@@ -113,31 +139,72 @@
           '';
         };
 
-        # Complete Nix Android toolchain derivation (full cross-compile, no fallbacks, pinned)
-        # Produces reproducible libhashchat_android.so for aarch64 + armv7 with the exact
-        # paranoid core (ratchet + mlock + seccomp + Keystore-compatible export).
-        # Usage: nix build .#hashchat-android-rust
-        # Requires rust-android setup in the flake (extend with androidRustEnv for pure Nix).
+        # Complete Nix Android toolchain derivation (long-11).
+        # Goal: reproducible .so emission for the real DoubleRatchet (now with full parity
+        # after high-4 work: ratchet.rs copy, skipped keys, export/import, zeroize, JNI 0.21).
+        #
+        # Current honest state (expert view):
+        # - Full pure-Nix Android cross without any host rustup/NDK is extremely heavy
+        #   (requires ndk-bundle, androidRustEnv overlay, llvm etc. in the sandbox).
+        # - We therefore provide a FAIL-HARD derivation that refuses to silently produce
+        #   empty artifacts. It either succeeds with real .so files or the build aborts
+        #   with clear instructions for the supported one-command local path.
+        #
+        # Recommended reproducible path for users (and CI):
+        #   cd android && ./build-android.sh   (uses cargo-ndk, fails hard on missing .so)
+        #
+        # The flake path below will succeed in a properly provisioned Android NDK env
+        # or fail loudly. No more touch placeholders (those were supply-chain/OPSEC risks).
         packages.hashchat-android-rust = pkgs.rustPlatform.buildRustPackage {
           pname = "hashchat-android-rust";
           version = "0.1.9";
           src = ./android/src/main/rust;
           cargoLock = { lockFile = ./android/src/main/rust/Cargo.lock; };
           buildInputs = with pkgs; [ pkg-config openssl ];
-          # Full cross for Android (aarch64 + armv7)
-          # Pure Nix path: use cargo-ndk or androidRustEnv (add overlay for complete reproducibility)
+
           buildPhase = ''
-            echo "=== Complete Nix Android toolchain (paranoid, pinned) ==="
-            echo "Cross targets: aarch64-linux-android, armv7-linux-androideabi"
-            echo "Steps (reproducible):"
-            echo "  rustup target add aarch64-linux-android armv7-linux-androideabi"
-            echo "  cargo ndk -t arm64-v8a -t armeabi-v7a build --release"
-            echo "Output: target/*/release/libhashchat_android.so (ready for APK JNI)"
+            set -euo pipefail
+            echo "=== hashchat-android-rust (long-11 hardened, no soft paths) ==="
+            echo "Building real DoubleRatchet + JNI for Android (aarch64 + armv7)..."
+
+            # We do not silently succeed. If the host does not have the Android NDK
+            # toolchain configured for cargo-ndk, this must fail hard.
+            if ! command -v cargo-ndk >/dev/null 2>&1; then
+              echo "ERROR (long-11): cargo-ndk not found in PATH."
+              echo "For reproducible Android .so builds use the documented one-command path:"
+              echo "  cd android && ./build-android.sh"
+              echo "This produces app/src/main/jniLibs/*/libhashchat_android.so"
+              echo "The pure-Nix path requires additional overlays (ndk, rust-android)."
+              echo "See docs/BUILD_ISOLATION.md and docs/BUILD_REPRODUCIBILITY.md"
+              exit 1
+            fi
+
+            # Real cross compile - will fail if targets or NDK are missing (correct behavior)
+            cargo ndk -t arm64-v8a -t armeabi-v7a build --release --locked
+
+            # Fail hard if the expected .so files were not actually emitted
+            for abi in aarch64-linux-android armv7-linux-androideabi; do
+              so="target/$abi/release/libhashchat_android.so"
+              if [ ! -f "$so" ]; then
+                echo "ERROR (long-11): Expected $so was not produced. Build aborted."
+                exit 1
+              fi
+            done
+
             mkdir -p $out/lib/aarch64 $out/lib/armv7
-            touch $out/lib/aarch64/libhashchat_android.so
-            touch $out/lib/armv7/libhashchat_android.so
+            cp target/aarch64-linux-android/release/libhashchat_android.so $out/lib/aarch64/
+            cp target/armv7-linux-androideabi/release/libhashchat_android.so $out/lib/armv7/
+            echo "SUCCESS: real .so files written to $out/lib/"
           '';
-          installPhase = "cp -r $out $out";
+
+          installPhase = ''
+            # Nothing further; artifacts are already validated and copied in buildPhase
+            true
+          '';
+
+          meta = {
+            description = "HashChat Android Rust (real DoubleRatchet, fail-hard, long-11)";
+          };
         };
       });
 }

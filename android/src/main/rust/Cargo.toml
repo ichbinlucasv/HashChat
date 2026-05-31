@@ -7,5 +7,15 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Re-use or re-export the main hashchat-rust logic
-# In practice you would depend on the parent crate or copy the relevant modules.
+# Full paranoid Double Ratchet for Android (high-4).
+# These match the root hashchat-rust crate for behavioral parity between desktop and phone.
+# Any dep change here MUST be mirrored in the root Cargo.toml and vice-versa.
+ring = "0.17"
+zeroize = { version = "1.7", features = ["derive"] }
+rand = "0.8"
+hkdf = "0.12"
+sha2 = "0.10"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+jni = "0.21"   # For proper JNI glue to Kotlin MainActivity + HashChatKeystore
+argon2 = "0.5" # Real KDF for ratchet export envelope (high-4 / crit-2 OPSEC)
+# Note: no Python, no gi-gtk, pure Rust + Haskell as per project rules.

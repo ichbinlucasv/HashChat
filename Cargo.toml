@@ -18,3 +18,10 @@ sha2 = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 argon2 = "0.5"
 libc = "0.2"   # for mlockall / seccomp primitives on Linux (used under cfg(target_os="linux"))
+
+[features]
+default = []
+# long-13: optional gated quantum resistance (stub only in v0.2).
+# When enabled, src/rust/quantum.rs is compiled and the hybrid interface is available.
+# No actual PQ security is provided until a real audited ML-KEM implementation lands.
+quantum = []

@@ -10,6 +10,14 @@ use std::ptr;
 
 mod ratchet;
 
+// long-13: gated quantum module. Only compiled with `cargo build --features quantum`.
+// The module itself documents the strict constant-time / zeroize / side-channel
+// requirements that any future real implementation must meet.
+#[cfg(feature = "quantum")]
+mod quantum;
+#[cfg(feature = "quantum")]
+pub use quantum::{hybrid_ratchet_new, QuantumHybridRatchet};
+
 #[no_mangle]
 pub extern "C" fn rust_init_profile() -> *mut c_void {
     let mut secret = [0u8; 32];

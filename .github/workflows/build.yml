@@ -35,6 +35,11 @@ jobs:
           echo "TUI build skipped in CI (use -f+tui locally with proper system deps)."
 
           # Note: We no longer use Python. All builds are done with pure Bash + Cargo + Cabal.
+
+          # Harden rec-12 (Expert): CI now FAILS if key paranoid tests regress.
+          # Must cover: test_disappearing_wipe_integration, test_skipped_keys_and_wipe,
+          # test_framing_and_mlock_safety_simulation, test_full_send_recv_roundtrip, etc.
+          cargo test --release
         env:
           CARGO_TERM_COLOR: always
 

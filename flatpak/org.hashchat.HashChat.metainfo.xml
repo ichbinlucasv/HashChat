@@ -4,22 +4,83 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <name>HashChat</name>
-  <summary>Maximum anonymity messenger built with Haskell + Rust. Tor-only. Strongest OPSEC focus.</summary>
+  <summary>Maximum anonymity messenger — Tor-only, Double Ratchet, strong OPSEC</summary>
+
   <description>
     <p>
-      HashChat is a privacy-first, metadata-resistant messenger designed for high-risk environments.
-      It uses real Double Ratchet cryptography, Tor hidden services by default, burner profiles,
-      and an extremely aggressive panic wipe feature.
+      HashChat is a privacy-first, metadata-resistant messenger designed for people who need
+      serious protection against advanced adversaries.
     </p>
     <p>
-      Built for people who need serious protection against advanced adversaries.
+      It uses real Double Ratchet cryptography with forward secrecy, Tor v3 hidden services by
+      default, burner profiles with aggressive isolation, and an extremely fast panic wipe that
+      destroys all cryptographic material.
+    </p>
+    <p>
+      The project follows a maximum paranoid philosophy: minimal attack surface, reproducible
+      builds, and honest documentation of limitations.
     </p>
   </description>
+
   <launchable type="desktop-id">org.hashchat.HashChat.desktop</launchable>
+
   <url type="homepage">https://github.com/ichbinlucasv/HashChat</url>
   <url type="bugtracker">https://github.com/ichbinlucasv/HashChat/issues</url>
+  <url type="vcs-browser">https://github.com/ichbinlucasv/HashChat</url>
+
   <developer id="org.hashchat">
     <name>ichbinlucasv</name>
   </developer>
+
   <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.2" date="2026-06-01">
+      <description>
+        <p>Preview release with major improvements:</p>
+        <ul>
+          <li>Real Argon2id + AES-256-GCM envelope for Android ratchet export</li>
+          <li>Live Security Posture system with visual indicators on both platforms</li>
+          <li>Screen navigation + backstack on Android</li>
+          <li>Explicit voice message wipe feedback</li>
+          <li>9+ Rust tests and expanded instrumented test coverage</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+
+  <!-- TODO: Replace these placeholder screenshots with real ones before Flathub submission -->
+  <screenshots>
+    <screenshot type="default">
+      <caption>Main chat interface with live Security Posture indicator</caption>
+      <image>https://example.com/screenshots/hashchat-main.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Voice message playback with progress and post-playback wipe notification</caption>
+      <image>https://example.com/screenshots/hashchat-voice.png</image>
+    </screenshot>
+  </screenshots>
+
+  <categories>
+    <category>Network</category>
+    <category>Security</category>
+    <category>Chat</category>
+  </categories>
+
+  <!-- TODO: Add real screenshots before Flathub submission -->
+  <!-- <screenshots>
+    <screenshot type="default">
+      <image>https://.../screenshot1.png</image>
+      <caption>Main chat window</caption>
+    </screenshot>
+  </screenshots> -->
+
+  <keywords>
+    <keyword>privacy</keyword>
+    <keyword>security</keyword>
+    <keyword>tor</keyword>
+    <keyword>messenger</keyword>
+    <keyword>opsec</keyword>
+    <keyword>double ratchet</keyword>
+  </keywords>
 </component>

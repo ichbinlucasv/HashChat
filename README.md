@@ -123,6 +123,18 @@ nix build .#hashchat-android-rust
 
 See [INSTALL.md](INSTALL.md) and `flake.nix`.
 
+### Flatpak (Recommended distribution method)
+
+The only supported and reproducible way to build the Flatpak is:
+
+```bash
+nix build .#hashchat-flatpak
+flatpak install --user result/hashchat-tui.flatpak
+flatpak run org.hashchat.HashChat
+```
+
+**Current status**: The manifest is minimal (install-only). Real icons are still needed for a fully polished release. See `flatpak/README.md` and `flatpak/ICONS.md` for details.
+
 ---
 
 ## Security & Responsible Development

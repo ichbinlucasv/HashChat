@@ -1,50 +1,84 @@
 app-id: org.hashchat.HashChat
 runtime: org.freedesktop.Platform
-runtime-version: "23.08"
+runtime-version: "24.08"   # Updated to current stable (hardening)
 sdk: org.freedesktop.Sdk
 command: hashchat-tui
 
 finish-args:
-  - --share=network          # Tor hidden services only
+  # === Maximum paranoid permissions for a Tor-only messenger ===
+  - --share=network                    # Only for Tor hidden services (no direct clearnet)
   - --socket=wayland
   - --socket=x11
-  - --device=dri
-  - --filesystem=home        # User data in ~/hashchat_data (encrypted by app)
+  - --device=dri                       # GPU acceleration only
+  - --filesystem=home                  # Only to store encrypted data in ~/hashchat_data
   - --env=LD_LIBRARY_PATH=/app/lib
-  - --talk-name=org.freedesktop.secrets
-  # Paranoid hardening (Flatpak 1.12+)
+  - --talk-name=org.freedesktop.secrets   # Future: hardware-backed keys (can be removed if not used)
+  # Aggressive hardening
   - --no-legacy
-  - --seccomp=seccomp-extra.json   # Future: custom seccomp filter
   - --socket=session-bus
-  - --unset-env=DBUS_SESSION_BUS_ADDRESS  # Reduce metadata leakage
-  # No direct device access, no home:ro, no wayland if X11 not needed, etc.
+  - --unset-env=DBUS_SESSION_BUS_ADDRESS
+  - --unset-env=DISPLAY
+  - --unset-env=WAYLAND_DISPLAY
+  - --unset-env=XDG_RUNTIME_DIR
+  - --unset-env=SESSION_MANAGER
+  # Future work
+  # - --seccomp=seccomp-extra.json     # Custom strict syscall filter
+  # Icons
+  # TODO: Add real high-quality icons before any public distribution
+
+# Note: We intentionally do not set broad build-options like no-network here anymore,
+# because the Nix-driven path already builds everything outside the Flatpak sandbox.
+# The manifest is now purely an "install prebuilts" manifest.
 
 modules:
-  - name: hashchat-rust
+  # === Pure install-only manifest (no app code is built inside Flatpak) ===
+  # The ONLY supported/reproducible way to build this Flatpak is via:
+  #   nix build .#hashchat-flatpak
+  # All binaries are pre-built by the flake for maximum reliability.
+  - name: hashchat-prebuilts
     buildsystem: simple
     build-commands:
-      - cargo build --release --locked
-      - install -Dm755 target/release/libhashchat_rust.so /app/lib/libhashchat_rust.so || install -Dm755 target/release/libhashchat_rust.a /app/lib/ 2>/dev/null || true
-    sources:
-      - type: dir
-        path: .
+      # Install Rust library (prefer .so)
+      - |
+        if [ -f prebuilt/libhashchat_rust.so ]; then
+          install -Dm755 prebuilt/libhashchat_rust.so /app/lib/libhashchat_rust.so
+        elif [ -f prebuilt/libhashchat_rust.a ]; then
+          install -Dm755 prebuilt/libhashchat_rust.a /app/lib/libhashchat_rust.a
+        else
+          echo "ERROR: prebuilt Rust library not found. Build via Nix flake only." >&2
+          exit 1
+        fi
 
-  - name: hashchat-haskell
-    buildsystem: simple
-    build-commands:
-      - cabal update
-      - cabal build -f-tui hashchat-tui
-      - install -Dm755 $(find dist-newstyle -name hashchat-tui -type f | head -1) /app/bin/hashchat-tui || echo "TUI build may need manual steps in Flatpak sandbox"
+      # Install TUI binary
+      - |
+        if [ -f prebuilt/hashchat-tui ]; then
+          install -Dm755 prebuilt/hashchat-tui /app/bin/hashchat-tui
+        else
+          echo "ERROR: prebuilt hashchat-tui not found. Build via Nix flake only." >&2
+          exit 1
+        fi
     sources:
       - type: dir
         path: .
+      # The prebuilt/ directory is populated by the Nix flake before flatpak-builder runs.
 
   - name: desktop-file
     buildsystem: simple
     build-commands:
       - install -Dm644 flatpak/org.hashchat.HashChat.desktop /app/share/applications/org.hashchat.HashChat.desktop
       - install -Dm644 flatpak/org.hashchat.HashChat.metainfo.xml /app/share/metainfo/org.hashchat.HashChat.metainfo.xml
-      # TODO: Add real icons (SVG + PNG in multiple sizes) before Flathub submission
+      # Install scalable icon (primary)
+      - install -Dm644 flatpak/icons/hicolor/scalable/apps/org.hashchat.HashChat.svg \
+          /app/share/icons/hicolor/scalable/apps/org.hashchat.HashChat.svg
+
+      # Install the scalable icon as fallback for raster sizes
+      # Real production PNGs should replace these before any public release
+      - install -Dm644 flatpak/icons/hicolor/scalable/apps/org.hashchat.HashChat.svg \
+          /app/share/icons/hicolor/128x128/apps/org.hashchat.HashChat.svg
+      - install -Dm644 flatpak/icons/hicolor/scalable/apps/org.hashchat.HashChat.svg \
+          /app/share/icons/hicolor/64x64/apps/org.hashchat.HashChat.svg
+
+      # TODO: Replace with real high-quality SVG + properly sized PNGs (64, 128, 256, 512) before Flathub or public distribution
     sources:
       - type: dir
         path: .

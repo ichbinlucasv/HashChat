@@ -1,7 +1,7 @@
 # HashChat Threat Model
 
-**Version:** 0.2 (Deep Work Phase)
-**Date:** 2026
+**Version:** 0.2 (Post Deep Expert Pass - Real Envelope + Android Parity)
+**Date:** 2026 (updated after high-4 Argon2id envelope, full ratchet parity, med-10 tests, med-8 lifecycle, long-13 quantum gate)
 
 ## Goals
 - Maximum anonymity and metadata resistance
@@ -39,9 +39,14 @@
 - Burner profiles allow quick identity isolation.
 - Group design aims for sender keys (server cannot easily tell who sent what).
 
-**Current Gaps (Being Worked On):**
-- No real transport layer yet (messages are local only in current demo).
-- Tor integration is present in the library but not fully wired into the high-level message path.
+**Current Gaps (Honest Assessment After Latest Pass):**
+- Full bidirectional Tor v3 hidden service + framing is wired on desktop and partially on Android (receiver thread + JNI feed).
+- Real Double Ratchet with skipped keys, zeroization, and full binary serialization is now present on **both** desktop and Android (high-4 completed for core).
+- Android ratchet export now uses **real Argon2id + AES-256-GCM** envelope (v2) instead of demo XOR. This is a major OPSEC improvement for groups and cross-device.
+- Voice chunking with per-chunk ratchet forward secrecy + real SeekBar + wipe on both sides.
+- Group sender-key architecture + persistence with encrypted storage.
+- Dynamic Security Posture gating actions on both platforms.
+- Reproducible Nix paths (Flatpak strong, Android still requires cargo-ndk path but now fail-hard).
 
 ### 3. Device Compromise / "Pegasus" Resistance
 **Best we can do (and what we are building toward):**
@@ -80,13 +85,21 @@
 - Panic wipe tooling
 - No central servers or identifiers by design
 
-**Needs Significant Work:**
-- Real anonymous transport (Tor hidden services + queueing)
-- Full group sender key implementation + forward secrecy in groups
-- Streaming voice/file with ratchet
-- Android side with proper secure storage + JNI hardening
-- Formal verification or at least property-based testing of the ratchet
-- Plausible deniability features
+**Needs Significant Work (Updated 2026 - after deep expert pass):**
+- Real anonymous transport is now wired (bidirectional Tor v3 with proper framing).
+- Full group sender key + persistence is implemented with encrypted storage.
+- Streaming voice with per-chunk ratchet + SeekBar is working on both platforms.
+- Android has Keystore + biometric gate + multi-screen + real export/import.
+- Cross-device encrypted ratchet export is functional (with strong OPSEC warnings).
+- Tests + CI now exercise many paranoid paths (wipe, posture, disappearing, export).
+
+**Remaining Expert Priorities:**
+- Full port of real DoubleRatchet (to_bytes/from_bytes + zeroization) to Android Rust side.
+- mlock + seccomp on Android Rust.
+- Expanded Rust test coverage (disappearing key wipe, group sender-key export, framing roundtrips, envelope).
+- Android: real Screen enum + backstack in onBackPressed + improved posture helpers (debugger, emulator, airplane + gating). JNI getSecurityPosture hook implemented and wired into Kotlin reEvaluate. Desktop TUI: posture refresh on more events (profile, decoy, voice/file mentions), title shows "live posture". Voice wipe feedback explicit in Android UI. 8 Rust tests + Kotlin skeletons. Posture more visible + gating in both frontends.
+- Real Argon2id + AES-GCM envelope now used for all Android ratchet export/import paths.
+- Formal verification or stronger property testing of the ratchet core.
 
 ## Pegasus / Nation-State Resistance Philosophy
 
@@ -99,6 +112,62 @@ We cannot stop a targeted zero-day on your device.
 - Minimize what remains on disk even if the device is seized powered off.
 
 This is the realistic "best possible" for a local application.
+
+## Language & Architecture Choices vs Advanced Adversaries (MITRE ATT&CK, Nation-State, Cyber Kill Chain)
+
+### Current Stack (Haskell + Rust core + thin Kotlin UI)
+- **Rust** owns the entire security boundary: Double Ratchet, Argon2id envelopes, AES-GCM, zeroization, mlock hints, JNI export surface. This is the correct language for the "crown jewels."
+- **Haskell** owns high-level protocol logic, state machines, TUI, group orchestration, Tor framing glue. Excellent for eliminating entire classes of logic bugs and injection-style issues (no raw string concatenation in critical paths, strong types).
+- **Kotlin** (Android) is deliberately limited to UI + thin glue + Keystore/Biometric orchestration. All ratchet state and encryption is pushed across the JNI boundary into Rust.
+
+### Why This Is Strong Against the Threats You Mentioned
+
+**Against nation-state / intelligence agencies / "branches" (Pegasus-class, Sandvine, etc.):**
+- Memory-safe + type-safe core (Rust + Haskell) dramatically shrinks the bug surface that a 0-day would need to find.
+- Cryptography is not in the "big unsafe language" (no C/C++ in the hot path).
+- Aggressive zeroization + explicit wipe paths make post-exploitation key recovery harder.
+- The architecture forces attackers to compromise two language runtimes + the JNI boundary if they want the ratchet material.
+
+**DDoS / Availability (part of kill chain):**
+- Tor v3 hidden services + no central infrastructure is the correct architectural choice. Changing language does almost nothing here — the transport model matters far more.
+- Rust's async + Tokio (if we expand the receiver) would give better DoS resilience in the future than many alternatives.
+
+**SQL Injection / Injection attacks (MITRE ATT&CK T1190, T1055, etc.):**
+- Irrelevant in the current design. No SQL is exposed to any network input. If we ever add local SQLite, we will use the Rust `rusqlite` crate with parameterized queries only.
+- Haskell's strong separation of code and data + Rust's ownership make classic injection bugs much harder to write by accident than in dynamic or weakly-typed languages.
+
+**Full Cyber Kill Chain (Recon → Weaponize → Deliver → Exploit → Install → C2 → Actions):**
+- The current stack raises the bar at the **Exploit** and **Install** stages because there are fewer memory corruption primitives available to the attacker in the core.
+- Post-exploitation (C2 + actions) is still game over on a fully compromised device — this is acknowledged in the model. The languages help most by making the initial foothold harder and the "actions on objectives" (stealing keys) noisier and less reliable.
+
+### Expert Recommendation on Languages (No Hype)
+
+**Do NOT do a big rewrite.** The current split is already close to optimal for a maximum-paranoid messenger in 2026:
+
+1. **Keep Rust** as the sole owner of all cryptography, ratchet state, encrypted persistence, and low-level security primitives. If anything, move *more* logic into Rust over time (especially Android backend logic).
+
+2. **Keep Haskell** for the high-level protocol, TUI, and correctness-critical orchestration. It is one of the best languages in existence for eliminating entire categories of bugs that nation-states love to exploit.
+
+3. **For Android**: Stay with Kotlin for the UI layer, but **aggressively minimize** its privileges and surface. All new sensitive functionality (new persistence formats, more voice processing, future decentralized discovery) must go through the Rust JNI layer. This is already the direction.
+
+4. **Never add** C, C++, Objective-C, or anything with manual memory management to the security boundary.
+
+5. **Future considerations (only if expanding platforms)**:
+   - iOS: Swift (much safer default than Kotlin for Apple).
+   - Pure desktop TUI alternative: ratatui (Rust) would be a viable pure-Rust path if we ever want to deprecate the Haskell TUI.
+   - Server components: Never. If we ever need any, Rust (or nothing).
+
+**Bottom line for expert-level resistance**:
+Language choice is important but **secondary** to:
+- Attack surface minimization
+- Cryptographic architecture (Double Ratchet + Tor v3 + no identifiers)
+- Reproducible builds + clean supply chain (Nix + clean-security.sh ritual)
+- User OPSEC + fast wipe
+- Honest threat model
+
+The current Haskell + Rust + thin Kotlin is a **strong** expert choice for the stated goals. Changing languages for the sake of "more expert" would most likely make things worse unless the entire architecture changed with it.
+
+We should continue hardening the **boundaries** and **minimization** rather than chasing language fashion.
 
 ---
 

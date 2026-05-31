@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- Black background with rounded corners -->
+  <rect width="128" height="128" rx="22" fill="#000000"/>
+  
+  <!-- Thin gold border for a secure, premium feel -->
+  <rect x="5" y="5" width="118" height="118" rx="18" fill="none" stroke="#FFD700" stroke-width="2.5"/>
+  
+  <!-- Inner subtle ring -->
+  <rect x="14" y="14" width="100" height="100" rx="12" fill="none" stroke="#FFD700" stroke-width="1" opacity="0.3"/>
+  
+  <!-- "HC" text - clean, bold, centered -->
+  <text 
+    x="64" 
+    y="84" 
+    font-family="monospace" 
+    font-size="54" 
+    font-weight="700"
+    fill="#FFD700" 
+    text-anchor="middle" 
+    letter-spacing="1">HC</text>
+</svg>
