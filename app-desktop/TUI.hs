@@ -203,9 +203,10 @@ isActionAllowedInPosture posture action =
        "decoy"      -> not low   -- plausible deniability features also gated
        "loadprofile"-> not low   -- refuse loading sensitive state in bad env
        _            -> True
--- Deep Wave: Extreme mode (see Android + docs/EXTREME_PROFILE.md) would add
+-- Wave 6 even deeper: Extreme mode (see Android + docs/EXTREME_PROFILE.md) would add
 -- compile/runtime gates here to completely disable groups/voice/decoy/export
 -- for the smallest possible attack surface on the TUI as well.
+-- A real `extremeMode` flag would guard menu items and actions in future waves.
 
 drawUI :: AppState -> [Widget Name]
 drawUI st =
