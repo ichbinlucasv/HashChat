@@ -50,6 +50,10 @@ object HashChatNative {
     external fun createGroupSenderKey(ratchetId: Int): Int
     external fun advanceGroupSenderKey(groupKeyId: Int): ByteArray
 
+    // Group Sender Key export/import using strong envelope (A1)
+    external fun exportGroupSenderKey(groupKeyId: Int, passphrase: ByteArray): ByteArray
+    external fun importGroupSenderKey(passphrase: ByteArray, data: ByteArray): Int
+
     // Strict mode / environment check (Tier 3).
     // Returns true only in sufficiently paranoid environments.
     // Current basic checks: not debuggable + not emulator.
@@ -673,9 +677,8 @@ class MainActivity : AppCompatActivity() {
                 // Must be replaced with user-derived passphrase + Android Keystore
                 // (HashChatKeystore) before v0.2 or any serious usage.
                 // =====================================================================
-                // Using the new higher-level exportGroupRatchet entry point (migration target).
-                // This allows us to move more of the export + wrapping logic into Rust over time.
-                val exported = HashChatNative.exportGroupRatchet(rid, DEMO_INSECURE_RATCHET_PASSPHRASE.toByteArray())
+                // Using the new higher-level group sender key export when possible (A1 + A3)
+                val exported = HashChatNative.exportGroupSenderKey(rid, DEMO_INSECURE_RATCHET_PASSPHRASE.toByteArray())
                 val wrapped = HashChatKeystore.encryptForStorage(exported)
                 // In a full version we would store the 'wrapped' blob per ratchet for perfect roundtrip import
             }

@@ -468,12 +468,13 @@ impl VoiceStream {
 
         let plaintext = decrypt_with_key(&current_key, encrypted).unwrap_or_default();
 
-        // Simulate real ratchet advancement inside Rust
+        // Simulate real ratchet advancement inside Rust (VoiceStream owns the state)
         self.current_step = self.current_step.wrapping_add(1);
 
-        // Future: we would wipe the previous key material here
-
+        // Future: wipe previous key material + update skipped keys for this VoiceStream
         plaintext
+    }
+}
     }
 }
 
@@ -552,6 +553,9 @@ impl GroupSenderKey {
 // Simple in-memory store for group sender keys on Android (separate from main ratchets for clarity).
 static mut ANDROID_GROUP_SENDER_KEYS: Vec<GroupSenderKey> = Vec::new();
 
+// Separate store for group sender keys (per-member sending chains)
+static mut ANDROID_GROUP_SENDER_KEY_STORE: Vec<GroupSenderKey> = Vec::new();
+
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_createGroupSenderKey(
     _env: JNIEnv,
@@ -579,6 +583,91 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_advanceGroupSenderKey(
         }
     }
     vec_to_java_byte_array(&mut _env, &[])
+}
+
+// === Group Sender Key Export/Import using strong envelope (A1) ===
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_exportGroupSenderKey(
+    mut _env: JNIEnv,
+    _class: JClass,
+    group_key_id: jint,
+    passphrase: jbyteArray,
+) -> jbyteArray {
+    unsafe {
+        if (group_key_id as usize) < ANDROID_GROUP_SENDER_KEY_STORE.len() {
+            let gsk = &ANDROID_GROUP_SENDER_KEY_STORE[group_key_id as usize];
+
+            // Serialize simply (in real we can improve this)
+            let serialized = [
+                gsk.gsk_ratchet_id.to_be_bytes(),
+                gsk.gsk_chain_key,
+                gsk.gsk_msg_count.to_be_bytes(),
+            ]
+            .concat();
+
+            let pass_jba = unsafe { wrap_byte_array(passphrase) };
+            let pass_len = _env.get_array_length(&pass_jba).unwrap_or(0) as usize;
+            let mut pass_bytes = vec![0u8; pass_len];
+            if pass_len > 0 {
+                let mut p_i8 = vec![0i8; pass_len];
+                let _ = _env.get_byte_array_region(&pass_jba, 0, &mut p_i8);
+                pass_bytes = p_i8.into_iter().map(|b| b as u8).collect();
+            }
+
+            match wrap_ratchet_blob(&serialized, &pass_bytes) {
+                Ok(protected) => return vec_to_java_byte_array(&mut _env, &protected),
+                Err(_) => return vec_to_java_byte_array(&mut _env, &[]),
+            }
+        }
+    }
+    vec_to_java_byte_array(&mut _env, &[])
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_importGroupSenderKey(
+    mut _env: JNIEnv,
+    _class: JClass,
+    passphrase: jbyteArray,
+    data: jbyteArray,
+) -> jint {
+    let data_jba = unsafe { wrap_byte_array(data) };
+    let dlen = _env.get_array_length(&data_jba).unwrap_or(0) as usize;
+    if dlen < 32 { return -1; }
+
+    let mut data_i8 = vec![0i8; dlen];
+    let _ = _env.get_byte_array_region(&data_jba, 0, &mut data_i8);
+    let buf: Vec<u8> = data_i8.into_iter().map(|b| b as u8).collect();
+
+    let pass_jba = unsafe { wrap_byte_array(passphrase) };
+    let pass_len = _env.get_array_length(&pass_jba).unwrap_or(0) as usize;
+    let mut pass_bytes = vec![0u8; pass_len];
+    if pass_len > 0 {
+        let mut p_i8 = vec![0i8; pass_len];
+        let _ = _env.get_byte_array_region(&pass_jba, 0, &mut p_i8);
+        pass_bytes = p_i8.into_iter().map(|b| b as u8).collect();
+    }
+
+    match unwrap_ratchet_blob(&buf, &pass_bytes) {
+        Ok(serialized) => {
+            if serialized.len() < 40 { return -1; }
+
+            let ratchet_id = u32::from_be_bytes(serialized[0..4].try_into().unwrap());
+            let mut chain_key = [0u8; 32];
+            chain_key.copy_from_slice(&serialized[4..36]);
+            let msg_count = u32::from_be_bytes(serialized[36..40].try_into().unwrap());
+
+            unsafe {
+                let idx = ANDROID_GROUP_SENDER_KEY_STORE.len();
+                ANDROID_GROUP_SENDER_KEY_STORE.push(GroupSenderKey {
+                    gsk_ratchet_id: ratchet_id,
+                    gsk_chain_key: chain_key,
+                    gsk_msg_count: msg_count,
+                });
+                return idx as jint;
+            }
+        }
+        Err(_) => return -1,
+    }
 }
 
 // === Higher-level group ratchet export (Tier 3 migration target) ===
