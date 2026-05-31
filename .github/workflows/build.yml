@@ -84,6 +84,10 @@ jobs:
           # You can test it locally with: cabal build hashchat-tui
           echo "TUI build skipped in CI (use -f+tui locally with proper system deps)."
 
+          # T3 paranoid CI note: Before any signed tag the committer MUST have run
+          # ./scripts/pre-tag-check.sh --strict locally and created the local-run marker file.
+          # This is currently a strong recommendation; will be turned into a blocking step post-v0.2.
+
           # Note: We no longer use Python. All builds are done with pure Bash + Cargo + Cabal.
 
           # Harden rec-12 (Expert): CI now FAILS if key paranoid tests regress.

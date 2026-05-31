@@ -134,6 +134,10 @@ if [ ! -f "$LOCAL_RUN_MARKER" ]; then
     echo "  >>> echo 'pre-tag-check passed on $(date)' > $LOCAL_RUN_MARKER && git add $LOCAL_RUN_MARKER"
 fi
 
+# SBOM diff stub (T3 CI paranoia)
+echo "  [SBOM] For future tags: compare $OUTPUT_DIR/sbom against previous tag SBOM (manual step for v0.2-preview)."
+echo "  Example: ./scripts/generate-sbom.sh /tmp/sbom-prev && diff -u /tmp/sbom-prev/sbom.json $OUTPUT_DIR/sbom/sbom.json || echo 'SBOM diff review required'"
+
 # 10. Final summary
 echo "[10/10] All automated checks completed."
 echo ""
