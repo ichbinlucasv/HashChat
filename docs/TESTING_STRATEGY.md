@@ -2,6 +2,8 @@
 
 **Status**: Draft for v0.2+ (arch-2 long-term item from expert review).
 
+**Wave 5 Deep Update**: Testing must now explicitly cover Extreme mode (all gated features refuse), strict mode refusals on real devices (voice/groups/export/decoy), VoiceStream HKDF + zeroize behavior, and pre-tag-check hard gates (evidence + no new TODOs). Real hardware evidence logs are now a hard pre-tag requirement.
+
 ## Core Principle
 Emulators are useful for CI smoke tests but **insufficient** for a paranoid messenger. Real device testing on physical hardware (Tails laptop, Qubes phone, hardened Android) must be regular and documented.
 
