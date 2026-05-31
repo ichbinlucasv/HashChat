@@ -91,8 +91,15 @@ fi
 echo "[8/9] Generating basic SBOM..."
 ./scripts/generate-sbom.sh "$OUTPUT_DIR/sbom" || echo "  -> SBOM generation had issues (non-fatal for now)"
 
-# 9. Final summary
-echo "[9/9] All automated checks completed."
+# 9. Testing strategy evidence (Tier 3 requirement)
+echo "[9/10] Checking testing strategy requirements..."
+echo "  -> Manual confirmation required before signed tag:"
+echo "     - At least one full real-device + Tails/Qubes test pass in the last 60 days"
+echo "     - Results should be documented (even privately) per docs/TESTING_STRATEGY.md"
+echo "     - This is currently a manual gate. Future versions of this script may enforce it."
+
+# 10. Final summary
+echo "[10/10] All automated checks completed."
 echo ""
 echo "================================================================"
 echo "   PRE-TAG CHECK SUMMARY"

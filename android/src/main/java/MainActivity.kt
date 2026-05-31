@@ -42,9 +42,26 @@ object HashChatNative {
     // doesn't have to handle the passphrase + wrapping directly for groups.
     external fun exportGroupRatchet(stateId: Int, passphrase: ByteArray): ByteArray
 
+    // Higher-level group ratchet import (migration target).
+    // Counterpart to exportGroupRatchet. Allows moving more import logic into Rust.
+    external fun importGroupRatchet(stateId: Int, passphrase: ByteArray, data: ByteArray): Boolean
+
     // Strict mode / environment check (Tier 3).
-    // Will eventually refuse dangerous actions if the environment is not sufficiently paranoid.
+    // Returns true only in sufficiently paranoid environments.
+    // Current basic checks: not debuggable + not emulator.
+    // Future: more checks (no swap, dangerous props, etc.) + Rust side integration.
     external fun isStrictMode(): Boolean
+
+    // Kotlin-side implementation of strict mode checks (can be called from Java/Kotlin directly).
+    // This is the real logic for now. The JNI version can later call into Rust for deeper checks.
+    fun isStrictModeEnabled(): Boolean {
+        val isDebugger = android.os.Debug.isDebuggerConnected()
+        val isEmulator = android.os.Build.FINGERPRINT.contains("generic") ||
+                         android.os.Build.MODEL.contains("Emulator") ||
+                         android.os.Build.MANUFACTURER.contains("Genymotion")
+        // Basic strict mode: must not be debuggable and not running on emulator
+        return !isDebugger && !isEmulator
+    }
     // Future: full framed Tor send, etc.
 }
 

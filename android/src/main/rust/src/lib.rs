@@ -82,13 +82,18 @@ fn mlock_android_ratchet_store() {
 }
 
 // === Strict Mode / Environment Check (Tier 3 architectural) ===
-// Placeholder for future "refuse to run if certain OPSEC conditions aren't met".
-// Examples: debuggable, emulator, no swap, certain dangerous environment variables, etc.
-// For now this is a simple stub that always returns false (not in strict mode).
-// This API can be expanded significantly later.
+// This is the foundation for future logic that can refuse dangerous actions
+// (voice, groups, export, decoy, etc.) when the environment is not sufficiently paranoid.
+//
+// Current reality: Real checks are implemented on the Kotlin side (isStrictModeEnabled()).
+// The Rust side is the extension point for deeper future checks (e.g. /proc inspection,
+// dangerous properties, etc.).
+//
+// For now this always returns false. The Kotlin method is the authoritative source.
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_isStrictMode(_env: JNIEnv, _class: JClass) -> jboolean {
-    // Future: real checks here (debug, emulator, root, dangerous props, etc.)
+    // Future: move more checks here or call back to Kotlin for combined result.
+    // For now, Kotlin's isStrictModeEnabled() is the real implementation.
     false as jboolean
 }
 
@@ -489,6 +494,21 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_exportGroupRatchet(
     // During migration, delegate to the existing (already strong) export path.
     // When we want to move more logic, we can implement the full flow here.
     Java_chat_hashchat_HashChatNative_ratchetExportEncrypted(env, _class, state_id, passphrase)
+}
+
+// === Higher-level group ratchet import (Tier 3 migration target) ===
+// Counterpart to exportGroupRatchet. Allows gradually moving more import
+// orchestration into Rust.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_importGroupRatchet(
+    mut env: JNIEnv,
+    _class: JClass,
+    state_id: jint,
+    passphrase: jbyteArray,
+    data: jbyteArray,
+) -> jboolean {
+    // During migration, delegate to the existing import path.
+    Java_chat_hashchat_HashChatNative_ratchetImportEncrypted(env, _class, state_id, passphrase, data)
 }
 
 // === Cross-device ratchet export (for new device / recovery) ===

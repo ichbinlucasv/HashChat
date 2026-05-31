@@ -48,6 +48,7 @@ cargo audit --deny high || echo "High/critical issues found - review before tagg
 # - Real icons generated (or confirm improved placeholder + docs sufficient for preview)
 # - Real screenshots captured per docs/SCREENSHOTS.md (or confirm placeholders + instructions)
 # - At least one full real-hardware test pass (Tails + physical Android) per TESTING_STRATEGY.md
+#   (This is now treated as a required artifact before any signed tag)
 # - Honest limitations refreshed in RELEASE_NOTES_v0.2.md
 ```
 
