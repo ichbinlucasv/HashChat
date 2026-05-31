@@ -20,6 +20,7 @@ use argon2::{Argon2, password_hash::{PasswordHasher, SaltString}, Algorithm, Ver
 // These are already in Cargo.toml for parity with the core ratchet work.
 use hkdf::Hkdf;
 use sha2::Sha256;
+use zeroize::Zeroize; // Required for explicit zeroize() on local chunk keys in VoiceStream (Wave 3)
 
 /// Helper: wrap a raw jbyteArray (from Java native) into a high-level JByteArray for jni 0.21+.
 #[inline]
