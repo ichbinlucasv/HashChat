@@ -650,8 +650,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
         if (groups.isEmpty()) {
-            val demoRid = HashChatNative.ratchetNew()
-            groups["DemoGroup"] = mutableListOf(demoRid)
+            // Use the new GroupSenderKey system for demo groups (A3 wiring)
+            val gskId = HashChatNative.createGroupSenderKey(HashChatNative.ratchetNew())
+            groups["DemoGroup"] = mutableListOf(gskId)
         }
     }
 

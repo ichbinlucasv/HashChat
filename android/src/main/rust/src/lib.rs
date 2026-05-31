@@ -548,6 +548,25 @@ impl GroupSenderKey {
 
         msg_key
     }
+
+    /// Serialize for export (used by exportGroupSenderKey)
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(40);
+        out.extend_from_slice(&self.gsk_ratchet_id.to_be_bytes());
+        out.extend_from_slice(&self.gsk_chain_key);
+        out.extend_from_slice(&self.gsk_msg_count.to_be_bytes());
+        out
+    }
+
+    /// Deserialize (used by importGroupSenderKey)
+    pub fn from_bytes(data: &[u8]) -> Option<Self> {
+        if data.len() != 40 { return None; }
+        Some(GroupSenderKey {
+            gsk_ratchet_id: u32::from_be_bytes(data[0..4].try_into().unwrap()),
+            gsk_chain_key: data[4..36].try_into().unwrap(),
+            gsk_msg_count: u32::from_be_bytes(data[36..40].try_into().unwrap()),
+        })
+    }
 }
 
 // Store for group sender keys (per-member sending chains) — this is the one we'll use
@@ -581,7 +600,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_advanceGroupSenderKey(
     vec_to_java_byte_array(&mut _env, &[])
 }
 
-// === Group Sender Key Export/Import using strong envelope (A1) ===
+// === Group Sender Key Export/Import using strong envelope (A1 - cleaned) ===
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_exportGroupSenderKey(
     mut _env: JNIEnv,
@@ -592,23 +611,18 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_exportGroupSenderKey(
     unsafe {
         if (group_key_id as usize) < ANDROID_GROUP_SENDER_KEY_STORE.len() {
             let gsk = &ANDROID_GROUP_SENDER_KEY_STORE[group_key_id as usize];
+            let serialized = gsk.to_bytes();
 
-            // Simple but consistent serialization: ratchet_id (4) + chain_key (32) + msg_count (4)
-            let mut serialized = Vec::with_capacity(40);
-            serialized.extend_from_slice(&gsk.gsk_ratchet_id.to_be_bytes());
-            serialized.extend_from_slice(&gsk.gsk_chain_key);
-            serialized.extend_from_slice(&gsk.gsk_msg_count.to_be_bytes());
-
-            let pass_jba = unsafe { wrap_byte_array(passphrase) };
-            let pass_len = _env.get_array_length(&pass_jba).unwrap_or(0) as usize;
-            let mut pass_bytes = vec![0u8; pass_len];
+            let pass_bytes = unsafe { wrap_byte_array(passphrase) };
+            let pass_len = _env.get_array_length(&pass_bytes).unwrap_or(0) as usize;
+            let mut pass_vec = vec![0u8; pass_len];
             if pass_len > 0 {
                 let mut p_i8 = vec![0i8; pass_len];
-                let _ = _env.get_byte_array_region(&pass_jba, 0, &mut p_i8);
-                pass_bytes = p_i8.into_iter().map(|b| b as u8).collect();
+                let _ = _env.get_byte_array_region(&pass_bytes, 0, &mut p_i8);
+                pass_vec = p_i8.into_iter().map(|b| b as u8).collect();
             }
 
-            match wrap_ratchet_blob(&serialized, &pass_bytes) {
+            match wrap_ratchet_blob(&serialized, &pass_vec) {
                 Ok(protected) => return vec_to_java_byte_array(&mut _env, &protected),
                 Err(_) => return vec_to_java_byte_array(&mut _env, &[]),
             }
@@ -624,43 +638,35 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_importGroupSenderKey(
     passphrase: jbyteArray,
     data: jbyteArray,
 ) -> jint {
-    let data_jba = unsafe { wrap_byte_array(data) };
-    let dlen = _env.get_array_length(&data_jba).unwrap_or(0) as usize;
+    let data_bytes = unsafe { wrap_byte_array(data) };
+    let dlen = _env.get_array_length(&data_bytes).unwrap_or(0) as usize;
     if dlen < 32 { return -1; }
 
     let mut data_i8 = vec![0i8; dlen];
-    let _ = _env.get_byte_array_region(&data_jba, 0, &mut data_i8);
+    let _ = _env.get_byte_array_region(&data_bytes, 0, &mut data_i8);
     let buf: Vec<u8> = data_i8.into_iter().map(|b| b as u8).collect();
 
-    let pass_jba = unsafe { wrap_byte_array(passphrase) };
-    let pass_len = _env.get_array_length(&pass_jba).unwrap_or(0) as usize;
-    let mut pass_bytes = vec![0u8; pass_len];
+    let pass_bytes = unsafe { wrap_byte_array(passphrase) };
+    let pass_len = _env.get_array_length(&pass_bytes).unwrap_or(0) as usize;
+    let mut pass_vec = vec![0u8; pass_len];
     if pass_len > 0 {
         let mut p_i8 = vec![0i8; pass_len];
-        let _ = _env.get_byte_array_region(&pass_jba, 0, &mut p_i8);
-        pass_bytes = p_i8.into_iter().map(|b| b as u8).collect();
+        let _ = _env.get_byte_array_region(&pass_bytes, 0, &mut p_i8);
+        pass_vec = p_i8.into_iter().map(|b| b as u8).collect();
     }
 
-    match unwrap_ratchet_blob(&buf, &pass_bytes) {
+    match unwrap_ratchet_blob(&buf, &pass_vec) {
         Ok(serialized) => {
-            if serialized.len() != 40 { return -1; }
-
-            let ratchet_id = u32::from_be_bytes(serialized[0..4].try_into().unwrap());
-            let mut chain_key = [0u8; 32];
-            chain_key.copy_from_slice(&serialized[4..36]);
-            let msg_count = u32::from_be_bytes(serialized[36..40].try_into().unwrap());
-
-            unsafe {
-                let idx = ANDROID_GROUP_SENDER_KEY_STORE.len();
-                ANDROID_GROUP_SENDER_KEY_STORE.push(GroupSenderKey {
-                    gsk_ratchet_id: ratchet_id,
-                    gsk_chain_key: chain_key,
-                    gsk_msg_count: msg_count,
-                });
-                return idx as jint;
+            if let Some(gsk) = GroupSenderKey::from_bytes(&serialized) {
+                unsafe {
+                    let idx = ANDROID_GROUP_SENDER_KEY_STORE.len();
+                    ANDROID_GROUP_SENDER_KEY_STORE.push(gsk);
+                    return idx as jint;
+                }
             }
+            -1
         }
-        Err(_) => return -1,
+        Err(_) => -1,
     }
 }
 
