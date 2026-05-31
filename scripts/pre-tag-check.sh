@@ -87,8 +87,12 @@ else
     echo "  -> No obvious sensitive files tracked."
 fi
 
-# 8. Final summary
-echo "[8/8] All automated checks completed."
+# 8. Generate basic SBOM (supply chain visibility)
+echo "[8/9] Generating basic SBOM..."
+./scripts/generate-sbom.sh "$OUTPUT_DIR/sbom" || echo "  -> SBOM generation had issues (non-fatal for now)"
+
+# 9. Final summary
+echo "[9/9] All automated checks completed."
 echo ""
 echo "================================================================"
 echo "   PRE-TAG CHECK SUMMARY"
