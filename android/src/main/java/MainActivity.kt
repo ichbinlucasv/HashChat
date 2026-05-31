@@ -46,6 +46,10 @@ object HashChatNative {
     // Counterpart to exportGroupRatchet. Allows moving more import logic into Rust.
     external fun importGroupRatchet(stateId: Int, passphrase: ByteArray, data: ByteArray): Boolean
 
+    // Group Sender Key management (Tier 3 - moving group forward secrecy into Rust)
+    external fun createGroupSenderKey(ratchetId: Int): Int
+    external fun advanceGroupSenderKey(groupKeyId: Int): ByteArray
+
     // Strict mode / environment check (Tier 3).
     // Returns true only in sufficiently paranoid environments.
     // Current basic checks: not debuggable + not emulator.

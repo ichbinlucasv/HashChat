@@ -513,6 +513,74 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_processVoiceChunk(
     vec_to_java_byte_array(&mut env, &plaintext)
 }
 
+// === Group Sender Keys (Tier 3 - moving sensitive group forward secrecy into Rust) ===
+// This mirrors the Haskell GroupSenderKey design for per-member sending chains in groups.
+// Having this in Rust means the actual advancement, key derivation, and export logic
+// can live in the security boundary instead of in Kotlin.
+
+#[derive(Clone)]
+pub struct GroupSenderKey {
+    pub gsk_ratchet_id: u32,
+    pub gsk_chain_key: [u8; 32],
+    pub gsk_msg_count: u32,
+}
+
+impl GroupSenderKey {
+    pub fn new(ratchet_id: u32) -> Self {
+        GroupSenderKey {
+            gsk_ratchet_id: ratchet_id,
+            gsk_chain_key: [0u8; 32],
+            gsk_msg_count: 0,
+        }
+    }
+
+    /// Advance the sender key (simulated HKDF-style for now, same as Haskell side).
+    /// Real version will use proper HKDF from the chain key.
+    pub fn advance(&mut self) -> [u8; 32] {
+        self.gsk_msg_count = self.gsk_msg_count.wrapping_add(1);
+
+        // Simulated message key (in real code this would be HKDF(gsk_chain_key, info))
+        let msg_key = [self.gsk_msg_count as u8; 32];
+
+        // Advance the chain key (simulated)
+        self.gsk_chain_key = [(self.gsk_msg_count.wrapping_add(1)) as u8; 32];
+
+        msg_key
+    }
+}
+
+// Simple in-memory store for group sender keys on Android (separate from main ratchets for clarity).
+static mut ANDROID_GROUP_SENDER_KEYS: Vec<GroupSenderKey> = Vec::new();
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_createGroupSenderKey(
+    _env: JNIEnv,
+    _class: JClass,
+    ratchet_id: jint,
+) -> jint {
+    unsafe {
+        let idx = ANDROID_GROUP_SENDER_KEYS.len();
+        ANDROID_GROUP_SENDER_KEYS.push(GroupSenderKey::new(ratchet_id as u32));
+        idx as jint
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_advanceGroupSenderKey(
+    _env: JNIEnv,
+    _class: JClass,
+    group_key_id: jint,
+) -> jbyteArray {
+    unsafe {
+        if (group_key_id as usize) < ANDROID_GROUP_SENDER_KEYS.len() {
+            let msg_key = ANDROID_GROUP_SENDER_KEYS[group_key_id as usize].advance();
+            // For now return the message key. Real version can return more structured data.
+            return vec_to_java_byte_array(&mut _env, &msg_key);
+        }
+    }
+    vec_to_java_byte_array(&mut _env, &[])
+}
+
 // === Higher-level group ratchet export (Tier 3 migration target) ===
 // This is the canonical entry point for exporting a group member's ratchet.
 // Current implementation delegates to the existing ratchetExportEncrypted.
