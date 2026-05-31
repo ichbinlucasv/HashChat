@@ -442,6 +442,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_feedReceivedData(
 // In a real implementation this would hold DoubleRatchet instances per active voice call.
 struct VoiceStream {
     // Future: actual DoubleRatchet + step counter + skipped keys
+    id: u32,
     _placeholder: (),
 }
 
@@ -450,18 +451,17 @@ static mut VOICE_STREAMS: Vec<VoiceStream> = Vec::new();
 // Internal Rust function for voice chunk processing.
 // This is where real per-stream ratchet logic will eventually live.
 fn process_voice_chunk_internal(encrypted: &[u8]) -> Vec<u8> {
-    // === DEEP MIGRATION NOTE ===
+    // === DEEP MIGRATION NOTE (Tier 3) ===
     // Currently still using placeholder key.
     // Real version will:
-    // 1. Select or create the correct VoiceStream for this call
-    // 2. Decrypt using the current ratchet key
-    // 3. Advance the ratchet
-    // 4. Wipe the used key
+    // 1. Select or create the correct VoiceStream for this call (by stream ID)
+    // 2. Decrypt using the current ratchet key from that stream
+    // 3. Advance the ratchet (update chain key + step)
+    // 4. Wipe the used key (and prune skipped keys if needed)
     // 5. Return plaintext
 
-    let key = [0u8; 32]; // placeholder
-    // For now we still delegate to the general decrypt helper
-    // In future this will be direct ratchet decrypt + advance + wipe
+    // Placeholder logic - will be replaced by real ratchet operations
+    let key = [0u8; 32]; // will come from the selected VoiceStream's current key
     decrypt_with_key(&key, encrypted).unwrap_or_default()
 }
 

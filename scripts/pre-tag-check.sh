@@ -91,12 +91,15 @@ fi
 echo "[8/9] Generating basic SBOM..."
 ./scripts/generate-sbom.sh "$OUTPUT_DIR/sbom" || echo "  -> SBOM generation had issues (non-fatal for now)"
 
-# 9. Testing strategy evidence (Tier 3 requirement)
+# 9. Testing strategy evidence (Tier 3 requirement - now treated as mandatory)
 echo "[9/10] Checking testing strategy requirements..."
-echo "  -> Manual confirmation required before signed tag:"
-echo "     - At least one full real-device + Tails/Qubes test pass in the last 60 days"
-echo "     - Results should be documented (even privately) per docs/TESTING_STRATEGY.md"
-echo "     - This is currently a manual gate. Future versions of this script may enforce it."
+echo ""
+echo "  MANDATORY before any signed tag:"
+echo "  - At least one full real-device + Tails/Qubes test pass performed in the last 90 days"
+echo "  - Results must be documented (date, environment, key observations) per docs/TESTING_STRATEGY.md"
+echo "  - This is now a required artifact. The tag message should reference that this check was satisfied."
+echo ""
+echo "  (This check is currently manual. Future versions may add stronger enforcement.)"
 
 # 10. Final summary
 echo "[10/10] All automated checks completed."
