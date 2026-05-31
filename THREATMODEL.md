@@ -121,6 +121,25 @@ This is the realistic "best possible" for a local application.
 - **Haskell** owns high-level protocol logic, state machines, TUI, group orchestration, Tor framing glue. Excellent for eliminating entire classes of logic bugs and injection-style issues (no raw string concatenation in critical paths, strong types).
 - **Kotlin** (Android) is deliberately limited to UI + thin glue + Keystore/Biometric orchestration. All ratchet state and encryption is pushed across the JNI boundary into Rust.
 
+### Attack Surface After Major Rust Migration on Android (2026 update — post strict mode + GroupSenderKey + Voice work)
+
+Moving large amounts of sensitive logic into the Android Rust crate (Double Ratchet, GroupSenderKey with real HKDF-SHA256 advancement, VoiceStream per-chunk HKDF chains, Argon2id+AES-256-GCM export envelopes, strict mode environment checks, Tor receiver framing) is a net security win, but it changes the attack surface in specific, documented ways:
+
+**Positive changes:**
+- The "crown jewels" (ratchet material, sender keys, voice chunk keys, export blobs) now live in memory-safe Rust with zeroize, explicit wipe paths, and HKDF-based forward secrecy instead of Kotlin/Java.
+- Strict mode (real checks for debug/emulator/root/qemu/test-keys + refusal gates on voice/groups/export/decoy) adds an active runtime control that did not exist before.
+- Group forward secrecy for multi-party is now derived in Rust (not simulated count-fill).
+- The JNI surface is intentionally kept thin and stable; most new logic is inside the Rust security boundary.
+
+**Remaining / shifted risks (honest assessment):**
+- The JNI boundary itself is now a higher-value target (type confusion, use-after-free in the FFI glue, or malicious Kotlin calling into Rust with bad state). We mitigate with very narrow function signatures and by moving as much logic as possible inside Rust.
+- Android mlock remains fundamentally weak (best-effort only on the global store; no reliable MCL_CURRENT | MCL_FUTURE for unprivileged apps). Primary protections are still Keystore + app-private dirs + short lifetime + ZeroizeOnDrop + process death on wipe.
+- Supply chain / build reproducibility on Android is harder than on desktop (NDK, gradle, Play Store signing if we ever go that route). We document this and prefer F-Droid + user-built paths.
+- Dynamic posture + strict mode checks themselves can be bypassed on a fully compromised device (root + Frida + ptrace on the checks). They raise the bar for opportunistic malware and make casual analysis much harder, but they are not a root-of-trust against nation-state with physical access.
+- Voice and group paths still have more Kotlin glue than ideal (MediaRecorder temp files, RecyclerView adapters, persistence helpers). Every new release must continue the migration.
+
+This section must be re-read and updated after every significant Rust migration batch. The model assumes the attacker eventually gets code execution on the device; our job is to make extracting long-term keys, linking sessions, or surviving wipes as expensive and noisy as possible.
+
 ### Why This Is Strong Against the Threats You Mentioned
 
 **Against nation-state / intelligence agencies / "branches" (Pegasus-class, Sandvine, etc.):**

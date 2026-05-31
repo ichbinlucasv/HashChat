@@ -127,6 +127,13 @@ else
     echo "  -> Found testing evidence: $EVIDENCE_FILE (modified $(stat -c %y "$EVIDENCE_FILE" 2>/dev/null || echo 'recently'))"
 fi
 
+# Additional local-run gate (T3 CI paranoia): require that the person tagging has actually run this script locally on the exact commit
+LOCAL_RUN_MARKER=".pre-tag-check-local-ran-$(git rev-parse HEAD 2>/dev/null || echo current)"
+if [ ! -f "$LOCAL_RUN_MARKER" ]; then
+    echo "  >>> STRONG RECOMMENDATION (will become hard requirement): Create $LOCAL_RUN_MARKER after running this script locally on the exact commit you intend to tag."
+    echo "  >>> echo 'pre-tag-check passed on $(date)' > $LOCAL_RUN_MARKER && git add $LOCAL_RUN_MARKER"
+fi
+
 # 10. Final summary
 echo "[10/10] All automated checks completed."
 echo ""
