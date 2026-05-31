@@ -96,7 +96,7 @@
 **Remaining Expert Priorities (v0.2 blocking + high polish):**
 - Real professional icons (64/128/256/512 PNG + final SVG) + real screenshots (see ICONS.md + docs/SCREENSHOTS.md).
 - Voice: real end-to-end chunking on both (Android mic now reads real bytes; TUI recording labeled demo).
-- Android mlock: Explicitly best-effort only (libc::mlock on ratchet store; full mlockall unreliable without privileges). Primary Android memory protection = Keystore + app-private cache + explicit delete on wipe/lifecycle + Rust ZeroizeOnDrop. Documented in code, RELEASE_NOTES, TESTING_STRATEGY.
+- Android mlock: This is one of the most important remaining gaps. On Android, reliable mlockall(MCL_CURRENT | MCL_FUTURE) is not possible for unprivileged apps. The current implementation only does a best-effort libc::mlock on the single global ratchet store pointer and can (and frequently does) fail silently. Primary (and realistic) memory protections on Android are: Android Keystore (hardware-backed when available), app-private storage, short sensitive data lifetime via clearSensitiveScreenState + lifecycle, explicit ZeroizeOnDrop, and process death on wipe. This limitation is called out in the Rust source, the posture JNI response, RELEASE_NOTES_v0.2.md, and TESTING_STRATEGY.md. It should never be presented as strong memory protection on Android.
 - Kotlin instrumented tests exercised regularly on real devices (not just emulators) with actual assertions.
 - Move more logic (voice chunking, persistence helpers) into Rust while keeping JNI thin.
 - SBOM / cargo-audit step before real release.

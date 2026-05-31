@@ -44,13 +44,27 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_init(_env: JNIEnv, _class: J
     mlock_android_ratchet_store();
 }
 
-// Partial/best-effort mlock for Android Rust (high-5 / expert v0.2 blocking item).
-// On Android, full MCL_CURRENT | MCL_FUTURE mlockall is not reliable without root or special SELinux policies.
-// This only attempts to lock the global ratchet store pointer (may silently fail).
-// Real protection on Android comes primarily from: Keystore hardware-backed keys, app-private storage,
-// process death on wipe, and explicit ZeroizeOnDrop + clear() on sensitive structures.
-// Limitation is documented in RELEASE_NOTES_v0.2.md, THREATMODEL.md, and TESTING_STRATEGY.md.
-// If full mlock is ever achievable (future work), replace this with stronger libc::mlockall.
+// ============================================================================
+// ANDROID MLOCK LIMITATION — EXTREME OPSEC WARNING (high-5 / Tier 1 gap)
+// ============================================================================
+// On Android, full mlockall(MCL_CURRENT | MCL_FUTURE) is generally not reliable
+// without root or special SELinux policies. This function only attempts a
+// best-effort libc::mlock on the single global ratchet store pointer.
+// It can (and often will) silently fail.
+//
+// This is a known, documented architectural limitation for the Android port.
+// Real memory protection on Android relies primarily on:
+//   - Android Keystore (hardware-backed or StrongBox when available)
+//   - App-private storage (cacheDir / filesDir, never world-readable)
+//   - Explicit process death + ZeroizeOnDrop on wipe / screen transitions
+//   - Short sensitive data lifetime (clearSensitiveScreenState, etc.)
+//
+// NEVER rely on this mlock for protection against memory forensics on Android.
+// The posture hook already surfaces "mlock best-effort only".
+//
+// This limitation must remain loudly documented until (if ever) a reliable
+// solution exists. See also: THREATMODEL.md, RELEASE_NOTES_v0.2.md, TESTING_STRATEGY.md
+// ============================================================================
 #[cfg(target_os = "android")]
 fn mlock_android_ratchet_store() {
     unsafe {

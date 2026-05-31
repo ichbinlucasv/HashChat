@@ -37,7 +37,7 @@ This is a preview release. The following are still weak or incomplete (see exper
 
 - Real high-quality icons: Improved security-themed placeholder SVG (lock + gold border) + complete raster generation pipeline documented (ICONS.md). Real 64/128/256/512 PNGs still required before ship/Flathub.
 - Voice completeness: Real mic recording + JNI ratchet encrypt now on Android (cacheDir, immediate plaintext delete after read). TUI playback uses real ffplay + waitForProcess (fake progress loop removed); recording remains demo/placeholder on desktop (explicitly labeled). Per-chunk ratchet wipe feedback present on both.
-- Android mlock: Still only partial/best-effort (see polish-2).
+- Android mlock: This remains a significant and honestly documented limitation. On Android, full mlockall is not reliable for normal apps. The current code only performs a best-effort single-pointer mlock that can silently fail. Real memory protection on Android comes from Keystore + app-private storage + short data lifetime + ZeroizeOnDrop + process death on wipe, not from mlock. See the expanded section in THREATMODEL.md and the detailed comments in android/src/main/rust/src/lib.rs.
 - Kotlin instrumented tests: Mostly structural skeletons (assertTrue placeholders remain in places). Need real-device runs + actual assertions (polish-1).
 - Screenshots: Detailed capture instructions + 4 descriptive slots in metainfo.xml created (docs/SCREENSHOTS.md). Actual images still needed.
 - No SBOM or formal supply-chain auditing yet (arch-3).
