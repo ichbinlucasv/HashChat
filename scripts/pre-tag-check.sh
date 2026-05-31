@@ -121,8 +121,10 @@ echo "  This is a HARD REQUIREMENT. No signed tag will be considered complete wi
 # Enforce simple evidence file gate (even a dated log is accepted for v0.2-preview)
 EVIDENCE_FILE=$(ls -1t TESTING_EVIDENCE*.log 2>/dev/null | head -1 || true)
 if [ -z "$EVIDENCE_FILE" ]; then
-    echo "  >>> WARNING (will become hard FAIL in post-v0.2): No TESTING_EVIDENCE_*.log found in repo root."
-    echo "  >>> Create one (e.g. 'date > TESTING_EVIDENCE_2026-05-31.log ; echo \"Real device test: voice+groups on Pixel 6a, posture gates worked\" >> ...') and re-run before tagging."
+    echo "  >>> HARD FAIL for signed tags (Wave 3 ultra gate): No TESTING_EVIDENCE_*.log found."
+    echo "  >>> This is now a blocking requirement. Create dated real-hardware evidence log and re-run."
+    echo "  >>> Example: date > TESTING_EVIDENCE_2026-06-01.log && echo 'Real device: strict mode voice+groups refusal tested on Pixel' >> TESTING_EVIDENCE_2026-06-01.log"
+    exit 1
 else
     echo "  -> Found testing evidence: $EVIDENCE_FILE (modified $(stat -c %y "$EVIDENCE_FILE" 2>/dev/null || echo 'recently'))"
 fi

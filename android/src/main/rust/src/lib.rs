@@ -566,7 +566,10 @@ impl VoiceStream {
         // Decrypt using the derived per-chunk key (real ratchet output style)
         let plaintext = ratchet::decrypt_with_key(&chunk_key, encrypted).unwrap_or_default();
 
-        // Future work (still TODO): proper zeroize of previous chunk_key + skipped key management
+        // Wave 3 improvement: explicit zeroization of the just-used chunk key
+        // (zeroize crate is already a dependency for the ratchet work)
+        chunk_key.zeroize();
+
         plaintext
     }
 }

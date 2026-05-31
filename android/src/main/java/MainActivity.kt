@@ -782,8 +782,12 @@ class MainActivity : AppCompatActivity() {
                 // EXTREME OPSEC WARNING (crit-2 / Tier 1): HARDCODED DEMO PASSPHRASE
                 // Now routed through the single guarded helper (tied to strict mode).
                 // This is the last remaining usage surface for groups.
+                // Wave 3: In EXTREME_MODE we refuse groups entirely (see onToggleDecoyProfile pattern).
                 // =====================================================================
                 // Using the new higher-level group sender key export when possible (A1 + A3)
+                if (EXTREME_MODE) {
+                    throw IllegalStateException("EXTREME MODE: Group persistence disabled")
+                }
                 val exported = HashChatNative.exportGroupSenderKey(rid, getInsecureGroupDemoPassphrase())
                 val wrapped = HashChatKeystore.encryptForStorage(exported)
                 // In a full version we would store the 'wrapped' blob per ratchet for perfect roundtrip import
@@ -1029,10 +1033,21 @@ class MainActivity : AppCompatActivity() {
     // === Minimal decoy profile (Tier 1 + Tier 2 plausible deniability) ===
     // Real compartmentalization (separate ratchets, hidden volume, different passphrase) is longer-term.
     // For v0.2 this at least gives a visual + state toggle that is STRICT MODE GATED.
+
+    // Wave 3: Minimal Extreme profile stub (Tier 3 stripped profile)
+    // When true, many high-surface features (groups, voice, export, decoy) are hard-disabled.
+    // This is the beginning of the ultra-stripped mode for extreme threat models.
+    private val EXTREME_MODE = false   // Set to true only for the most paranoid builds
+
     private var currentProfile: String = "Default"
     private var isDecoyActive: Boolean = false
 
     fun onToggleDecoyProfile(v: View? = null) {
+        // Extreme profile gate (Wave 3)
+        if (EXTREME_MODE) {
+            Toast.makeText(this, "EXTREME MODE: Decoy profiles are disabled for minimal attack surface.", Toast.LENGTH_LONG).show()
+            return
+        }
         // Tier 1 Very High: strict mode gate for decoy activation (plausible deniability must not be triggerable in bad env)
         if (HashChatNative.shouldRefuseInStrictMode("decoy")) {
             Toast.makeText(this, "STRICT MODE: Decoy profile toggle REFUSED (bad environment - plausible deniability requires clean device)", Toast.LENGTH_LONG).show()
