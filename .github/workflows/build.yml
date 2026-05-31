@@ -12,13 +12,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install dependencies
+      - name: Install dependencies (pinned GHC via ghcup for reproducibility)
         run: |
           sudo apt-get update
-          sudo apt-get install -y ghc cabal-install rustc cargo libncurses-dev pkg-config
-          # vty-unix / brick ecosystem benefits from these on Ubuntu runners
+          sudo apt-get install -y curl gcc make libgmp-dev zlib1g-dev libncurses-dev pkg-config
+
+          # Install a known stable GHC (9.8.4) instead of whatever apt gives (which can be 9.14+ and break layout)
+          curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sh -s -- -y
+          source "$HOME/.ghcup/env"
+          ghcup install ghc 9.8.4
+          ghcup set ghc 9.8.4
+          ghcup install cabal 3.10.3.0 || true
+          ghcup set cabal 3.10.3.0
+
+          # Rust
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source "$HOME/.cargo/env"
+
+          echo "Using GHC: $(ghc --version)"
+          echo "Using Cabal: $(cabal --version)"
       - name: Build everything safely
         run: |
+          source "$HOME/.ghcup/env" || true
+          source "$HOME/.cargo/env" || true
+
           # Rust core (always works, no system deps needed beyond what's in the runner)
           cargo build --release
 

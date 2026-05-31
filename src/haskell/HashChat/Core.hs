@@ -389,7 +389,7 @@ unpackMessage bs
                                             , expiresAt = expT
                                             , ratchetStep = step
                                             }
-                                      consumed = 1 + 4 + 2 + BS.length sndr + 4 + fromIntegral cl + 4 + fromIntegral cil + 4 + 1 + 1 + 8 + 4
+                                          consumed = 1 + 4 + 2 + BS.length sndr + 4 + fromIntegral cl + 4 + fromIntegral cil + 4 + 1 + 1 + 8 + 4
                                       in Just (msg, BS.drop (fromIntegral consumed) bs)
 
 -- Helper packers (pure, no new deps)
