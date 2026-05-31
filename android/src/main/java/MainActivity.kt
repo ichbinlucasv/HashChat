@@ -594,9 +594,13 @@ class MainActivity : AppCompatActivity() {
                             // Real roundtrip: try to import the ratchets using JNI
                             rids.forEach { rid ->
                                 // In a full implementation we would store and pass the actual exported blob here
-                                // EXPERT OPSEC WARNING (crit-2): "demo-pass" is a known audit finding.
-                                // Real deployments must derive this from user secret + Android Keystore.
-                                HashChatNative.ratchetImportEncrypted(rid, "demo-pass".toByteArray(), ByteArray(0))
+                                // =====================================================================
+                                // EXTREME OPSEC WARNING (crit-2 / Tier 1): HARDCODED DEMO PASSPHRASE
+                                // This is a well-known audit finding. Never use in any real deployment.
+                                // Must be replaced with user-derived passphrase + Android Keystore
+                                // (HashChatKeystore) before v0.2 or any serious usage.
+                                // =====================================================================
+                                HashChatNative.ratchetImportEncrypted(rid, DEMO_INSECURE_RATCHET_PASSPHRASE.toByteArray(), ByteArray(0))
                             }
                         }
                     }
@@ -611,6 +615,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // =====================================================================
+    // EXTREME OPSEC / AUDIT FINDING (Tier 1)
+    // This hardcoded value is ONLY for demo / development persistence.
+    // It must be replaced with a user-derived passphrase + Android Keystore
+    // before any real or production use. See RELEASE_PROCESS.md and THREATMODEL.md.
+    // =====================================================================
+    private val DEMO_INSECURE_RATCHET_PASSPHRASE = "demo-pass"
+
     // Save group state encrypted (Keystore + JNI export - real roundtrip)
     private fun persistGroups() {
         val sb = StringBuilder()
@@ -618,9 +630,13 @@ class MainActivity : AppCompatActivity() {
             sb.append(gname).append(":").append(rids.joinToString(",")).append("\n")
             rids.forEach { rid ->
                 // Real export via JNI + Keystore wrap for persistence
-                // EXPERT OPSEC WARNING (crit-2): "demo-pass" is a known audit finding.
-                // Real deployments must derive this from user secret + Android Keystore.
-                val exported = HashChatNative.ratchetExportEncrypted(rid, "demo-pass".toByteArray())
+                // =====================================================================
+                // EXTREME OPSEC WARNING (crit-2 / Tier 1): HARDCODED DEMO PASSPHRASE
+                // This is a well-known audit finding. Never use in any real deployment.
+                // Must be replaced with user-derived passphrase + Android Keystore
+                // (HashChatKeystore) before v0.2 or any serious usage.
+                // =====================================================================
+                val exported = HashChatNative.ratchetExportEncrypted(rid, DEMO_INSECURE_RATCHET_PASSPHRASE.toByteArray())
                 val wrapped = HashChatKeystore.encryptForStorage(exported)
                 // In a full version we would store the 'wrapped' blob per ratchet for perfect roundtrip import
             }
