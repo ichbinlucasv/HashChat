@@ -102,7 +102,7 @@ cliMessageLoop ratchets messages = do
 
       let ctLen = BS.length (ciphertext realMsg)
       let encNote = "[ratchet#" ++ show (ratchetStep realMsg) ++ " ct:" ++ show ctLen ++ "B]"
-      let stored = (Prelude.map (toEnum . fromIntegral) $ BS.unpack (content realMsg)) ++ " " ++ encNote
+      let stored = (Prelude.map (toEnum . fromIntegral) $ BS.unpack (HashChat.Core.content realMsg)) ++ " " ++ encNote
       let newMessages = Map.insertWith (++) contact [stored] messages
       putStrLn $ "Sent to " ++ contact ++ " " ++ encNote ++ " (real ciphertext produced)"
       cliMessageLoop newRatchets newMessages
