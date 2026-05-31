@@ -41,6 +41,10 @@ object HashChatNative {
     // Goal: Move the full export + outer encryption logic into Rust so Kotlin
     // doesn't have to handle the passphrase + wrapping directly for groups.
     external fun exportGroupRatchet(stateId: Int, passphrase: ByteArray): ByteArray
+
+    // Strict mode / environment check (Tier 3).
+    // Will eventually refuse dangerous actions if the environment is not sufficiently paranoid.
+    external fun isStrictMode(): Boolean
     // Future: full framed Tor send, etc.
 }
 

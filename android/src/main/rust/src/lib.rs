@@ -81,6 +81,17 @@ fn mlock_android_ratchet_store() {
     // No-op on non-Android (desktop uses the separate mlock function)
 }
 
+// === Strict Mode / Environment Check (Tier 3 architectural) ===
+// Placeholder for future "refuse to run if certain OPSEC conditions aren't met".
+// Examples: debuggable, emulator, no swap, certain dangerous environment variables, etc.
+// For now this is a simple stub that always returns false (not in strict mode).
+// This API can be expanded significantly later.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_isStrictMode(_env: JNIEnv, _class: JClass) -> jboolean {
+    // Future: real checks here (debug, emulator, root, dangerous props, etc.)
+    false as jboolean
+}
+
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_getSecurityPosture(
     mut _env: JNIEnv,
@@ -431,28 +442,34 @@ struct VoiceStream {
 
 static mut VOICE_STREAMS: Vec<VoiceStream> = Vec::new();
 
+// Internal Rust function for voice chunk processing.
+// This is where real per-stream ratchet logic will eventually live.
+fn process_voice_chunk_internal(encrypted: &[u8]) -> Vec<u8> {
+    // === DEEP MIGRATION NOTE ===
+    // Currently still using placeholder key.
+    // Real version will:
+    // 1. Select or create the correct VoiceStream for this call
+    // 2. Decrypt using the current ratchet key
+    // 3. Advance the ratchet
+    // 4. Wipe the used key
+    // 5. Return plaintext
+
+    let key = [0u8; 32]; // placeholder
+    // For now we still delegate to the general decrypt helper
+    // In future this will be direct ratchet decrypt + advance + wipe
+    decrypt_with_key(&key, encrypted).unwrap_or_default()
+}
+
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_processVoiceChunk(
     mut env: JNIEnv,
     _class: JClass,
     encrypted: jbyteArray,
 ) -> jbyteArray {
-    // === MIGRATION NOTE (deep architectural work) ===
-    // This function is the canonical place where voice forward secrecy will live.
-    //
-    // For now it still delegates while we establish the boundary.
-    // Future commits will replace the dummy key with real ratchet state
-    // managed inside this module (or a dedicated voice_ratchet.rs).
-
-    // Placeholder: In real code we would pick/create the correct VoiceStream
-    // based on call identifier and perform ratchet operations here.
-    let _ = unsafe { &mut VOICE_STREAMS }; // reserved for future per-stream state
-
-    let key = vec![0u8; 32]; // will be replaced by real per-stream ratchet key
-    let key_jba = env.byte_array_from_slice(&key).expect("failed to create key array");
-
-    // Temporary delegation during migration
-    Java_chat_hashchat_HashChatNative_decryptWithKey(env, _class, key_jba, encrypted)
+    // This is the official entry point. All future voice security logic belongs here.
+    let encrypted_bytes = unsafe { wrap_byte_array(encrypted) };
+    let plaintext = process_voice_chunk_internal(&encrypted_bytes);
+    vec_to_java_byte_array(&mut env, &plaintext)
 }
 
 // === Higher-level group ratchet export (Tier 3 migration target) ===
