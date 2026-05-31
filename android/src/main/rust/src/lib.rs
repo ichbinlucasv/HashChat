@@ -461,20 +461,18 @@ fn process_voice_chunk_internal(encrypted: &[u8]) -> Vec<u8> {
     // 4. Wipe the used key (and prune skipped keys if needed)
     // 5. Return plaintext
 
-    // Placeholder logic simulating real ratchet advance
-    // In a real implementation this would come from the actual VoiceStream's DoubleRatchet
-    let key = [0u8; 32];
-    let mut plaintext = decrypt_with_key(&key, encrypted).unwrap_or_default();
-
-    // Simulate ratchet step advancement inside Rust (this is the direction)
-    // Real version will do: ratchet.advance() + wipe_old_key()
+    // Ensure at least one VoiceStream exists (simulating stream creation)
     unsafe {
-        if !VOICE_STREAMS.is_empty() {
-            VOICE_STREAMS[0].current_step = VOICE_STREAMS[0].current_step.wrapping_add(1);
+        if VOICE_STREAMS.is_empty() {
+            VOICE_STREAMS.push(VoiceStream { id: 0, current_step: 0, _placeholder: () });
         }
+        // Simulate ratchet step advancement inside Rust
+        VOICE_STREAMS[0].current_step = VOICE_STREAMS[0].current_step.wrapping_add(1);
     }
 
-    plaintext
+    // Placeholder logic — will be replaced by real ratchet operations from the VoiceStream
+    let key = [0u8; 32];
+    decrypt_with_key(&key, encrypted).unwrap_or_default()
 }
 
 #[no_mangle]

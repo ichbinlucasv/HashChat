@@ -59,8 +59,11 @@ object HashChatNative {
         val isEmulator = android.os.Build.FINGERPRINT.contains("generic") ||
                          android.os.Build.MODEL.contains("Emulator") ||
                          android.os.Build.MANUFACTURER.contains("Genymotion")
-        // Basic strict mode: must not be debuggable and not running on emulator
-        return !isDebugger && !isEmulator
+        // Additional basic check: application is not debuggable in release sense
+        val isDebuggable = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
+        // Basic strict mode: must not be debuggable, not on emulator, and no debugger attached
+        return !isDebugger && !isEmulator && !isDebuggable
     }
     // Future: full framed Tor send, etc.
 }
