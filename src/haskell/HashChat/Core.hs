@@ -239,10 +239,11 @@ unframeFromWire :: BS.ByteString -> Maybe (ByteString, Word32, BS.ByteString)
 unframeFromWire bs
   | BS.length bs < 1 + 1 + 4 + 4 = Nothing
   | otherwise =
-      let (v:hs, rest1) = BS.splitAt 2 bs
-      in if BS.head v /= 1 then Nothing else
-        let hl = fromIntegral (BS.head hs) :: Int
-        in if BS.length rest1 < hl + 4 + 4 then Nothing else
+      let (header, rest1) = BS.splitAt 2 bs
+          v  = if BS.length header >= 1 then BS.head header else 0
+          hl = if BS.length header >= 2 then fromIntegral (BS.index header 1) :: Int else 0
+      in if v /= 1 then Nothing else
+        if BS.length rest1 < hl + 4 + 4 then Nothing else
           let (hint, rest2) = BS.splitAt hl rest1
               (stepBs, rest3) = BS.splitAt 4 rest2
               (clBs, ct) = BS.splitAt 4 rest3
