@@ -760,6 +760,8 @@ class MainActivity : AppCompatActivity() {
             throw IllegalStateException("STRICT MODE: demo-pass group persistence path is refused. Migrate to user-derived + Keystore.")
         }
         // Still allowed only in clearly bad/dev environments (the original intent of the demo).
+        // NEXT STEP (Highest + Tier 2): replace the final call sites with real Keystore-wrapped user passphrase or hard-fail the whole group feature outside demo builds.
+        android.util.Log.w("HashChat", "LAST DEMO-PASS USAGE: group persistence path. This string must disappear before v0.2 final.")
         return DEMO_INSECURE_RATCHET_PASSPHRASE.toByteArray()
     }
 

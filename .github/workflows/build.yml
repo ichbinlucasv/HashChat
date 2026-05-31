@@ -68,8 +68,9 @@ jobs:
 
           # Stage the Rust FFI library so Cabal finds it (extra-lib-dirs: rust-lib in the .cabal file).
           # Without this, `cabal build hashchat-cli` fails with "Missing C library: hashchat_rust".
+          # CI resilience improvement (T3 paranoid): fail hard if the core Rust lib is missing.
           mkdir -p rust-lib
-          cp target/release/libhashchat_rust.so rust-lib/ 2>/dev/null || echo "Rust lib copy skipped (non-fatal for some targets)"
+          cp target/release/libhashchat_rust.so rust-lib/ || { echo "FATAL: libhashchat_rust.so missing after cargo build"; exit 1; }
 
           # Haskell: update index first (critical)
           cabal update
