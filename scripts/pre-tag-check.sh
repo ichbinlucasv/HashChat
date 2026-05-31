@@ -99,8 +99,7 @@ echo "  - At least one full real-device + Tails/Qubes test pass performed in the
 echo "  - Results must be documented (date, environment, key observations) per docs/TESTING_STRATEGY.md"
 echo "  - The signed tag message MUST reference that this check was satisfied."
 echo ""
-echo "  This is a hard requirement for any credible v0.2 release. The check is currently manual."
-echo "  Future versions of this script should add stronger enforcement (e.g. require a log file)."
+echo "  This is a hard requirement. No signed tag should be created without recent real-hardware testing evidence."
 
 # 10. Final summary
 echo "[10/10] All automated checks completed."

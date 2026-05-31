@@ -48,9 +48,9 @@ cargo audit --deny high || echo "High/critical issues found - review before tagg
 # - Real icons generated (or confirm improved placeholder + docs sufficient for preview)
 # - Real screenshots captured per docs/SCREENSHOTS.md (or confirm placeholders + instructions)
 # - At least one full real-hardware test pass (Tails + physical Android) per TESTING_STRATEGY.md
-#   This is now a HARD REQUIREMENT before any signed tag. The signed tag message must explicitly
+#   This is a HARD REQUIREMENT before any signed tag. The signed tag message must explicitly
 #   reference that recent real-device + Tails/Qubes testing was performed and documented per TESTING_STRATEGY.md.
-#   This is one of the most important Tier 3 items for long-term credibility.
+#   No signed tag should be created without this evidence.
 # - Honest limitations refreshed in RELEASE_NOTES_v0.2.md
 ```
 
