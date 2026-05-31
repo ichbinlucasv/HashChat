@@ -441,9 +441,9 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_feedReceivedData(
 // Simple internal placeholder for future per-stream voice ratchet state.
 // In a real implementation this would hold DoubleRatchet instances per active voice call.
 struct VoiceStream {
-    // Future: actual DoubleRatchet + step counter + skipped keys
     id: u32,
-    // For now we just track that a stream exists. Real ratchet state will go here.
+    // Future: actual DoubleRatchet + step counter + skipped keys
+    current_step: u32,
     _placeholder: (),
 }
 
@@ -461,9 +461,20 @@ fn process_voice_chunk_internal(encrypted: &[u8]) -> Vec<u8> {
     // 4. Wipe the used key (and prune skipped keys if needed)
     // 5. Return plaintext
 
-    // Placeholder logic - will be replaced by real ratchet operations
-    let key = [0u8; 32]; // will come from the selected VoiceStream's current key
-    decrypt_with_key(&key, encrypted).unwrap_or_default()
+    // Placeholder logic simulating real ratchet advance
+    // In a real implementation this would come from the actual VoiceStream's DoubleRatchet
+    let key = [0u8; 32];
+    let mut plaintext = decrypt_with_key(&key, encrypted).unwrap_or_default();
+
+    // Simulate ratchet step advancement inside Rust (this is the direction)
+    // Real version will do: ratchet.advance() + wipe_old_key()
+    unsafe {
+        if !VOICE_STREAMS.is_empty() {
+            VOICE_STREAMS[0].current_step = VOICE_STREAMS[0].current_step.wrapping_add(1);
+        }
+    }
+
+    plaintext
 }
 
 #[no_mangle]
