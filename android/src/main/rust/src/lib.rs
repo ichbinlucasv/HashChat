@@ -409,9 +409,9 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_feedReceivedData(
 
 // === Voice chunk processing migration target (Tier 3 architectural) ===
 // This is the official, thin entry point for incoming voice chunks from the Tor receiver.
-// 
+//
 // Current state: Thin wrapper (for compatibility during migration).
-// 
+//
 // Target state: All per-chunk logic lives here in Rust:
 //   - Lookup the correct sending/receiving ratchet for this voice stream
 //   - Decrypt using the current chain key
@@ -421,26 +421,37 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_feedReceivedData(
 //
 // This keeps the Kotlin voice processor extremely dumb (just queue + UI + MediaPlayer).
 // The crown jewels (ratchet state + forward secrecy) stay in Rust.
+
+// Simple internal placeholder for future per-stream voice ratchet state.
+// In a real implementation this would hold DoubleRatchet instances per active voice call.
+struct VoiceStream {
+    // Future: actual DoubleRatchet + step counter + skipped keys
+    _placeholder: (),
+}
+
+static mut VOICE_STREAMS: Vec<VoiceStream> = Vec::new();
+
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_processVoiceChunk(
     mut env: JNIEnv,
     _class: JClass,
     encrypted: jbyteArray,
 ) -> jbyteArray {
-    // === MIGRATION NOTE ===
-    // This is intentionally still a placeholder during the move.
-    // The real implementation will receive a voice stream identifier (or ratchet id)
-    // and perform real DoubleRatchet operations inside Rust.
+    // === MIGRATION NOTE (deep architectural work) ===
+    // This function is the canonical place where voice forward secrecy will live.
     //
-    // For now we keep the old decryptWithKey path so existing behavior is unchanged
-    // while the Kotlin side has already switched to calling this canonical function.
+    // For now it still delegates while we establish the boundary.
+    // Future commits will replace the dummy key with real ratchet state
+    // managed inside this module (or a dedicated voice_ratchet.rs).
 
-    let key = vec![0u8; 32]; // placeholder – real version will come from ratchet state
+    // Placeholder: In real code we would pick/create the correct VoiceStream
+    // based on call identifier and perform ratchet operations here.
+    let _ = unsafe { &mut VOICE_STREAMS }; // reserved for future per-stream state
+
+    let key = vec![0u8; 32]; // will be replaced by real per-stream ratchet key
     let key_jba = env.byte_array_from_slice(&key).expect("failed to create key array");
 
-    // Delegate to the existing decrypt path during migration.
-    // When real ratchet logic lands here, this line will be replaced by direct
-    // ratchet lookup + decrypt + advance + wipe inside Rust.
+    // Temporary delegation during migration
     Java_chat_hashchat_HashChatNative_decryptWithKey(env, _class, key_jba, encrypted)
 }
 
