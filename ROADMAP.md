@@ -77,3 +77,44 @@ Goal: Build a SimplexChat-level (or better) anonymous messenger using only **Has
 We are building this the right way: small trusted computing base, Haskell for correctness, Rust for performance/crypto, Tor-only, and SimplexChat-level respect for the user.
 
 Contributions are very welcome — especially in the remaining polish areas above.
+
+---
+
+## Post-v0.2 Philosophy Decision Required (Tier 3)
+
+Before the next major phase we must explicitly decide the Android vs Desktop TUI strategy:
+
+**Option A (Recommended by current direction):** "Make Android as strong as the desktop TUI."
+- Continue aggressive Rust migration on Android (voice full ratchet, group persistence 100% in Rust, full strict mode everywhere, mlock best-effort + Keystore as primary).
+- Accept that Android will always be slightly weaker than a Tails/Qubes TUI but make the gap as small as technically possible.
+- Result: one product with two high-quality surfaces.
+
+**Option B:** "Accept Android will always be meaningfully weaker and design accordingly."
+- Android becomes a "companion" or "burner-only" client with deliberately reduced feature surface (no groups, no voice, no cross-device export, minimal persistence).
+- Desktop TUI becomes the "serious" paranoid tool.
+- Extreme users get Option C (see below).
+
+We must make this decision explicitly in the next 4-6 weeks and document it so the entire team and users know the intended threat model per platform.
+
+## Second Ultra-Stripped "Extreme" Profile (Tier 3)
+
+Some users (journalists in the most hostile environments, high-value targets) may want an even smaller attack surface than the current burner + decoy model.
+
+Proposed "Extreme" profile (disabled by default, user must explicitly enable):
+
+- Groups completely disabled
+- Voice recording/playback disabled
+- Cross-device ratchet export disabled
+- Decoy profile disabled (only one burner)
+- No persistent contacts or history beyond current session
+- Strict mode forced on at all times with no bypass
+- Even more aggressive memory wiping + shorter key lifetimes
+- Smaller APK / binary surface (if we ever split builds)
+
+This would be a separate launch mode or compile-time flag. It trades almost all usability for the smallest possible trusted computing base and metadata surface.
+
+Implementation sketch: a top-level `ExtremeMode` flag that gates entire feature paths in both TUI and Android, plus a dedicated THREATMODEL section.
+
+**Decision needed:** Do we want this as a real supported mode post-v0.2, or is the current burner + decoy + strict mode sufficient?
+
+Document owner: keep this section updated after the philosophy decision.
