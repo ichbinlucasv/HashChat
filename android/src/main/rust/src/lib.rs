@@ -454,18 +454,25 @@ impl VoiceStream {
 
     // Future real method — this will contain the actual ratchet decrypt + advance + wipe
     fn process_chunk(&mut self, encrypted: &[u8]) -> Vec<u8> {
-        // === MIGRATION PROGRESS ===
-        // Currently still placeholder. Real version will use the actual ratchet key
-        // from this VoiceStream, decrypt, advance the ratchet, wipe the old key,
-        // and update skipped keys.
+        // === MIGRATION PROGRESS (deep architectural) ===
+        // Currently still placeholder key.
+        // Real version will:
+        // - Use the actual current ratchet key from this VoiceStream
+        // - Decrypt
+        // - Advance the ratchet (new chain key + step)
+        // - Wipe the old key
+        // - Manage skipped keys
 
-        let key = [0u8; 32]; // will be replaced by real per-stream ratchet key
-        let plaintext = decrypt_with_key(&key, encrypted).unwrap_or_default();
+        // Simulated "current key" for this stream (in real code this will be the real ratchet output key)
+        let current_key = [self.current_step as u8; 32];
 
-        // Simulate real ratchet advancement inside Rust (this is the direction)
+        let plaintext = decrypt_with_key(&current_key, encrypted).unwrap_or_default();
+
+        // Simulate real ratchet advancement inside Rust
         self.current_step = self.current_step.wrapping_add(1);
 
-        // Future: after real advancement, we would wipe the previous key here
+        // Future: we would wipe the previous key material here
+
         plaintext
     }
 }

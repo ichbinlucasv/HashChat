@@ -50,7 +50,7 @@ cargo audit --deny high || echo "High/critical issues found - review before tagg
 # - At least one full real-hardware test pass (Tails + physical Android) per TESTING_STRATEGY.md
 #   This is a HARD REQUIREMENT before any signed tag. The signed tag message must explicitly
 #   reference that recent real-device + Tails/Qubes testing was performed and documented per TESTING_STRATEGY.md.
-#   No signed tag should be created without this evidence.
+#   No signed tag is considered complete without this evidence.
 # - Honest limitations refreshed in RELEASE_NOTES_v0.2.md
 ```
 
