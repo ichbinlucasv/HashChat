@@ -16,6 +16,11 @@ use ring::aead::{UnboundKey, LessSafeKey, Nonce, Aad, AES_256_GCM};
 use rand::RngCore;
 use argon2::{Argon2, password_hash::{PasswordHasher, SaltString}, Algorithm, Version, Params};
 
+// Real HKDF-SHA256 for GroupSenderKey advancement (Tier 1 Highest item).
+// These are already in Cargo.toml for parity with the core ratchet work.
+use hkdf::Hkdf;
+use sha2::Sha256;
+
 /// Helper: wrap a raw jbyteArray (from Java native) into a high-level JByteArray for jni 0.21+.
 #[inline]
 unsafe fn wrap_byte_array(raw: jbyteArray) -> JByteArray<'static> {
@@ -621,17 +626,33 @@ impl GroupSenderKey {
         }
     }
 
-    /// Advance the sender key (simulated HKDF-style, matching the Haskell Group.hs design).
-    /// This gives per-member forward secrecy for group messages.
-    /// Real version should use proper HKDF-SHA256 from gsk_chain_key.
+    /// Advance the sender key using **real HKDF-SHA256** (proper KDF, not simulation).
+    /// This is the concrete implementation of the "Highest Leverage" Tier 1 item:
+    /// moving GroupSenderKey advancement into Rust with real crypto (matching the
+    /// intent of the Haskell skeleton's TODO for HKDF-based chain advancement).
+    ///
+    /// Per-member forward secrecy for groups now derives actual message keys and
+    /// updates the chain key via HKDF instead of naive count-based fills.
+    /// Still simplified (no full MLS-style or per-sender Double Ratchet yet),
+    /// but this is a real, auditable cryptographic step — a major improvement
+    /// over the previous array-fill simulation.
     pub fn advance(&mut self) -> [u8; 32] {
         self.gsk_msg_count = self.gsk_msg_count.wrapping_add(1);
 
-        // Simulated message key derivation (matches Haskell simulation)
-        let msg_key = [self.gsk_msg_count as u8; 32];
+        // Real HKDF-SHA256 from current chain key (no secret salt for this simplified sender-key chain).
+        let hk = Hkdf::<Sha256>::new(None, &self.gsk_chain_key);
 
-        // Simulated chain key advancement (real code: HKDF(gsk_chain_key, "HashChat-Group-Sender"))
-        self.gsk_chain_key = [(self.gsk_msg_count.wrapping_add(1)) as u8; 32];
+        // Message key for this step (what gets used for the actual group message encryption)
+        let mut msg_key = [0u8; 32];
+        hk.expand(b"HashChat-Group-Sender-Message", &mut msg_key)
+            .expect("HKDF expand for group sender message key must succeed");
+
+        // Advance the chain key for next step (domain-separated info string)
+        let mut next_chain = [0u8; 32];
+        hk.expand(b"HashChat-Group-Sender-Chain", &mut next_chain)
+            .expect("HKDF expand for group sender chain key must succeed");
+
+        self.gsk_chain_key = next_chain;
 
         msg_key
     }

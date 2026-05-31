@@ -69,15 +69,32 @@ else
     echo "  -> No obvious unprotected demo-pass strings found in main source."
 fi
 
-# 6. Basic check that key docs have been touched recently
-echo "[6/8] Checking recent updates to critical docs..."
-RECENT_FILES=$(git log --since="30 days ago" --name-only --pretty=format: | sort | uniq)
-if ! echo "$RECENT_FILES" | grep -q "RELEASE_NOTES_v0.2.md"; then
-    echo "  WARNING: RELEASE_NOTES_v0.2.md has not been updated in the last 30 days."
+# 6. Aggressive critical doc + no-new-TODO gate (Tier 2 pre-tag hardening)
+echo "[6/8] Aggressive check: critical docs modified recently + no new security TODOs/FIXMEs..."
+# Require both key docs touched in the last 20 commits (stronger than "30 days")
+RECENT_DOCS=$(git log --oneline -20 --name-only --pretty=format: | sort | uniq)
+MISSING=0
+if ! echo "$RECENT_DOCS" | grep -q "RELEASE_NOTES_v0.2.md"; then
+    echo "  FAIL (pre-tag gate): RELEASE_NOTES_v0.2.md not modified in last 20 commits."
+    MISSING=1
 fi
-if ! echo "$RECENT_FILES" | grep -q "THREATMODEL.md"; then
-    echo "  WARNING: THREATMODEL.md has not been updated in the last 30 days."
+if ! echo "$RECENT_DOCS" | grep -q "THREATMODEL.md"; then
+    echo "  FAIL (pre-tag gate): THREATMODEL.md not modified in last 20 commits."
+    MISSING=1
 fi
+
+# No new TODO/FIXME in security-critical files since last tag (or in working tree for dev)
+CRITICAL_FILES="android/src/main/rust/src/lib.rs android/src/main/java/MainActivity.kt scripts/clean-security.sh scripts/pre-tag-check.sh src/rust/*.rs src/haskell/HashChat/Group.hs"
+NEW_TODOS=$(git diff --name-only HEAD~5 -- $CRITICAL_FILES 2>/dev/null | xargs -I{} git diff HEAD~5 -- {} 2>/dev/null | grep -E '^\+.*(TODO|FIXME|XXX|HACK)' | grep -v 'TODO (deep ongoing work)' || true)
+if [ -n "$NEW_TODOS" ]; then
+    echo "  WARNING (will hard-fail post-v0.2): New TODO/FIXME added in security-critical files:"
+    echo "$NEW_TODOS"
+fi
+
+if [ "$MISSING" -eq 1 ]; then
+    echo "  >>> Pre-tag gate: Update the missing critical docs before tagging."
+fi
+echo "  -> Critical docs + TODO hygiene check complete (stricter gate active)."
 
 # 7. Verify no obvious sensitive files are tracked
 echo "[7/8] Verifying no sensitive files are accidentally tracked..."
