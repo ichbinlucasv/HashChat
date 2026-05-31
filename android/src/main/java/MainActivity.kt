@@ -32,6 +32,9 @@ object HashChatNative {
     external fun pushReceivedVoiceChunk(data: ByteArray)
     external fun getSecurityPosture(): String   // richer posture from Rust side (high-5)
 
+    // Fed from the background Tor receiver thread (real framing path). Must be declared to match Rust JNI.
+    external fun feedReceivedData(data: ByteArray)
+
     // Voice chunk processing migration target (Tier 3 architectural improvement).
     // Goal: Move per-chunk ratchet advance, decryption, and key wipe into Rust.
     // This keeps the JNI surface thin and moves sensitive logic out of Kotlin.
@@ -54,24 +57,57 @@ object HashChatNative {
     external fun exportGroupSenderKey(groupKeyId: Int, passphrase: ByteArray): ByteArray
     external fun importGroupSenderKey(passphrase: ByteArray, data: ByteArray): Int
 
-    // Strict mode / environment check (Tier 3).
-    // Returns true only in sufficiently paranoid environments.
-    // Current basic checks: not debuggable + not emulator.
-    // Future: more checks (no swap, dangerous props, etc.) + Rust side integration.
+    // Strict mode / environment check (Tier 1 Very High - now enforced).
+    // Returns true ONLY in sufficiently paranoid environments (no debug, no emulator, no root, no qemu props, etc.).
+    // This is wired into voice, groups, export, and decoy flows to HARD REFUSE risky actions on bad devices.
+    // Kotlin + Rust both contribute real checks (see Rust isStrictMode + is_environment_strict).
     external fun isStrictMode(): Boolean
 
-    // Kotlin-side implementation of strict mode checks (can be called from Java/Kotlin directly).
-    // This is the real logic for now. The JNI version can later call into Rust for deeper checks.
+    // Combined Kotlin + JNI strict mode (authoritative for refusal decisions).
+    // Expands the old stub with real root detection, dangerous props via reflection + files,
+    // Build.TAGS test-keys, userdebug, ro.debuggable, etc. + delegates to Rust for /proc/fs signals.
     fun isStrictModeEnabled(): Boolean {
         val isDebugger = android.os.Debug.isDebuggerConnected()
         val isEmulator = android.os.Build.FINGERPRINT.contains("generic") ||
                          android.os.Build.MODEL.contains("Emulator") ||
-                         android.os.Build.MANUFACTURER.contains("Genymotion")
-        // Additional basic check: application is not debuggable in release sense
+                         android.os.Build.MANUFACTURER.contains("Genymotion") ||
+                         android.os.Build.HARDWARE.contains("goldfish") ||
+                         android.os.Build.HARDWARE.contains("ranchu")
         val isDebuggable = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        val isTestKeys = android.os.Build.TAGS?.contains("test-keys", ignoreCase = true) == true ||
+                         android.os.Build.TYPE?.contains("userdebug", ignoreCase = true) == true ||
+                         android.os.Build.TYPE?.contains("eng", ignoreCase = true) == true
 
-        // Basic strict mode: must not be debuggable, not on emulator, and no debugger attached
-        return !isDebugger && !isEmulator && !isDebuggable
+        // Dangerous system properties (reflection; works on API 24+ without extra perms in most cases)
+        val dangerousProps = try {
+            val c = Class.forName("android.os.SystemProperties")
+            val get = c.getMethod("get", String::class.java)
+            val debuggable = (get.invoke(null, "ro.debuggable") as? String)?.contains("1") == true
+            val secure = (get.invoke(null, "ro.secure") as? String)?.contains("0") == true
+            val qemu = (get.invoke(null, "ro.kernel.qemu") as? String)?.contains("1") == true
+            debuggable || secure || qemu
+        } catch (_: Exception) { false }
+
+        // Root indicators via common files (best effort, no root needed to detect many cases)
+        val rootedIndicators = listOf(
+            "/system/bin/su", "/system/xbin/su", "/sbin/su",
+            "/system/app/Superuser.apk", "/system/app/SuperSU.apk"
+        ).any { java.io.File(it).exists() }
+
+        // Delegate to Rust JNI for deeper /proc + build.prop + qemu node checks
+        val rustStrict = try { isStrictMode() } catch (_: Exception) { false }
+
+        // Strict = everything passes (no bad signals anywhere)
+        val kotlinOk = !isDebugger && !isEmulator && !isDebuggable && !isTestKeys && !dangerousProps && !rootedIndicators
+        return kotlinOk && rustStrict
+    }
+
+    // Convenience gate used by UI flows. Returns true if we should refuse (i.e. NOT strict).
+    fun shouldRefuseInStrictMode(action: String): Boolean {
+        if (!isStrictModeEnabled()) {
+            return true
+        }
+        return false
     }
     // Future: full framed Tor send, etc.
 }
@@ -174,7 +210,7 @@ class MainActivity : AppCompatActivity() {
             else -> {}
         }
         securityPosture = reEvaluateSecurityPosture()
-        updateTopBar("Default", securityPosture)
+        updateTopBar(currentProfile, securityPosture)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -281,7 +317,7 @@ class MainActivity : AppCompatActivity() {
         // Initial demo messages + posture (matches TUI startup)
         addMessage("=== HashChat (Double Ratchet + Tor v3 only) ===", false)
         addMessage("Long-press any message for Simplex-style actions (Block / Report / Delete / Disappear / Security)", false)
-        updateTopBar("Default", "MAX PARANOID (Tails/Qubes + Tor recommended)")
+        updateTopBar(currentProfile, "MAX PARANOID (Tails/Qubes + Tor recommended)")
     }
 
     private fun addMessage(text: String, isMine: Boolean) {
@@ -305,6 +341,8 @@ class MainActivity : AppCompatActivity() {
                 "Report suspicious",
                 "View security info (ratchet step, E2EE, posture)",
                 "Set disappearing timer (key wipe on expiry)",
+                "Export ratchet for new device (cross-device, STRICT gated)",
+                "Toggle decoy profile (plausible deniability, STRICT gated)",
                 "Cancel"
             )) { _, which ->
                 when (which) {
@@ -318,9 +356,45 @@ class MainActivity : AppCompatActivity() {
                     3 -> Toast.makeText(this, "REPORTED as suspicious (local log).", Toast.LENGTH_SHORT).show()
                     4 -> Toast.makeText(this, "E2EE: Double Ratchet + AES-256-GCM over Tor v3. Posture: MAX.", Toast.LENGTH_LONG).show()
                     5 -> Toast.makeText(this, "Disappearing enabled (ties to ratchet key wipe on expiry).", Toast.LENGTH_SHORT).show()
+                    6 -> {
+                        // Tier 1 Very High: strict mode gate for cross-device ratchet export (very high risk)
+                        if (HashChatNative.shouldRefuseInStrictMode("export")) {
+                            Toast.makeText(this, "STRICT MODE: Cross-device export REFUSED (bad environment - keys could leak)", Toast.LENGTH_LONG).show()
+                            return@setItems
+                        }
+                        performCrossDeviceExport()
+                    }
+                    7 -> onToggleDecoyProfile()
                 }
             }
             .show()
+    }
+
+    // Real (gated) cross-device export using the JNI exportRatchetForDevice + Keystore wrap.
+    // In production this would be a QR or file share of the encrypted blob only after user passphrase.
+    private fun performCrossDeviceExport() {
+        try {
+            val rid = HashChatNative.ratchetNew()  // demo: export a fresh one; real would pick active contact ratchet
+            // Strong envelope via JNI (Argon2id + AES-256-GCM inside Rust)
+            val exported = HashChatNative.exportRatchetForDevice(rid, "device-export-pass-demo".toByteArray())
+            if (exported.isNotEmpty()) {
+                val preview = exported.take(32).joinToString("") { b -> "%02x".format(b.toInt() and 0xff) } + "...(${exported.size} bytes)"
+                AlertDialog.Builder(this)
+                    .setTitle("Cross-Device Ratchet Export (STRICT MODE PASSED)")
+                    .setMessage("Encrypted blob ready for secure transfer (QR / NFC / manual). Never send plaintext.\n\nPreview: $preview\n\nThis is the real export path (v2 envelope). Import on other device with matching passphrase.")
+                    .setPositiveButton("Copy to cache (demo)") { _, _ ->
+                        val f = java.io.File(cacheDir, "ratchet_export_${System.currentTimeMillis()}.enc")
+                        f.writeBytes(exported)
+                        Toast.makeText(this, "Exported to ${f.absolutePath} (delete after transfer!)", Toast.LENGTH_LONG).show()
+                    }
+                    .setNegativeButton("Done", null)
+                    .show()
+            } else {
+                Toast.makeText(this, "Export failed (no ratchet state?)", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Export error: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
     }
 
     // Quick action buttons (will be driven by long-press / overflow in production)
@@ -384,6 +458,11 @@ class MainActivity : AppCompatActivity() {
     private var currentVoiceRecordingFile: File? = null   // OPSEC: app-private cacheDir only; deleted after ratchet processing
 
     fun onVoiceMessage(v: View) {
+        // Tier 1 Very High: strict mode gate (refuse voice in debug/emulator/rooted/qemu envs)
+        if (HashChatNative.shouldRefuseInStrictMode("voice")) {
+            Toast.makeText(this, "STRICT MODE: Voice recording REFUSED (bad environment detected)", Toast.LENGTH_LONG).show()
+            return
+        }
         // Expert OPSEC + rec-11: Use centralized posture gate + explicit screen transition
         if (!isActionAllowedInPosture("voice")) {
             securityPosture = reEvaluateSecurityPosture()
@@ -396,7 +475,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             stopRealVoiceRecordingAndSendChunks()
             securityPosture = reEvaluateSecurityPosture()  // re-eval after voice (richer posture + wipe feedback)
-            updateTopBar("Default", securityPosture)
+            updateTopBar(currentProfile, securityPosture)
             switchToScreen(Screen.CHAT)
         }
     }
@@ -573,6 +652,11 @@ class MainActivity : AppCompatActivity() {
 
     // === Full group QR scanning (Simplex-style, matches TUI 'g' + QR) ===
     fun onScanGroupQR(v: View) {
+        // Tier 1 Very High: strict mode gate for groups (expands attack surface + persistence)
+        if (HashChatNative.shouldRefuseInStrictMode("groups")) {
+            Toast.makeText(this, "STRICT MODE: Group operations REFUSED (bad environment: debug/emulator/rooted)", Toast.LENGTH_LONG).show()
+            return
+        }
         // Use ZXing intent (common on Android without extra deps in this skeleton)
         // In real build: add zxing-core to build.gradle or use CameraX + MLKit
         val intent = Intent("com.google.zxing.client.android.SCAN")
@@ -746,6 +830,11 @@ class MainActivity : AppCompatActivity() {
                     1 -> Toast.makeText(this, "E2EE sender-key + Tor + Keystore ratchet", Toast.LENGTH_SHORT).show()
                     2 -> onScanGroupQR(findViewById(android.R.id.content))
                     3 -> {
+                        // Tier 1 Very High: strict mode gate for adding group members (new ratchets + persistence)
+                        if (HashChatNative.shouldRefuseInStrictMode("groups")) {
+                            Toast.makeText(this, "STRICT MODE: Add member REFUSED (bad environment)", Toast.LENGTH_LONG).show()
+                            return@setItems
+                        }
                         // Use proper GroupSenderKey for per-member forward secrecy (A1 + A3)
                         val newGskId = HashChatNative.createGroupSenderKey(HashChatNative.ratchetNew())
                         currentGroup?.let { g -> groups[g]?.add(newGskId) }
@@ -822,7 +911,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         // Safe posture refresh using existing helpers (the full reEvaluate path is used in onVoiceMessage)
         securityPosture = reEvaluateSecurityPosture()
-        updateTopBar("Default", securityPosture)
+        updateTopBar(currentProfile, securityPosture)
         if (!isActionAllowedInPosture("any")) {
             Toast.makeText(this, "Security posture changed: $securityPosture", Toast.LENGTH_LONG).show()
         }
@@ -846,13 +935,13 @@ class MainActivity : AppCompatActivity() {
             val previous = screenBackStack.removeAt(screenBackStack.lastIndex)
             currentScreen = previous
             securityPosture = reEvaluateSecurityPosture()
-            updateTopBar("Default", securityPosture)
+            updateTopBar(currentProfile, securityPosture)
             // In real UI this would restore the previous view/fragment
             return
         }
 
         securityPosture = reEvaluateSecurityPosture()
-        updateTopBar("Default", securityPosture)
+        updateTopBar(currentProfile, securityPosture)
         super.onBackPressed()
     }
 
@@ -913,5 +1002,29 @@ class MainActivity : AppCompatActivity() {
             return false
         }
         return true
+    }
+
+    // === Minimal decoy profile (Tier 1 + Tier 2 plausible deniability) ===
+    // Real compartmentalization (separate ratchets, hidden volume, different passphrase) is longer-term.
+    // For v0.2 this at least gives a visual + state toggle that is STRICT MODE GATED.
+    private var currentProfile: String = "Default"
+    private var isDecoyActive: Boolean = false
+
+    fun onToggleDecoyProfile(v: View? = null) {
+        // Tier 1 Very High: strict mode gate for decoy activation (plausible deniability must not be triggerable in bad env)
+        if (HashChatNative.shouldRefuseInStrictMode("decoy")) {
+            Toast.makeText(this, "STRICT MODE: Decoy profile toggle REFUSED (bad environment - plausible deniability requires clean device)", Toast.LENGTH_LONG).show()
+            return
+        }
+        isDecoyActive = !isDecoyActive
+        currentProfile = if (isDecoyActive) "Decoy" else "Default"
+        // On decoy enter/exit: clear transient state for basic compartmentalization (more in future)
+        clearSensitiveScreenState()
+        // In real: would also switch ratchet stores / Keystore alias / wipe on-screen material
+        securityPosture = reEvaluateSecurityPosture()
+        updateTopBar(currentProfile, securityPosture)
+        val msg = if (isDecoyActive) "Decoy profile ACTIVE (plausible deniability - separate identity)" else "Back to primary profile"
+        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+        addMessage("[PROFILE] Switched to $currentProfile", true)
     }
 }

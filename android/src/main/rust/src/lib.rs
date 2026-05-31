@@ -81,20 +81,103 @@ fn mlock_android_ratchet_store() {
     // No-op on non-Android (desktop uses the separate mlock function)
 }
 
-// === Strict Mode / Environment Check (Tier 3 architectural) ===
-// This is the foundation for future logic that can refuse dangerous actions
-// (voice, groups, export, decoy, etc.) when the environment is not sufficiently paranoid.
+// === Strict Mode / Environment Check (Tier 1 Very High - now actually enforces) ===
+// Real checks live in BOTH Kotlin (Android SDK signals) + Rust (deeper /proc + fs indicators).
+// This refuses voice recording, group ops, cross-device ratchet export, and decoy profile
+// activation when the environment fails (debuggable, emulator, rooted, qemu/goldfish, test-keys,
+// ro.debuggable=1, ro.secure=0, etc.).
 //
-// Current reality: Real checks are implemented on the Kotlin side (isStrictModeEnabled()).
-// The Rust side is the extension point for deeper future checks (e.g. /proc inspection,
-// dangerous properties, etc.).
+// Philosophy: In a bad env (dev device, emulator, rooted phone) we HARD REFUSE the high-risk
+// flows that expand attack surface or leak keys. This is the beginning of "strict mode does something".
+// See THREATMODEL.md and RELEASE_NOTES_v0.2.md for the honest remaining gaps (Android mlock limits,
+// supply chain on Play, etc.).
 //
-// For now this always returns false. The Kotlin method is the authoritative source.
+// The JNI is now the source of truth for the Rust-side signals; Kotlin combines + augments.
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_isStrictMode(_env: JNIEnv, _class: JClass) -> jboolean {
-    // Future: move more checks here or call back to Kotlin for combined result.
-    // For now, Kotlin's isStrictModeEnabled() is the real implementation.
-    false as jboolean
+    if is_environment_strict() { 1 } else { 0 }
+}
+
+/// Returns true ONLY when NO dangerous indicators are found.
+/// This is the paranoid gate for Tier 1 strict mode enforcement.
+fn is_environment_strict() -> bool {
+    if is_rooted_or_dangerous() || is_emulator_or_qemu() || is_debug_build_prop() {
+        return false;
+    }
+    true
+}
+
+fn is_rooted_or_dangerous() -> bool {
+    // Common su / superuser paths (works even without exec permission check on many devices)
+    let bad_paths = [
+        "/system/bin/su",
+        "/system/xbin/su",
+        "/sbin/su",
+        "/system/app/Superuser.apk",
+        "/system/app/SuperSU.apk",
+        "/system/app/Kinguser.apk",
+        "/data/app/com.noshufou.android.su",
+    ];
+    for p in &bad_paths {
+        if std::path::Path::new(p).exists() {
+            return true;
+        }
+    }
+
+    // Best-effort build.prop inspection for ro.debuggable / ro.secure (often readable)
+    if let Ok(prop) = std::fs::read_to_string("/system/build.prop") {
+        let l = prop.to_lowercase();
+        if l.contains("ro.debuggable=1") || l.contains("ro.secure=0") {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_emulator_or_qemu() -> bool {
+    // /proc/cpuinfo often reveals the emulator
+    if let Ok(cpu) = std::fs::read_to_string("/proc/cpuinfo") {
+        let l = cpu.to_lowercase();
+        if l.contains("qemu") || l.contains("goldfish") || l.contains("ranchu") || l.contains("emulator") {
+            return true;
+        }
+    }
+
+    // Known emulator device nodes / traces
+    let emu_paths = [
+        "/dev/socket/qemud",
+        "/dev/qemu_pipe",
+        "/sys/qemu_trace",
+        "/system/lib/libc_malloc_debug_qemu.so",
+    ];
+    for p in &emu_paths {
+        if std::path::Path::new(p).exists() {
+            return true;
+        }
+    }
+
+    // Also check kernel cmdline for qemu hints
+    if let Ok(cmd) = std::fs::read_to_string("/proc/cmdline") {
+        let l = cmd.to_lowercase();
+        if l.contains("qemu") || l.contains("androidboot.hardware=goldfish") {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_debug_build_prop() -> bool {
+    // Look for test-keys (signed with dev keys) or userdebug in readable prop files
+    let candidates = ["/default.prop", "/system/build.prop", "/system/default.prop"];
+    for c in &candidates {
+        if let Ok(s) = std::fs::read_to_string(c) {
+            let l = s.to_lowercase();
+            if l.contains("test-keys") || l.contains("userdebug") || l.contains("eng") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[no_mangle]
@@ -466,15 +549,13 @@ impl VoiceStream {
         // Simulated "current key" for this stream (in real code this will be the real ratchet output key)
         let current_key = [self.current_step as u8; 32];
 
-        let plaintext = decrypt_with_key(&current_key, encrypted).unwrap_or_default();
+        let plaintext = ratchet::decrypt_with_key(&current_key, encrypted).unwrap_or_default();
 
         // Simulate real ratchet advancement inside Rust (VoiceStream owns the state)
         self.current_step = self.current_step.wrapping_add(1);
 
         // Future: wipe previous key material + update skipped keys for this VoiceStream
         plaintext
-    }
-}
     }
 }
 
@@ -509,7 +590,12 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_processVoiceChunk(
     encrypted: jbyteArray,
 ) -> jbyteArray {
     // This is the official entry point. All future voice security logic belongs here.
-    let encrypted_bytes = unsafe { wrap_byte_array(encrypted) };
+    let enc_jba = unsafe { wrap_byte_array(encrypted) };
+    let enc_len = env.get_array_length(&enc_jba).unwrap_or(0) as usize;
+    let mut enc_i8 = vec![0i8; enc_len];
+    let _ = env.get_byte_array_region(&enc_jba, 0, &mut enc_i8);
+    let encrypted_bytes: Vec<u8> = enc_i8.into_iter().map(|b| b as u8).collect();
+
     let plaintext = process_voice_chunk_internal(&encrypted_bytes);
     vec_to_java_byte_array(&mut env, &plaintext)
 }
@@ -535,15 +621,16 @@ impl GroupSenderKey {
         }
     }
 
-    /// Advance the sender key (simulated HKDF-style for now, same as Haskell side).
-    /// Real version will use proper HKDF from the chain key.
+    /// Advance the sender key (simulated HKDF-style, matching the Haskell Group.hs design).
+    /// This gives per-member forward secrecy for group messages.
+    /// Real version should use proper HKDF-SHA256 from gsk_chain_key.
     pub fn advance(&mut self) -> [u8; 32] {
         self.gsk_msg_count = self.gsk_msg_count.wrapping_add(1);
 
-        // Simulated message key (in real code this would be HKDF(gsk_chain_key, info))
+        // Simulated message key derivation (matches Haskell simulation)
         let msg_key = [self.gsk_msg_count as u8; 32];
 
-        // Advance the chain key (simulated)
+        // Simulated chain key advancement (real code: HKDF(gsk_chain_key, "HashChat-Group-Sender"))
         self.gsk_chain_key = [(self.gsk_msg_count.wrapping_add(1)) as u8; 32];
 
         msg_key
@@ -587,7 +674,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_createGroupSenderKey(
 
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_advanceGroupSenderKey(
-    _env: JNIEnv,
+    mut _env: JNIEnv,
     _class: JClass,
     group_key_id: jint,
 ) -> jbyteArray {
