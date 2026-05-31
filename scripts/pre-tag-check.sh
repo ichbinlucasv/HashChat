@@ -131,11 +131,15 @@ else
     echo "  -> Found testing evidence: $EVIDENCE_FILE (modified $(stat -c %y "$EVIDENCE_FILE" 2>/dev/null || echo 'recently'))"
 fi
 
-# Additional local-run gate (T3 CI paranoia): require that the person tagging has actually run this script locally on the exact commit
+# Wave 6 even deeper: Local evidence marker is now a HARD FAIL for signed tags
 LOCAL_RUN_MARKER=".pre-tag-check-local-ran-$(git rev-parse HEAD 2>/dev/null || echo current)"
 if [ ! -f "$LOCAL_RUN_MARKER" ]; then
-    echo "  >>> STRONG RECOMMENDATION (will become hard requirement): Create $LOCAL_RUN_MARKER after running this script locally on the exact commit you intend to tag."
-    echo "  >>> echo 'pre-tag-check passed on $(date)' > $LOCAL_RUN_MARKER && git add $LOCAL_RUN_MARKER"
+    echo "  >>> HARD FAIL (Wave 6 ultra gate): No local pre-tag evidence marker for this exact commit."
+    echo "  >>> Create it with: echo 'pre-tag-check passed on $(date) - Wave 6' > $LOCAL_RUN_MARKER && git add $LOCAL_RUN_MARKER"
+    echo "  >>> Then re-run this script. This is now blocking."
+    exit 1
+else
+    echo "  -> Local pre-tag evidence marker found for this commit."
 fi
 
 # SBOM diff stub (T3 CI paranoia)

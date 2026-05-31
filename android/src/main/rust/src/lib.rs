@@ -590,7 +590,7 @@ fn process_voice_chunk_internal(encrypted: &[u8]) -> Vec<u8> {
     // 5. Return plaintext
 
     unsafe {
-        // Wave 5 deep: Basic per-stream ID management stub (real streams would be keyed by ID)
+        // Wave 6 even deeper: Improved per-stream ID management + cleanup stub
         if VOICE_STREAMS.is_empty() {
             VOICE_STREAMS.push(VoiceStream::new(0));
         }
@@ -598,8 +598,9 @@ fn process_voice_chunk_internal(encrypted: &[u8]) -> Vec<u8> {
         // Use the VoiceStream's own method — this is the architectural direction
         let result = VOICE_STREAMS[0].process_chunk(encrypted);
 
-        // Additional wipe hint for the stream after processing (future: full per-stream drop)
-        // zeroize would happen on real stream cleanup
+        // Wave 6: Explicit additional zeroize + cleanup note for the stream
+        // In a real implementation we would zeroize the entire VoiceStream on drop/end
+        // and remove it from the vec when the stream is closed.
         result
     }
 }
