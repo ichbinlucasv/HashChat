@@ -25,6 +25,7 @@ This release delivers on the core promise: maximum resistance to surveillance, d
 - Desktop TUI: live posture indicators (title + status line) + refresh on key events.
 - Partial mlock attempt on Android Rust side.
 - **Strict mode now actually enforces** (Tier 1 Very High): real checks (debug/emulator/root/qemu/test-keys/dangerous props) in Kotlin+Rust; hard refusal gates on voice, groups, cross-device export, and decoy profile activation. Wired and tested.
+- **GroupSenderKey advancement is now real HKDF-SHA256** (Tier 1 Highest): Rust GroupSenderKey::advance() uses proper Hkdf<Sha256> (domain-separated message + chain derivation) instead of naive count-based fill. Big step toward removing simulation and regular ratchet fallback for groups. (Haskell side still simulated; full demo-pass removal in Kotlin persistence paths remains a Tier 2 gap with loud warnings.)
 - Clear "Nix is the only supported way" policy for reproducible Flatpak builds.
 
 **OPSEC Highlights**:
