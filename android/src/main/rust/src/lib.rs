@@ -443,6 +443,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_feedReceivedData(
 struct VoiceStream {
     // Future: actual DoubleRatchet + step counter + skipped keys
     id: u32,
+    // For now we just track that a stream exists. Real ratchet state will go here.
     _placeholder: (),
 }
 

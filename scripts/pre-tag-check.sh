@@ -94,12 +94,13 @@ echo "[8/9] Generating basic SBOM..."
 # 9. Testing strategy evidence (Tier 3 requirement - now treated as mandatory)
 echo "[9/10] Checking testing strategy requirements..."
 echo ""
-echo "  MANDATORY before any signed tag:"
+echo "  MANDATORY before any signed tag (Tier 3 requirement):"
 echo "  - At least one full real-device + Tails/Qubes test pass performed in the last 90 days"
 echo "  - Results must be documented (date, environment, key observations) per docs/TESTING_STRATEGY.md"
-echo "  - This is now a required artifact. The tag message should reference that this check was satisfied."
+echo "  - The signed tag message MUST reference that this check was satisfied."
 echo ""
-echo "  (This check is currently manual. Future versions may add stronger enforcement.)"
+echo "  This is a hard requirement for any credible v0.2 release. The check is currently manual."
+echo "  Future versions of this script should add stronger enforcement (e.g. require a log file)."
 
 # 10. Final summary
 echo "[10/10] All automated checks completed."
