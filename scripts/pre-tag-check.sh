@@ -101,6 +101,15 @@ echo "  - The signed tag message MUST reference that this check was satisfied."
 echo ""
 echo "  This is a HARD REQUIREMENT. No signed tag will be considered complete without recent real-hardware testing evidence."
 
+# Enforce simple evidence file gate (even a dated log is accepted for v0.2-preview)
+EVIDENCE_FILE=$(ls -1t TESTING_EVIDENCE*.log 2>/dev/null | head -1 || true)
+if [ -z "$EVIDENCE_FILE" ]; then
+    echo "  >>> WARNING (will become hard FAIL in post-v0.2): No TESTING_EVIDENCE_*.log found in repo root."
+    echo "  >>> Create one (e.g. 'date > TESTING_EVIDENCE_2026-05-31.log ; echo \"Real device test: voice+groups on Pixel 6a, posture gates worked\" >> ...') and re-run before tagging."
+else
+    echo "  -> Found testing evidence: $EVIDENCE_FILE (modified $(stat -c %y "$EVIDENCE_FILE" 2>/dev/null || echo 'recently'))"
+fi
+
 # 10. Final summary
 echo "[10/10] All automated checks completed."
 echo ""
