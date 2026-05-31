@@ -12,29 +12,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install dependencies (pinned GHC via ghcup for reproducibility)
+      - name: Install dependencies (pinned GHC 9.8.4 + Rust via user-local ghcup/rustup)
         run: |
           sudo apt-get update
           sudo apt-get install -y curl gcc make libgmp-dev zlib1g-dev libncurses-dev pkg-config
 
-          # Install a known stable GHC (9.8.4) instead of whatever apt gives (which can be 9.14+ and break layout)
-          curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sh -s -- -y
+          # Force ghcup to install into $HOME/.ghcup (not /usr/local).
+          # The previous `-y` method often tried a system install and hit "chmod Operation not permitted" on GitHub runners.
+          # This is the reliable, non-root pattern for CI.
+          export BOOTSTRAP_HASKELL_NONINTERACTIVE=1
+          export BOOTSTRAP_HASKELL_MINIMAL=1
+          curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sh
           source "$HOME/.ghcup/env"
-          ghcup install ghc 9.8.4
-          ghcup set ghc 9.8.4
-          ghcup install cabal 3.10.3.0 || true
-          ghcup set cabal 3.10.3.0
 
-          # Rust
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          ghcup install ghc 9.8.4 --set
+          ghcup install cabal 3.10.3.0 --set
+
+          # Rust - also user-local for consistency and to avoid PATH/permission issues
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
           source "$HOME/.cargo/env"
 
           echo "Using GHC: $(ghc --version)"
           echo "Using Cabal: $(cabal --version)"
       - name: Build everything safely
         run: |
-          source "$HOME/.ghcup/env" || true
-          source "$HOME/.cargo/env" || true
+          # Robust sourcing (these files may not exist in all contexts)
+          [ -f "$HOME/.ghcup/env" ] && source "$HOME/.ghcup/env"
+          [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
+
+          echo "GHC: $(ghc --version 2>/dev/null || echo 'not found')"
+          echo "Cabal: $(cabal --version 2>/dev/null || echo 'not found')"
+          echo "Cargo: $(cargo --version 2>/dev/null || echo 'not found')"
 
           # Rust core (always works, no system deps needed beyond what's in the runner)
           cargo build --release
