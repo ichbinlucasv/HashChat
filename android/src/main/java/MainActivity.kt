@@ -746,12 +746,13 @@ class MainActivity : AppCompatActivity() {
                     1 -> Toast.makeText(this, "E2EE sender-key + Tor + Keystore ratchet", Toast.LENGTH_SHORT).show()
                     2 -> onScanGroupQR(findViewById(android.R.id.content))
                     3 -> {
-                        val newRid = HashChatNative.ratchetNew()
-                        currentGroup?.let { g -> groups[g]?.add(newRid) }
-                        groupMembers.add("Member ratchet: $newRid (new, persisted)")
+                        // Use proper GroupSenderKey for per-member forward secrecy (A1 + A3)
+                        val newGskId = HashChatNative.createGroupSenderKey(HashChatNative.ratchetNew())
+                        currentGroup?.let { g -> groups[g]?.add(newGskId) }
+                        groupMembers.add("Member sender-key: $newGskId (GroupSenderKey, persisted)")
                         messageList.adapter?.notifyDataSetChanged()
                         persistGroups()
-                        Toast.makeText(this, "Member added (ratchet + persisted)", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, "Member added with proper sender key (GroupSenderKey + persisted)", Toast.LENGTH_SHORT).show()
                     }
                     4 -> {
                         currentGroup?.let { g -> groups.remove(g) }
