@@ -407,24 +407,40 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_feedReceivedData(
 
 // Tor framing helpers can be added here too (frameForWire equivalent in Rust for Android)
 
-// === Voice chunk processing migration target (Tier 3) ===
-// This is the official entry point for incoming voice chunks.
-// Current implementation is a thin wrapper around decryptWithKey for compatibility.
-// Future goal: Perform real per-chunk ratchet lookup/advance + decryption + skipped key wipe
-// entirely inside Rust, then return plaintext. This moves sensitive voice logic out of Kotlin.
+// === Voice chunk processing migration target (Tier 3 architectural) ===
+// This is the official, thin entry point for incoming voice chunks from the Tor receiver.
+// 
+// Current state: Thin wrapper (for compatibility during migration).
+// 
+// Target state: All per-chunk logic lives here in Rust:
+//   - Lookup the correct sending/receiving ratchet for this voice stream
+//   - Decrypt using the current chain key
+//   - Advance the ratchet
+//   - Wipe the used key (and any skipped keys if needed)
+//   - Return plaintext to Kotlin for playback only
+//
+// This keeps the Kotlin voice processor extremely dumb (just queue + UI + MediaPlayer).
+// The crown jewels (ratchet state + forward secrecy) stay in Rust.
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_processVoiceChunk(
     mut env: JNIEnv,
     _class: JClass,
     encrypted: jbyteArray,
 ) -> jbyteArray {
-    // For now, delegate to existing decrypt path using a placeholder key.
-    // This keeps behavior identical while establishing the canonical function.
-    // TODO (deep): Replace with real ratchet state management + advance + wipe.
-    let key = vec![0u8; 32]; // placeholder – will come from real DoubleRatchet state
-    let key_jba = env.byte_array_from_slice(&key).expect("key array");
+    // === MIGRATION NOTE ===
+    // This is intentionally still a placeholder during the move.
+    // The real implementation will receive a voice stream identifier (or ratchet id)
+    // and perform real DoubleRatchet operations inside Rust.
+    //
+    // For now we keep the old decryptWithKey path so existing behavior is unchanged
+    // while the Kotlin side has already switched to calling this canonical function.
 
-    // Call the existing decrypt function (re-use for now)
+    let key = vec![0u8; 32]; // placeholder – real version will come from ratchet state
+    let key_jba = env.byte_array_from_slice(&key).expect("failed to create key array");
+
+    // Delegate to the existing decrypt path during migration.
+    // When real ratchet logic lands here, this line will be replaced by direct
+    // ratchet lookup + decrypt + advance + wipe inside Rust.
     Java_chat_hashchat_HashChatNative_decryptWithKey(env, _class, key_jba, encrypted)
 }
 

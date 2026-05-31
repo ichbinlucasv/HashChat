@@ -202,17 +202,15 @@ class MainActivity : AppCompatActivity() {
                     while (true) {
                         val chunk = voiceChunkQueue.take()
                         try {
-                            // Migration target: Use the new canonical processVoiceChunk entry point.
-                            // This moves per-chunk ratchet logic into Rust over time (thin JNI goal).
+                            // Official voice path: processVoiceChunk in Rust.
+                            // Goal (Tier 3): Move ratchet lookup + decrypt + advance + key wipe entirely into Rust.
+                            // Kotlin should eventually only do: receive queue → call this → get plaintext → UI playback.
                             val decrypted = HashChatNative.processVoiceChunk(chunk)
 
                             runOnUiThread {
                                 addMessage("Peer [VOICE]: chunk from Tor receiver (JNI + ratchet advanced)", false)
                                 playVoiceMessageWithProgress(decrypted)
                             }
-
-                            // After playback, the key for this chunk should be wiped (disappearing/forward secrecy)
-                            // In real: the Rust side of processVoiceChunk will handle the wipe.
                         } catch (_: Exception) {}
                     }
                 }.apply { isDaemon = true }.start()
