@@ -70,12 +70,20 @@ jobs:
           # test_framing_and_mlock_safety_simulation, test_full_send_recv_roundtrip, etc.
           cargo test --release
 
-          # Supply-chain (arch-3): Dependency audit (cargo-audit).
-          # Not yet failing the build (many dev-only advisories in Haskell/Rust ecosystem),
-          # but must be run manually before signed v0.2 tag and any real release.
-          # TODO: Promote to `|| true` removal + SBOM generation (e.g. cargo sbom) for production.
-          cargo install cargo-audit 2>/dev/null || echo "cargo-audit not installed in this env"
-          cargo audit || echo "Audit completed with warnings or skipped (run locally with 'cargo install cargo-audit && cargo audit' before tagging)"
+          # Supply-chain (arch-3): Dependency audit (cargo-audit) - NOW BLOCKING ON HIGH/CRITICAL
+          # From a paranoid perspective, non-blocking audit is security theater.
+          # We now fail the build on high or critical advisories.
+          # Informational/warning-level issues are allowed for the v0.2-preview phase but must be
+          # manually reviewed and noted before any signed tag (see RELEASE_PROCESS.md).
+          cargo install cargo-audit --locked 2>/dev/null || true
+          if ! cargo audit --deny high; then
+            echo ""
+            echo "!!! CRITICAL: cargo audit found HIGH or CRITICAL security advisories !!!"
+            echo "The build is failing because of this. Review the output above."
+            echo "For v0.2 we are still allowing some lower-severity noise, but high/critical must be addressed or explicitly accepted."
+            exit 1
+          fi
+          echo "cargo audit passed (no high or critical advisories)"
         env:
           CARGO_TERM_COLOR: always
 

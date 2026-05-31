@@ -35,9 +35,10 @@ git status --short
 cargo test --release                    # Must be 9+ tests passing
 (cd android/src/main/rust && cargo test --release)
 cabal build hashchat-cli -f-tui
-# Supply chain (arch-3): Run audit before any real release
-cargo install cargo-audit 2>/dev/null || true
-cargo audit || echo "Review audit warnings manually before tagging"
+# Supply chain (arch-3): Run audit - CI now fails on HIGH/CRITICAL advisories
+# Review any remaining warnings/informational issues manually
+cargo install cargo-audit --locked 2>/dev/null || true
+cargo audit --deny high || echo "High/critical issues found - review before tagging"
 # Optional: nix build .#hashchat-flatpak
 # Flatpak (if testing): result/hashchat-tui.flatpak should exist and install cleanly
 
