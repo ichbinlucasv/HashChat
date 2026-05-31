@@ -24,6 +24,7 @@ This release delivers on the core promise: maximum resistance to surveillance, d
 - Major Flatpak improvements: minimal install-only manifest, reliable Nix-driven prebuilts.
 - Desktop TUI: live posture indicators (title + status line) + refresh on key events.
 - Partial mlock attempt on Android Rust side.
+- **Strict mode now actually enforces** (Tier 1 Very High): real checks (debug/emulator/root/qemu/test-keys/dangerous props) in Kotlin+Rust; hard refusal gates on voice, groups, cross-device export, and decoy profile activation. Wired and tested.
 - Clear "Nix is the only supported way" policy for reproducible Flatpak builds.
 
 **OPSEC Highlights**:
