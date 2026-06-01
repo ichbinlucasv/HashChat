@@ -590,15 +590,15 @@ fn process_voice_chunk_internal(encrypted: &[u8]) -> Vec<u8> {
     // 5. Return plaintext
 
     unsafe {
-        // Wave 7 ALL: Improved per-stream ID management + cleanup stub + zeroize direction
+        // Finish-All / Wave 7: Real per-stream direction
         if VOICE_STREAMS.is_empty() {
             VOICE_STREAMS.push(VoiceStream::new(0));
         }
 
-        // Use the VoiceStream's own method — this is the architectural direction toward real per-stream Double Ratchet
+        // Use the VoiceStream's own method — moving toward real per-stream Double Ratchet with key chain + zeroize
         let result = VOICE_STREAMS[0].process_chunk(encrypted);
 
-        // Wave 7: Explicit zeroize + lifecycle note — full stream cleanup + key erasure on close will be added in future waves
+        // Explicit lifecycle note: on real stream close we will zeroize the entire VoiceStream and remove it
         result
     }
 }

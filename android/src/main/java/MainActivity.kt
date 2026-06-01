@@ -805,14 +805,13 @@ class MainActivity : AppCompatActivity() {
             rids.forEach { rid ->
                 // Real export via JNI + Keystore wrap for persistence
                 // =====================================================================
-                // EXTREME OPSEC WARNING (crit-2 / Tier 1): HARDCODED DEMO PASSPHRASE
-                // Now routed through the single guarded helper (tied to strict mode).
-                // This is the last remaining usage surface for groups.
-                // Wave 3: In EXTREME_MODE we refuse groups entirely (see onToggleDecoyProfile pattern).
+                // FINAL REMOVAL WAVE (Finish-All plan): HARDCODED DEMO PASSPHRASE
+                // This is now the absolute last controlled surface. Under EXTREME_MODE or strict mode we refuse.
+                // Wave 7 goal: replace the helper entirely with real user-derived + HashChatKeystore roundtrip,
+                // or hard-fail the entire group feature outside explicit demo builds.
                 // =====================================================================
-                // Using the new higher-level group sender key export when possible (A1 + A3)
                 if (EXTREME_MODE) {
-                    throw IllegalStateException("EXTREME MODE: Group persistence disabled")
+                    throw IllegalStateException("EXTREME MODE: Group persistence disabled (final removal wave)")
                 }
                 val exported = HashChatNative.exportGroupSenderKey(rid, getInsecureGroupDemoPassphrase())
                 val wrapped = HashChatKeystore.encryptForStorage(exported)
