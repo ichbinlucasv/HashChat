@@ -58,8 +58,18 @@ getContactOnion cid = fmap onionAddress . Prelude.lookup cid . map (\c -> (conta
 contactPubHint :: Contact -> ByteString
 contactPubHint = pubHint
 
+-- Temporary helper (Wave 7): Create a ContactAddress from a Contact
+-- In a real implementation the pubKey should come from a proper long-term identity keypair,
+-- not derived from the ratchet. This is a placeholder until we have full X3DH-style keys.
+contactToAddress :: Contact -> ByteString -> ContactAddress
+contactToAddress contact pubKey = createContactAddress (onionAddress contact) pubKey
+
 -- In the real app these would be persisted encrypted per profile (like ratchets)
 -- and exchanged via QR / link (X3DH-style) over Tor.
+
+-- Note on Extreme mode (Wave 7):
+-- When EXTREME_MODE is active, generation of new contact addresses / profile QR
+-- should be disabled or heavily restricted to minimize attack surface.
 
 -- =====================================================================
 -- Contact Address / Profile Sharing (Simplex-inspired, Wave 7)
