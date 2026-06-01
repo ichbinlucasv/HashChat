@@ -323,7 +323,7 @@ drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll
   , str "1. Run ./run-tui  → it shows your audio backends and Tor status"
   , str "2. Press 'n' to create a burner profile"
   , str "3. Press 'v' to test voice (real mic if pw-record/parecord/arecord available)"
-  , str "4. Use :set-proxy 127.0.0.1 9050 (Tor) or 4444 (I2P after i2pd) for per-profile transport (High #5). :discover for decentralized (Medium)."
+  , str "4. Use :set-proxy 127.0.0.1 9050 (Tor) or 4444 (I2P after i2pd) for per-profile transport (High #5). :discover for decentralized (Medium). :screenshot for marketplace photo instructions."
   , str "5. '?' toggles this help. 'w' is the nuclear wipe (use it!)"
   , str ""
   , str "Enter          → Send encrypted message (real ratchet + AES-GCM)"
@@ -494,6 +494,19 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
       then do
         liftIO $ putStrLn "[DISCOVERY] Decentralized discovery stub (Medium item). Future: concrete protocol + message formats for finding contacts without leaking metadata (no central servers)."
         liftIO $ putStrLn "  (For now, use :my-contact / :add-contact for manual QR-style sharing.)"
+        modify $ \st -> st { input = "" }
+      else if ":screenshot" `isInfixOf` inputStr || inputStr == ":shots"
+      then do
+        liftIO $ putStrLn "=== Marketplace Screenshot Helper (for your Fedora photos) ==="
+        liftIO $ putStrLn "Use HASHCHAT_DEMO=xxx ./run-tui for:"
+        liftIO $ putStrLn "  main     - Main chat with posture, demo messages, proxy (for hashchat-tui-main.png)"
+        liftIO $ putStrLn "  refusal  - Low posture + refusal banner (posture-refusal.png)"
+        liftIO $ putStrLn "  voice    - Voice recording state (voice-wipe.png)"
+        liftIO $ putStrLn "  groups   - Active group + QR (groups-qr.png)"
+        liftIO $ putStrLn "  actions  - 'a' menu pending (actions.png)"
+        liftIO $ putStrLn "Capture: grim -g \"$(slurp -o)\" <name>.png (or gnome-screenshot -a)"
+        liftIO $ putStrLn "See scripts/screenshot-prep-fedora.sh for full Fedora steps, icon raster, metainfo update, Flathub submit."
+        liftIO $ putStrLn "OPSEC: ./scripts/clean-security.sh --strict before/after."
         modify $ \st -> st { input = "" }
       else if ":extreme" `isInfixOf` inputStr
       then do
@@ -1135,7 +1148,7 @@ main = do
   putStrLn "  → Just run: ./run-tui"
   putStrLn "  → It will tell you your audio backends and Tor status"
   putStrLn "  → Press 'n' for a burner profile, 'v' to test voice"
-  putStrLn "  → Type :set-proxy <host> <port> for per-profile (e.g. 127.0.0.1 4444 for I2P after starting i2pd); :discover for decentralized (Medium)."
+  putStrLn "  → Type :set-proxy <host> <port> for per-profile (e.g. 127.0.0.1 4444 for I2P after starting i2pd); :discover for decentralized (Medium); :screenshot for marketplace photo instructions (your Fedora photos)."
   putStrLn "  → Press '?' for full help anytime"
   putStrLn ""
   putStrLn "Full 'Normal User Quick Path' + per-OS audio/proxy one-liners are in INSTALL.md"
