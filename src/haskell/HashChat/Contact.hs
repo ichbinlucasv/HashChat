@@ -5,11 +5,20 @@ module HashChat.Contact
   , getContactOnion
   , contactPubHint
   , defaultContact
+  -- Contact / Profile sharing (Simplex-style)
+  , ContactAddress(..)
+  , createContactAddress
+  , contactAddressToLink
+  , parseContactAddress
   ) where
 
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Word (Word32)
+import Data.List (isPrefixOf)
+import Text.Read (readMaybe)
+import Numeric (readHex)
+import Text.Printf (printf)
 
 type ContactId = String
 
@@ -51,3 +60,63 @@ contactPubHint = pubHint
 
 -- In the real app these would be persisted encrypted per profile (like ratchets)
 -- and exchanged via QR / link (X3DH-style) over Tor.
+
+-- =====================================================================
+-- Contact Address / Profile Sharing (Simplex-inspired, Wave 7)
+-- =====================================================================
+-- Following SimplexChat's simple and effective model:
+-- - The QR/link contains only PUBLIC information (your onion + public identity key).
+-- - Your private keys never leave your device.
+-- - The other party can use this to initiate a secure connection.
+--
+-- Format example:
+--   hashchat://contact/v1/<onion-without-.onion>/<hex-or-base64-public-key>
+--
+-- This is the recommended way to share profiles with friends.
+
+data ContactAddress = ContactAddress
+  { caOnion     :: String      -- full .onion address (public)
+  , caPubKey    :: ByteString  -- public identity / signing key (public)
+  , caVersion   :: Int         -- for future format evolution
+  }
+  deriving (Show, Eq)
+
+-- Create a shareable contact address (public data only)
+-- The private key must never be included here.
+createContactAddress :: String -> ByteString -> ContactAddress
+createContactAddress onion pubKey = ContactAddress
+  { caOnion   = onion
+  , caPubKey  = pubKey
+  , caVersion = 1
+  }
+
+-- Generate a shareable link string suitable for QR code
+contactAddressToLink :: ContactAddress -> String
+contactAddressToLink ca =
+  "hashchat://contact/v" ++ show (caVersion ca) ++ "/" ++
+  takeWhile (/= '.') (caOnion ca) ++ "/" ++
+  show (BS.length (caPubKey ca)) ++ ":" ++
+  concatMap (printf "%02x") (BS.unpack (caPubKey ca))
+
+-- Parse a contact link (from QR or pasted)
+-- Returns Nothing if format is invalid
+parseContactAddress :: String -> Maybe ContactAddress
+parseContactAddress link = do
+  guard ( "hashchat://contact/v" `isPrefixOf` link )
+  let rest = drop (length "hashchat://contact/v") link
+  (verStr, afterVer) <- breakOn '/' rest
+  ver <- readMaybe verStr
+  guard (ver == 1)
+  let (onionPart, keyPart) = breakOn '/' afterVer
+  let onion = onionPart ++ ".onion"
+  (lenStr, hexKey) <- breakOn ':' keyPart
+  keyLen <- readMaybe lenStr
+  let keyBytes = BS.pack $ map (fromIntegral . fst . head . readHex) (chunksOf 2 hexKey)
+  guard (BS.length keyBytes == keyLen)
+  pure $ ContactAddress onion keyBytes ver
+  where
+    breakOn c s = case break (== c) s of
+      (a, _ : b) -> Just (a, b)
+      _          -> Nothing
+    chunksOf _ [] = []
+    chunksOf n xs = take n xs : chunksOf n (drop n xs)
