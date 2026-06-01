@@ -179,27 +179,32 @@ safeListDirectory dir = do
 -- This is now fully dynamic: re-called on security-relevant events (send, profile switch, etc.)
 getSecurityPosture :: IO String
 getSecurityPosture = do
-  isRoot <- (readFile "/proc/self/status" >>= return . isInfixOf "Uid:\t0\t") `catch` \_ -> return False
-  hasSwap <- (readFile "/proc/swaps" >>= return . not . null . lines) `catch` \_ -> return True
-  inContainer <- (readFile "/proc/1/cgroup" >>= return . (isInfixOf "docker" . head . lines)) `catch` \_ -> return False
-  inTails <- doesFileExist "/etc/tails-version" `catch` \_ -> return False
-  inQubes <- doesFileExist "/var/run/qubes/this-vm" `catch` \_ -> return False
+  extreme <- isExtremeMode
+  if extreme
+    then pure "EXTREME (ultra-stripped mode — groups/voice/export/decoy/history disabled, strict forced, minimal surface)"
+    else do
+      isRoot <- (readFile "/proc/self/status" >>= return . isInfixOf "Uid:\t0\t") `catch` \_ -> return False
+      hasSwap <- (readFile "/proc/swaps" >>= return . not . null . lines) `catch` \_ -> return True
+      inContainer <- (readFile "/proc/1/cgroup" >>= return . (isInfixOf "docker" . head . lines)) `catch` \_ -> return False
+      inTails <- doesFileExist "/etc/tails-version" `catch` \_ -> return False
+      inQubes <- doesFileExist "/var/run/qubes/this-vm" `catch` \_ -> return False
 
-  let baseScore = length [x | x <- [not isRoot, not hasSwap, not inContainer], x]
-  let bonus = if inTails || inQubes then 1 else 0
-  let final = min 3 (baseScore + bonus)
+      let baseScore = length [x | x <- [not isRoot, not hasSwap, not inContainer], x]
+      let bonus = if inTails || inQubes then 1 else 0
+      let final = min 3 (baseScore + bonus)
 
-  pure $ case final of
-    3 -> "MAX PARANOID (Tails/Qubes detected — Excellent)"
-    2 -> "HIGH (Good isolation — Very strong)"
-    1 -> "MEDIUM (Consider Tails or Qubes for serious use)"
-    _ -> "STANDARD / LOW (High risk environment — use with extreme caution)"
+      pure $ case final of
+        3 -> "MAX PARANOID (Tails/Qubes detected — Excellent)"
+        2 -> "HIGH (Good isolation — Very strong)"
+        1 -> "MEDIUM (Consider Tails or Qubes for serious use)"
+        _ -> "STANDARD / LOW (High risk environment — use with extreme caution)"
 
 -- Dynamic re-evaluation gate: returns True if action is allowed in current posture
 isActionAllowedInPosture :: String -> String -> Bool
 isActionAllowedInPosture posture action =
   let low = "STANDARD / LOW" `isInfixOf` posture || "MEDIUM" `isInfixOf` posture
-  in case action of
+      extreme = unsafePerformIO isExtremeMode
+  in if extreme then False else case action of
        "send"       -> not low   -- never send ciphertext in low posture
        "newburner"  -> not low   -- creating new isolated identities requires strong env
        "file"       -> not low
@@ -207,6 +212,7 @@ isActionAllowedInPosture posture action =
        "group"      -> not low
        "decoy"      -> not low   -- plausible deniability features also gated
        "loadprofile"-> not low   -- refuse loading sensitive state in bad env
+       "contact_qr" -> not low   -- long-term identity surface
        _            -> True
 -- Wave 6 even deeper: Extreme mode (see Android + docs/EXTREME_PROFILE.md) would add
 -- compile/runtime gates here to completely disable groups/voice/decoy/export
@@ -649,9 +655,11 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'D') [])) = do
   drainIncoming
   s <- get
   currentP <- liftIO getSecurityPosture
-  if not (isActionAllowedInPosture currentP "decoy")
+  extreme <- liftIO isExtremeMode
+  if not (isActionAllowedInPosture currentP "decoy") || extreme
     then do
       liftIO $ putStrLn "[SECURITY] DYNAMIC POSTURE REFUSAL: Decoy mode disabled in this environment."
+      when extreme $ liftIO $ putStrLn "[EXTREME] Decoy profiles completely disabled in Extreme mode."
       modify $ \st -> st { securityPosture = currentP }
     else do
       let isDecoy = "Decoy" `isInfixOf` currentProfile s

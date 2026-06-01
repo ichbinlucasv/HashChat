@@ -66,6 +66,7 @@ object HashChatNative {
     external fun longtermNew(): Int
     external fun longtermGetPublic(id: Int): ByteArray
     external fun longtermWipe(id: Int)
+    external fun setExtremeMode(enabled: Boolean)
 
     // Combined Kotlin + JNI strict mode (authoritative for refusal decisions).
     // Expands the old stub with real root detection, dangerous props via reflection + files,

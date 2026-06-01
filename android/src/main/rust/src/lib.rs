@@ -1093,5 +1093,17 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_longtermWipe(
     }
 }
 
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_setExtremeMode(
+    _env: JNIEnv,
+    _class: JClass,
+    enabled: jboolean,
+) {
+    // For Android, we can have a global or per, but since Kotlin has the var, this can be used if Rust needs to know.
+    // For now, the checks are in Kotlin, but we can store if needed for Rust gates (e.g. VoiceStream).
+    // Stub for future Rust-level gates.
+    // e.g. if we add static EXTREME in Rust.
+}
+
 // Note: For export/import encrypted long-term, Kotlin can use the existing ratchetExportEncrypted style or the blob ones, passing the identity bytes from to_bytes(). 
 // GetPublic closes the main QR gap (stable identity pub). Full persistence follows the ratchet envelope pattern already in this crate.

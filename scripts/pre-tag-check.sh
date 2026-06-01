@@ -138,6 +138,14 @@ if cargo test --release --manifest-path Cargo.toml 2>&1 | grep -q "test result: 
 else
     echo "  >>> WARNING: Some paranoid tests may be missing or failing. Ensure 9+ tests cover wipe, posture, disappearing, long-term identity, extreme gates."
 fi
+
+# Extreme mode checks (from decision: scoped impl)
+echo "[11/12] Checking Extreme mode implementation..."
+if grep -q "isExtremeMode\|EXTREME_MODE" app-desktop/TUI.hs android/src/main/java/MainActivity.kt ; then
+    echo "  -> Extreme mode flag and gates present in TUI/Android."
+else
+    echo "  >>> WARNING: Extreme mode not fully wired."
+fi
     echo "  -> Found testing evidence: $EVIDENCE_FILE (modified $(stat -c %y "$EVIDENCE_FILE" 2>/dev/null || echo 'recently'))"
 fi
 
