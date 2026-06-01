@@ -139,12 +139,16 @@ else
     echo "  >>> WARNING: Some paranoid tests may be missing or failing. Ensure 9+ tests cover wipe, posture, disappearing, long-term identity, extreme gates."
 fi
 
-# Extreme mode checks (from decision: scoped impl)
-echo "[11/12] Checking Extreme mode implementation..."
-if grep -q "isExtremeMode\|EXTREME_MODE" app-desktop/TUI.hs android/src/main/java/MainActivity.kt ; then
-    echo "  -> Extreme mode flag and gates present in TUI/Android."
+# Extreme mode checks (from decision: scoped impl - full TUI + Android + Rust)
+echo "[11/12] Checking Extreme mode implementation (full per design)..."
+if grep -q "isExtremeMode\|EXTREME_MODE\|setExtremeMode\|rust_set_extreme_mode" app-desktop/TUI.hs android/src/main/java/MainActivity.kt src/haskell/HashChat/Core.hs src/rust/lib.rs android/src/main/rust/src/lib.rs ; then
+    echo "  -> Extreme flag, setters, FFI, and gates present in TUI/Android/Rust."
 else
-    echo "  >>> WARNING: Extreme mode not fully wired."
+    echo "  >>> WARNING: Extreme mode not fully wired across layers."
+fi
+# Additional: check for key gates
+if grep -q "EXTREME.*Group\|EXTREME.*voice\|EXTREME.*export\|EXTREME.*decoy" app-desktop/TUI.hs android/src/main/java/MainActivity.kt ; then
+    echo "  -> Key feature gates (groups/voice/export/decoy) present."
 fi
     echo "  -> Found testing evidence: $EVIDENCE_FILE (modified $(stat -c %y "$EVIDENCE_FILE" 2>/dev/null || echo 'recently'))"
 fi

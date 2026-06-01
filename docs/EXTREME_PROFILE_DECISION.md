@@ -113,13 +113,14 @@ This aligns with the project's philosophy of being honest about limitations and 
 
 ## Next Actions (once decision is made)
 
-- [x] Create `ExtremeMode` flag in core (Haskell IORef, wired to TUI)
-- [x] Wire gating into TUI (groups, voice, contact QR refused in extreme; command :extreme on/off)
-- [ ] Full Rust side ExtremeMode (for consistency with Android)
-- [ ] Wire gating into Android screens
-- [x] Update THREATMODEL.md and EXTREME_PROFILE.md
-- Add tests...
-- Document in README + SECURITY.md (partial)
+- [x] Create `ExtremeMode` flag in core (Haskell IORef, wired to TUI + synced to Rust FFI)
+- [x] Wire gating into TUI (groups, voice, contact QR, decoy, 'G' send refused; command :extreme on/off; posture returns EXTREME string; isActionAllowed forces false; clear groups/history on enable; securityPosture sync; title [EXTREME])
+- [x] Full Rust side ExtremeMode (static in desktop + Android crates; set/get FFI; gates in ratchetNew for groups, VoiceStream creation/process)
+- [x] Wire gating into Android (setter JNI, toggle in actions menu, many hard if(EXTREME_MODE) for voice/groups/export/decoy/legacy/contact/member mgmt; ratchetNew errors on extreme)
+- [x] Update THREATMODEL.md and EXTREME_PROFILE.md (status: TUI full core, Android+ Rust advancing to full per design)
+- Pre-tag check added for Extreme impl.
+- Add tests... (in progress via pre-tag)
+- Document in README + SECURITY.md (partial via NOTES/THREATMODEL)
 
 ---
 

@@ -44,6 +44,7 @@ mod ratchet;
 mod longterm_identity;
 
 static mut ANDROID_RATCHET_STORE: Vec<ratchet::DoubleRatchet> = Vec::new();
+static mut EXTREME_MODE: bool = false;  // Extreme profile flag for Rust-level gates (Wave 10 full impl)
 
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_init(_env: JNIEnv, _class: JClass) {
@@ -229,6 +230,10 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_wipeAll(_env: JNIEnv, _class
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_ratchetNew(_env: JNIEnv, _class: JClass) -> jint {
     unsafe {
+        if EXTREME_MODE {
+            // Extreme: refuse new ratchets for groups (per design: groups disabled)
+            return -1;  // signal error to Kotlin
+        }
         let id = ANDROID_RATCHET_STORE.len() as jint;
         ANDROID_RATCHET_STORE.push(ratchet::DoubleRatchet::new());
         id
@@ -571,6 +576,12 @@ struct VoiceStream {
 
 impl VoiceStream {
     fn new(id: u32) -> Self {
+        unsafe {
+            if EXTREME_MODE {
+                // Extreme: refuse voice streams entirely (per design: voice disabled for minimal surface)
+                panic!("EXTREME MODE: VoiceStream creation refused");
+            }
+        }
         VoiceStream {
             id,
             chain_key: [0u8; 32],
@@ -652,11 +663,13 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_processVoiceChunk(
     _class: JClass,
     encrypted: jbyteArray,
 ) -> jbyteArray {
-    // Wave 9: Real Extreme / strict gate at the Rust boundary for voice (defense in depth)
+    // Wave 9/10: Real Extreme / strict gate at the Rust boundary for voice (defense in depth)
     // Even if Kotlin already refused in EXTREME_MODE, the FFI surface must also refuse.
-    if !is_environment_strict() {
-        let msg = b"STRICT/EXTREME: Voice chunk processing refused in bad environment";
-        return vec_to_java_byte_array(&mut env, msg);
+    unsafe {
+        if EXTREME_MODE || !is_environment_strict() {
+            let msg = b"STRICT/EXTREME: Voice chunk processing refused in bad environment";
+            return vec_to_java_byte_array(&mut env, msg);
+        }
     }
     // This is the official entry point. All future voice security logic belongs here.
     let enc_jba = unsafe { wrap_byte_array(encrypted) };
@@ -1099,10 +1112,9 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_setExtremeMode(
     _class: JClass,
     enabled: jboolean,
 ) {
-    // For Android, we can have a global or per, but since Kotlin has the var, this can be used if Rust needs to know.
-    // For now, the checks are in Kotlin, but we can store if needed for Rust gates (e.g. VoiceStream).
-    // Stub for future Rust-level gates.
-    // e.g. if we add static EXTREME in Rust.
+    unsafe {
+        EXTREME_MODE = enabled != 0;
+    }
 }
 
 // Note: For export/import encrypted long-term, Kotlin can use the existing ratchetExportEncrypted style or the blob ones, passing the identity bytes from to_bytes(). 

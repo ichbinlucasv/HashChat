@@ -28,6 +28,9 @@ module HashChat.Core
   , wipeLongTermIdentity
   , setExtremeMode
   , isExtremeMode
+  -- Rust Extreme for parity
+  , rust_set_extreme_mode
+  , rust_is_extreme_mode
   ) where
 
 import Control.Concurrent.STM
@@ -104,6 +107,8 @@ foreign import ccall unsafe "rust_longterm_identity_get_public" rust_longterm_id
 foreign import ccall unsafe "rust_longterm_identity_export_encrypted" rust_longterm_identity_export_encrypted :: Word32 -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> IO Bool
 foreign import ccall unsafe "rust_longterm_identity_import_encrypted" rust_longterm_identity_import_encrypted :: Word32 -> Ptr Word8 -> Int -> Ptr Word8 -> Int -> IO Bool
 foreign import ccall unsafe "rust_longterm_identity_wipe" rust_longterm_identity_wipe :: Word32 -> IO ()
+foreign import ccall unsafe "rust_set_extreme_mode" rust_set_extreme_mode :: Bool -> IO ()
+foreign import ccall unsafe "rust_is_extreme_mode" rust_is_extreme_mode :: IO Bool
 
 initProfile :: IO ProfileKey
 initProfile = do
@@ -232,7 +237,9 @@ extremeModeRef :: IORef Bool
 extremeModeRef = unsafePerformIO $ newIORef False
 
 setExtremeMode :: Bool -> IO ()
-setExtremeMode = writeIORef extremeModeRef
+setExtremeMode b = do
+  writeIORef extremeModeRef b
+  rust_set_extreme_mode b  -- sync to Rust for FFI-level gates (full Extreme)
 
 isExtremeMode :: IO Bool
 isExtremeMode = readIORef extremeModeRef

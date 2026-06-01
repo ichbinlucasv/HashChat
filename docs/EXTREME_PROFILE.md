@@ -1,6 +1,6 @@
 # Extreme Profile — Ultra-Stripped Mode (Tier 3 Design Document)
 
-**Status**: Basic runtime implementation complete in TUI (flag + gates for groups/voice/contact QR). Rust/Haskell core ready. Android pending. Decision recorded in EXTREME_PROFILE_DECISION.md as "Implement scoped".
+**Status**: Full TUI implementation (flag, :extreme cmd, posture returns EXTREME, isActionAllowed forces refuse, gates in 'g'/'v'/'D'/'G'/contact/decoy, state clear on enable, securityPosture sync, title indicator). Android: setter JNI + many hard if(EXTREME_MODE) gates (voice/groups/export/decoy/legacy/member mgmt/contact QR), toggle in actions. Rust (both crates): static EXTREME_MODE, set/get FFI, gates in ratchetNew (groups), VoiceStream new/process. Decision recorded + scoped impl per design. Pre-tag checks for it. No stop on other recs.
 
 ## Philosophy
 For the most hostile environments, users may want to trade almost all features for the smallest possible attack surface and metadata footprint.

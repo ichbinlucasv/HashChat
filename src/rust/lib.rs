@@ -114,10 +114,15 @@ pub extern "C" fn rust_secure_compare(a: *const u8, b: *const u8, len: usize) ->
 use crate::ratchet::DoubleRatchet;
 
 static mut RATCHET_STORE: Vec<DoubleRatchet> = Vec::new();
+static mut EXTREME_MODE: bool = false;  // For future Rust-level Extreme gates (parity with Android)
 
 #[no_mangle]
 pub extern "C" fn rust_ratchet_new() -> u32 {
     unsafe {
+        if EXTREME_MODE {
+            // Extreme: refuse new ratchets (groups use them; per design disable groups)
+            return u32::MAX;  // error signal
+        }
         let id = RATCHET_STORE.len() as u32;
         RATCHET_STORE.push(DoubleRatchet::new());
         id
@@ -656,6 +661,20 @@ pub extern "C" fn rust_longterm_identity_wipe(identity_id: u32) {
         if (identity_id as usize) < LONGTERM_STORE.len() {
             LONGTERM_STORE[identity_id as usize].wipe();
         }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_set_extreme_mode(enabled: bool) {
+    unsafe {
+        EXTREME_MODE = enabled;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_is_extreme_mode() -> bool {
+    unsafe {
+        EXTREME_MODE
     }
 }
 

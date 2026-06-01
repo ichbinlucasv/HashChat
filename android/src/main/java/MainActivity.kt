@@ -899,7 +899,12 @@ class MainActivity : AppCompatActivity() {
                             return@setItems
                         }
                         // Use proper GroupSenderKey for per-member forward secrecy (A1 + A3)
-                        val newGskId = HashChatNative.createGroupSenderKey(HashChatNative.ratchetNew())
+                        val rid = HashChatNative.ratchetNew()
+                        if (rid < 0) {
+                            Toast.makeText(this, "EXTREME/STRICT: Group ratchet creation refused.", Toast.LENGTH_LONG).show()
+                            return@setItems
+                        }
+                        val newGskId = HashChatNative.createGroupSenderKey(rid)
                         currentGroup?.let { g -> groups[g]?.add(newGskId) }
                         groupMembers.add("Member sender-key: $newGskId (GroupSenderKey, persisted)")
                         messageList.adapter?.notifyDataSetChanged()
