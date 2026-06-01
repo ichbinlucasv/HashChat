@@ -37,9 +37,9 @@ Emulators are useful for CI smoke tests but **insufficient** for a paranoid mess
 6. **Cross-device ratchet export**: Real QR or file transfer between two devices, import, continue chat with forward secrecy intact. Source device must wipe after export.
 
 ## CI vs Real
-- CI (Forgejo Actions on Codeberg primary + GitHub mirror): cargo test --release (paranoid paths), cabal check, gradle assemble.
+- CI (Forgejo Actions on Codeberg only): cargo test --release (paranoid paths), cabal check, gradle assemble.
 - Real hardware: The only place where JNI + Keystore + mlock + actual Tor hidden service + mic + biometric can be trusted.
-- CI must **fail the build** on any regression in the 9+ Rust tests (wired in both .forgejo/workflows/build.yml on Codeberg and .github/workflows/build.yml on GitHub mirror).
+- CI must **fail the build** on any regression in the 9+ Rust tests (wired in .forgejo/workflows/build.yml on Codeberg).
 
 ## Tooling Recommendations
 - For Android: Use `adb logcat` during voice/posture tests; `adb shell pm clear` between runs.
@@ -53,9 +53,9 @@ Maintain a private (or redacted public) log:
 - Any new issues discovered for THREATMODEL.md or ROADMAP.
 
 ## Next Steps (Before Real v0.2 Ship)
-- [ ] Expand this file with concrete command sequences for Tails + GrapheneOS test sessions.
-- [ ] Add a `make test-real` or `scripts/real-device-test.sh` helper (guarded, never runs in CI).
-- [ ] User (ichbinlucasv) performs at least one full real-device + Tails pass before executing the signed v0.2 tag.
+- [x] Add `scripts/real-device-test.sh` helper (guided evidence log generator).
+- [x] Create dedicated real device testing guide: `docs/REAL_DEVICE_TESTING.md` with Tails + GrapheneOS procedures.
+- [ ] Perform and log at least one full real-device + Tails/Qubes + physical Android test pass before any signed v0.2 tag (Critical requirement).
 
 This plan directly addresses the expert recommendation: "You need a plan for how you will actually test on real hardware regularly (not just emulators)."
 
