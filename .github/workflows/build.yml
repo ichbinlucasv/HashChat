@@ -97,19 +97,21 @@ jobs:
           # test_framing_and_mlock_safety_simulation, test_full_send_recv_roundtrip, etc.
           cargo test --release
 
-          # Supply-chain (arch-3): Dependency audit (cargo-audit) - NOW BLOCKING ON HIGH/CRITICAL
+          # Supply-chain (arch-3): Dependency audit (cargo-audit) - BLOCKING
           # From a paranoid perspective, non-blocking audit is security theater.
-          # We fail the build on high or critical advisories.
-          # Use cargo-binstall for fast + reliable prebuilt binary installation (much more stable on CI than compiling from source every run).
+          # We use `--deny warnings` (the reliable, modern way) which fails the build on *any* known vulnerability.
+          # This is simpler, more robust, and actually stricter than trying to parse severity levels via CLI flags.
+          # Use cargo-binstall for fast + reliable prebuilt binary installation.
           cargo install cargo-binstall --locked 2>/dev/null || true
           cargo binstall cargo-audit --version 0.20.0 --locked -y
-          cargo audit --deny high --deny critical || {
+          cargo audit --deny warnings || {
             echo ""
-            echo "!!! CRITICAL: cargo audit found HIGH or CRITICAL security advisories !!!"
-            echo "The build is failing because of this."
+            echo "!!! CRITICAL: cargo audit found security advisories !!!"
+            echo "The build is failing because of this. Review the output above."
+            echo "For v0.2-preview we still allow some lower-severity noise if explicitly accepted in RELEASE_PROCESS.md."
             exit 1
           }
-          echo "cargo audit passed (no high or critical advisories)"
+          echo "cargo audit passed (no advisories)"
         env:
           CARGO_TERM_COLOR: always
 
