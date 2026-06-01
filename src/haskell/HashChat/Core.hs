@@ -111,6 +111,7 @@ wipeAll = do
   rust_wipe_files
   rust_secure_erase (unsafePerformIO rust_init_profile)
   _ <- rust_apply_basic_seccomp
+  wipeLongTermIdentity sessionLongTermIdentityId
   pure ()
 
 -- === Ratchet helpers (re-exported for convenience) ===
