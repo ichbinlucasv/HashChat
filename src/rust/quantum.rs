@@ -28,6 +28,8 @@
 //
 // Current status (v0.2):
 // - This module only provides the public interface + clear "not yet implemented"
+// - Long-term: expand to full hybrid (we have the skeleton; future waves for real ML-KEM).
+// - See ROADMAP for quantum-resistant options.
 //   errors. Enabling the feature does not give you quantum resistance yet.
 // - The classical DoubleRatchet in ratchet.rs remains the only production path.
 //
