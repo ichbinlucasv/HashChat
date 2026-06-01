@@ -10,6 +10,7 @@ use std::os::raw::c_void;
 use std::ptr;
 
 mod ratchet;
+mod longterm_identity;
 
 // long-13: gated quantum module. Only compiled with `cargo build --features quantum`.
 // The module itself documents the strict constant-time / zeroize / side-channel
@@ -18,6 +19,11 @@ mod ratchet;
 mod quantum;
 #[cfg(feature = "quantum")]
 pub use quantum::{hybrid_ratchet_new, QuantumHybridRatchet};
+
+pub use longterm_identity::{
+    export_encrypted as longterm_export_encrypted,
+    import_encrypted as longterm_import_encrypted,
+};
 
 #[no_mangle]
 pub extern "C" fn rust_init_profile() -> *mut c_void {
@@ -546,6 +552,110 @@ pub extern "C" fn rust_encrypt_blob_with_passphrase(
         std::ptr::copy_nonoverlapping(envelope.as_ptr(), out, envelope.len());
         *out_len = envelope.len();
         true
+    }
+}
+
+// ============================================================================
+// LONG-TERM IDENTITY KEYPAIR FFI (ContactAddress / Profile Sharing)
+// Wave 10 Critical item - Option B implementation
+// ============================================================================
+
+use crate::longterm_identity::LongTermIdentity;
+
+/// Global store for long-term identities (indexed by u32, similar to ratchets).
+/// In a real application these would be managed per-profile in the host (Haskell).
+static mut LONGTERM_STORE: Vec<LongTermIdentity> = Vec::new();
+
+#[no_mangle]
+pub extern "C" fn rust_longterm_identity_new() -> u32 {
+    unsafe {
+        let id = LONGTERM_STORE.len() as u32;
+        LONGTERM_STORE.push(LongTermIdentity::generate());
+        id
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_longterm_identity_get_public(
+    identity_id: u32,
+    out_ed25519: *mut u8,
+    out_x25519: *mut u8,
+) -> bool {
+    unsafe {
+        if let Some(id) = LONGTERM_STORE.get(identity_id as usize) {
+            let ed_pub: [u8; 32] = id.ed25519_public().to_bytes();
+            let x_pub: [u8; 32] = *id.x25519_public().as_bytes();
+
+            std::ptr::copy_nonoverlapping(ed_pub.as_ptr(), out_ed25519, 32);
+            std::ptr::copy_nonoverlapping(x_pub.as_ptr(), out_x25519, 32);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_longterm_identity_export_encrypted(
+    identity_id: u32,
+    passphrase: *const u8,
+    pass_len: usize,
+    out: *mut u8,
+    out_len: *mut usize,
+) -> bool {
+    unsafe {
+        if let Some(identity) = LONGTERM_STORE.get(identity_id as usize) {
+            let pass = std::slice::from_raw_parts(passphrase, pass_len);
+            match longterm_export_encrypted(identity, pass) {
+                Ok(envelope) => {
+                    if envelope.len() > *out_len {
+                        *out_len = envelope.len();
+                        return false;
+                    }
+                    std::ptr::copy_nonoverlapping(envelope.as_ptr(), out, envelope.len());
+                    *out_len = envelope.len();
+                    true
+                }
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_longterm_identity_import_encrypted(
+    identity_id: u32,
+    passphrase: *const u8,
+    pass_len: usize,
+    data: *const u8,
+    data_len: usize,
+) -> bool {
+    unsafe {
+        let pass = std::slice::from_raw_parts(passphrase, pass_len);
+        let envelope = std::slice::from_raw_parts(data, data_len);
+
+        match longterm_import_encrypted(envelope, pass) {
+            Ok(identity) => {
+                if (identity_id as usize) < LONGTERM_STORE.len() {
+                    LONGTERM_STORE[identity_id as usize] = identity;
+                } else {
+                    LONGTERM_STORE.push(identity);
+                }
+                true
+            }
+            Err(_) => false,
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_longterm_identity_wipe(identity_id: u32) {
+    unsafe {
+        if (identity_id as usize) < LONGTERM_STORE.len() {
+            LONGTERM_STORE[identity_id as usize].wipe();
+        }
     }
 }
 
