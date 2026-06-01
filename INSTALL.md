@@ -95,6 +95,34 @@ sudo systemctl restart tor
 
 See `THREATMODEL.md` for why this matters.
 
+### Desktop Runtime Notes (Fedora / Ubuntu / Arch / Tails / Qubes)
+
+**Voice Recording (new in recent waves)**:
+- Modern Fedora (40+), Ubuntu (22.04+), and Arch use PipeWire by default.
+  - Best: `pw-record` (added support)
+  - Fallback: `parecord` (Pulse compatibility layer)
+  - Last resort: `arecord` (ALSA) — often the only option in minimal Tails or Qubes Debian templates.
+- On Tails/Qubes: Enable audio in the qube/template first. Disposables reset audio settings.
+- If no recorder is found, voice falls back to placeholder bytes (keeps attack surface low).
+
+**Per-Profile Proxy (new in recent waves)**:
+- Use `:set-proxy <host> <port>` inside the TUI (e.g. `:set-proxy 127.0.0.1 9050` for local Tor).
+- On Qubes: Point to a proxy running in sys-vpn or a dedicated proxy qube.
+- On Tails: Combine with Tails' bridge or VPN feature.
+- The setting is per-burner profile and survives profile switches.
+
+**Tor on different OSes**:
+- Fedora / Ubuntu / Arch: `sudo systemctl start tor` + edit `/etc/tor/torrc` for ControlPort 9051 + CookieAuthentication.
+- Tails: Tor is pre-configured. Use the built-in bridges when needed.
+- Qubes: Usually run through sys-whonix. Use `:set-proxy` inside the HashChat qube to talk to the Tor qube's SOCKS.
+
+**Recommended Hardening per OS**:
+- Tails & Qubes disposables: Strongest OPSEC (amnesia + compartmentalization).
+- Fedora/Arch with full disk encryption + no swap + hardened kernel: Good balance.
+- Ubuntu: Fine for testing, but be aware of more telemetry by default — consider minimal install + hardening.
+
+For maximum security on any of these OSes, combine with the dynamic posture checks and nuclear wipe.
+
 ## Android
 
 Currently in early development. Planned as a paid app (initially ~20 CHF, later cheaper).

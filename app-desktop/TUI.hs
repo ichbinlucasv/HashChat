@@ -284,7 +284,7 @@ drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll
   , withAttr (attrName "encrypted") $ str "All messages use per-contact Double Ratchet + AES-256-GCM."
   , withAttr (attrName "encrypted") $ str "Ciphertext size shown in message list (ct:XXB)."
   , str "Plausible deniability: Decoy profiles + hidden volume concept (see docs)."
-  , str "v              → Record/play voice (real desktop mic via parecord/arecord + ratchet + wipe; falls back to placeholder)"
+  , str "v              → Record/play voice (real mic via pw-record/parecord/arecord + ratchet + wipe; best on Fedora/Ubuntu/Arch, works on Tails/Qubes with audio enabled)"
   , str "f              → Send/receive file (chunked ratchet streaming - started)"
   ]
 
@@ -670,10 +670,14 @@ playVoiceChunk chunk = do
 -- 5. Clear fallback: Explicit messages when falling back to placeholder.
 recordVoiceChunkDesktop :: IO (Maybe BS.ByteString)
 recordVoiceChunkDesktop = do
-  -- Preferred: PulseAudio (parecord), fallback: ALSA (arecord)
+  -- Preferred order for modern desktops (Fedora 40+, Ubuntu 22.04+, Arch, etc.):
+  -- 1. PipeWire native (pw-record) - best on recent Fedora/Ubuntu/Arch
+  -- 2. PulseAudio compatibility (parecord)
+  -- 3. ALSA direct (arecord) - fallback for minimal Tails/Qubes templates
   let recorders =
-        [ ("parecord", ["--format=s16le", "--rate=16000", "--channels=1", "--raw", "--file-format=wav", "--duration=5"])
-        , ("arecord",  ["-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "wav", "-d", "5"])
+        [ ("pw-record", ["--format=s16le", "--rate=16000", "--channels=1", "--raw", "--duration=5"])
+        , ("parecord",  ["--format=s16le", "--rate=16000", "--channels=1", "--raw", "--file-format=wav", "--duration=5"])
+        , ("arecord",   ["-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "wav", "-d", "5"])
         ]
   tryRecorders recorders 0
   where
