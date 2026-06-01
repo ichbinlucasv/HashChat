@@ -882,11 +882,16 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'A') [])) = do
 handleEvent (VtyEvent (V.EvKey (V.KChar 'G') [])) = do
   drainIncoming
   s <- get
-  let txt = input s
-  case (currentGroup s, not (T.null txt)) of
-    (Just gname, True) -> do
-      case Map.lookup gname (groups s) of
-        Just rats -> do
+  extreme <- liftIO isExtremeMode
+  if extreme
+    then do
+      liftIO $ putStrLn "[EXTREME] Group send disabled in Extreme mode."
+    else do
+      let txt = input s
+      case (currentGroup s, not (T.null txt)) of
+        (Just gname, True) -> do
+          case Map.lookup gname (groups s) of
+            Just rats -> do
           -- For each member ratchet, advance sender key and encrypt (demo: use first)
           rid <- pure (head rats)
           (msgKey, step) <- liftIO $ ratchetSend rid   -- real Double Ratchet send
