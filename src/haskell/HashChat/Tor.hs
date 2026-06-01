@@ -6,6 +6,9 @@ module HashChat.Tor
   , TorConfig(..)
   , defaultTorConfig
   , launchTorIfNeeded
+  , sendCiphertextOverTor
+  , ProxyConfig(..)
+  , defaultProxyConfig
   ) where
 
 import Network.Socket
@@ -31,6 +34,13 @@ data TorConfig = TorConfig
   , hiddenServiceDir :: FilePath
   }
 
+-- Proxy configuration for outgoing connections.
+-- This is the foundation for SOCKS5 support (Tor, I2P, user VPNs, etc.).
+data ProxyConfig
+  = NoProxy
+  | Socks5Proxy String Int          -- host, port
+  deriving (Show, Eq)
+
 defaultTorConfig :: TorConfig
 defaultTorConfig = TorConfig
   { controlHost = "127.0.0.1"
@@ -38,6 +48,9 @@ defaultTorConfig = TorConfig
   , torDataDir  = "tor/data"
   , hiddenServiceDir = "tor/hidden_service"
   }
+
+defaultProxyConfig :: ProxyConfig
+defaultProxyConfig = Socks5Proxy "127.0.0.1" 9050   -- Default: local Tor
 
 -- Connect to Tor control port and send a command
 sendTorCommand :: TorConfig -> String -> IO (Either String String)
@@ -105,14 +118,22 @@ stopHiddenService cfg (OnionAddress onion) = do
 getOnionAddress :: OnionAddress -> String
 getOnionAddress (OnionAddress a) = a
 
--- Real SOCKS5 client for sending ciphertext blobs over Tor to a v3 onion.
--- Completes a full connection and transfers the full length-prefixed blob.
-sendCiphertextOverTor :: String -> BS.ByteString -> IO (Either String ())
-sendCiphertextOverTor destinationOnion ciphertext = do
-  putStrLn $ "[Tor] Connecting via SOCKS5 to " ++ destinationOnion ++ " ..."
+-- Real SOCKS5 client for sending ciphertext blobs to a v3 onion (or any .onion).
+-- This is the foundation for SOCKS5 proxy support (Tor, I2P, user VPNs, etc.).
+--
+-- proxySocks :: Maybe (host, port)
+--   Nothing  -> use default local Tor (127.0.0.1:9050)
+--   Just (h,p) -> use the provided SOCKS5 proxy (e.g. I2P SOCKS, Proton SOCKS, custom Tor, etc.)
+sendCiphertextOverTor :: Maybe (String, Int) -> String -> BS.ByteString -> IO (Either String ())
+sendCiphertextOverTor mProxy destinationOnion ciphertext = do
+  let (proxyHost, proxyPort) = case mProxy of
+        Just (h, p) -> (h, p)
+        Nothing     -> ("127.0.0.1", 9050)
+
+  putStrLn $ "[Transport] Connecting via SOCKS5 to " ++ destinationOnion ++ " via " ++ proxyHost ++ ":" ++ show proxyPort
 
   result <- try $ do
-    addrInfos <- getAddrInfo Nothing (Just "127.0.0.1") (Just "9050")
+    addrInfos <- getAddrInfo Nothing (Just proxyHost) (Just (show proxyPort))
     let serverAddr = head addrInfos
     sock <- socket (addrFamily serverAddr) Stream defaultProtocol
     connect sock (addrAddress serverAddr)
@@ -170,6 +191,12 @@ sendCiphertextOverTor destinationOnion ciphertext = do
   case result of
     Left err -> pure $ Left (show (err :: SomeException))
     Right _  -> pure $ Right ()
+
+-- High-level wrapper using the nicer ProxyConfig type.
+-- This is the function higher layers should eventually call.
+sendOverProxy :: ProxyConfig -> String -> BS.ByteString -> IO (Either String ())
+sendOverProxy NoProxy dest ct = sendCiphertextOverTor Nothing dest ct
+sendOverProxy (Socks5Proxy h p) dest ct = sendCiphertextOverTor (Just (h, p)) dest ct
 
 -- Basic receive server for the hidden service side.
 -- Call this (in a forkIO thread) after startHiddenService when you map Port=...,127.0.0.1:LOCAL_PORT
