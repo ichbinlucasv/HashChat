@@ -460,10 +460,10 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
               Nothing -> (BS.pack (map (fromIntegral . fromEnum) contact), "unknown.onion")
         let framed = frameForWire hint (ratchetStep msgWithTime) (ciphertext msgWithTime)
         liftIO $ putStrLn $ "[TOR] Sending framed ciphertext to " ++ targetOnion ++ " (real contact mapping + header)"
-        -- Wave 8: Updated to use generalized sendOverProxy (foundation for SOCKS5 per-profile, I2P, custom bridges/VPNs)
-        -- Uses default (local Tor 9050). Future: per-contact or global proxy config from UI/Settings.
-        _ <- liftIO $ Tor.sendOverProxy Tor.defaultProxyConfig targetOnion framed
-        liftIO $ putStrLn "[TOR] Framed blob handed to real Tor transport layer using Contact data + ProxyConfig."
+        -- D finished: Use per-profile proxy if set for current burner, else default (local Tor)
+        let currentProxy = Map.findWithDefault defaultProxyForProfile (currentProfile s) (proxies s)
+        _ <- liftIO $ Tor.sendOverProxy currentProxy targetOnion framed
+        liftIO $ putStrLn $ "[TOR] Framed blob sent using per-profile proxy for " ++ currentProfile s ++ " (or default)."
 
         -- Disappearing messages: process expiry + key wipe (real ratchet key zeroization path)
         cleaned <- liftIO $ processDisappearingMessages (Map.findWithDefault [] contact (messages st))
