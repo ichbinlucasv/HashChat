@@ -279,8 +279,9 @@ class MainActivity : AppCompatActivity() {
                     while (true) {
                         val chunk = voiceChunkQueue.take()
                         try {
-                            // Official voice path: processVoiceChunk in Rust (Wave 2 progress).
-                            // The Rust side now owns real per-stream VoiceStream with HKDF chain advancement.
+                            // Official voice path: processVoiceChunk in Rust (Wave 2 / High #2 progress).
+                            // Currently per-chunk HKDF; goal: full per-stream Double Ratchet + skipped keys + explicit destroy/zeroize (High priority #2).
+                            // The Rust side owns the chain advancement.
                             // Each chunk derives a new key and advances the chain inside Rust (no longer pure simulation).
                             // Next: integrate full DoubleRatchet per voice stream + explicit zeroize of used chunk keys.
                             val decrypted = HashChatNative.processVoiceChunk(chunk)
