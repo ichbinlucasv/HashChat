@@ -100,16 +100,14 @@ jobs:
           # Supply-chain (arch-3): Dependency audit (cargo-audit) - NOW BLOCKING ON HIGH/CRITICAL
           # From a paranoid perspective, non-blocking audit is security theater.
           # We fail the build on high or critical advisories.
-          # We pin a recent stable version of cargo-audit because the --deny high/critical
-          # syntax is not supported in all versions (this was the cause of the CI failure).
-          cargo install cargo-audit --version 0.20.0 --locked 2>/dev/null || true
-          if ! cargo audit --deny high --deny critical; then
+          # Pinned version + no silent failure so install problems surface clearly.
+          cargo install cargo-audit --version 0.20.0 --locked
+          cargo audit --deny high --deny critical || {
             echo ""
             echo "!!! CRITICAL: cargo audit found HIGH or CRITICAL security advisories !!!"
-            echo "The build is failing because of this. Review the output above."
-            echo "For v0.2-preview we still allow some lower-severity noise, but high/critical must be addressed or explicitly accepted in RELEASE_PROCESS.md."
+            echo "The build is failing because of this."
             exit 1
-          fi
+          }
           echo "cargo audit passed (no high or critical advisories)"
         env:
           CARGO_TERM_COLOR: always
