@@ -16,6 +16,7 @@ rand = "0.8"
 hkdf = "0.12"
 sha2 = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
+ed25519-dalek = "2.1"  # for LongTermIdentity (ed25519 signing + x25519) - Critical ContactAddress item
 jni = "0.21"   # For proper JNI glue to Kotlin MainActivity + HashChatKeystore
 argon2 = "0.5" # Real KDF for ratchet export envelope (high-4 / crit-2 OPSEC)
 

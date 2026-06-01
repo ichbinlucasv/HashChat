@@ -62,6 +62,10 @@ object HashChatNative {
     // This is wired into voice, groups, export, and decoy flows to HARD REFUSE risky actions on bad devices.
     // Kotlin + Rust both contribute real checks (see Rust isStrictMode + is_environment_strict).
     external fun isStrictMode(): Boolean
+    // Long-term identity for ContactAddress (Critical item, Android parity)
+    external fun longtermNew(): Int
+    external fun longtermGetPublic(id: Int): ByteArray
+    external fun longtermWipe(id: Int)
 
     // Combined Kotlin + JNI strict mode (authoritative for refusal decisions).
     // Expands the old stub with real root detection, dangerous props via reflection + files,
@@ -344,6 +348,7 @@ class MainActivity : AppCompatActivity() {
                 "Set disappearing timer (key wipe on expiry)",
                 "Export ratchet for new device (cross-device, STRICT gated)",
                 "Toggle decoy profile (plausible deniability, STRICT gated)",
+                "Share my contact (real long-term identity pub for QR)",
                 "Cancel"
             )) { _, which ->
                 when (which) {
@@ -371,6 +376,17 @@ class MainActivity : AppCompatActivity() {
                         performCrossDeviceExport()
                     }
                     7 -> onToggleDecoyProfile()
+                    8 -> {
+                        // New: use real long-term identity for contact QR (Critical item, Android parity)
+                        if (EXTREME_MODE) {
+                            Toast.makeText(this, "EXTREME MODE: Long-term contact identity exposure disabled.", Toast.LENGTH_LONG).show()
+                            return@setItems
+                        }
+                        val pub = HashChatNative.longtermGetPublic(HashChatNative.longtermNew())
+                        val preview = pub.take(8).joinToString("") { "%02x".format(it) }
+                        Toast.makeText(this, "My contact pub (ed25519 from real LongTermIdentity): $preview... (use for QR/share like TUI)", Toast.LENGTH_LONG).show()
+                        // In full: generate hashchat://contact/v1/<onion>/len:hexpub using the pub and current onion, show QR.
+                    }
                 }
             }
             .show()
