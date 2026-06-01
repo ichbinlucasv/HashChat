@@ -58,27 +58,35 @@
   </releases>
 
   <!-- 
-    TODO (Critical for v0.2 / Flathub):
-    Replace these placeholders with REAL screenshots before any public release or Flathub submission.
-    Capture on clean Tails/Qubes/Fedora with proper terminal size + Android emulator or real device.
-    See docs/SCREENSHOTS.md for exact step-by-step capture instructions (posture banner, voice wipe, group QR, refusal flows).
+    Marketplace / Flathub / Fedora Apps readiness:
+    - Replace example.com with REAL screenshots (user captures on Fedora desktop TUI + Android).
+    - Use scripts/screenshot-prep-fedora.sh for easy Fedora install/test/demo + capture commands (grim/gnome-screenshot).
+    - Run: HASHCHAT_DEMO=1 ./run-tui (populates nice demo state for clean black+gold shots).
+    - See docs/SCREENSHOTS.md for exact 4-5 desktop + 4 Android shots (main, posture refusal, voice wipe, groups/QR, actions).
+    - Icons: Rasterize flatpak/icons/hicolor/scalable/apps/org.hashchat.HashChat.svg (rsvg-convert on Fedora).
+    - Submit Flatpak to Flathub (Fedora uses it); update for other distros via AppStream.
   -->
   <screenshots>
     <screenshot type="default">
-      <caption>Desktop TUI main chat with live Security Posture (MAX PARANOID banner + status line) in black + gold theme</caption>
+      <caption>Desktop TUI main chat (Fedora) with live Security Posture (MAX PARANOID) in black + #FFD700 gold theme. Demo contacts + explicit Tor v3 / Double Ratchet cues.</caption>
       <image>https://example.com/screenshots/hashchat-tui-main.png</image>
     </screenshot>
     <screenshot>
-      <caption>Android voice message playback with real SeekBar progress + explicit "ratchet key advanced + wiped after playback" feedback</caption>
-      <image>https://example.com/screenshots/hashchat-android-voice.png</image>
-    </screenshot>
-    <screenshot>
-      <caption>Android long-press actions menu (Block / Report / Delete / Disappear timer / Security Info) matching TUI 'a' parity</caption>
-      <image>https://example.com/screenshots/hashchat-android-actions.png</image>
-    </screenshot>
-    <screenshot>
-      <caption>Desktop TUI showing DYNAMIC POSTURE REFUSAL for voice in low-security environment (with clear warning)</caption>
+      <caption>Desktop TUI DYNAMIC POSTURE REFUSAL (voice/group in low env) - key paranoid feature for marketplace credibility.</caption>
       <image>https://example.com/screenshots/hashchat-tui-posture-refusal.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Desktop TUI voice playback + explicit "ratchet key advanced + wiped after playback" (forward secrecy OPSEC visible).</caption>
+      <image>https://example.com/screenshots/hashchat-tui-voice-wipe.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Desktop TUI groups/QR (sender keys, Simplex parity) + actions menu (Block/Report/Delete/Disappear/Security Info).</caption>
+      <image>https://example.com/screenshots/hashchat-tui-groups-actions.png</image>
+    </screenshot>
+    <!-- Android shots (user captures on real device/emulator for full marketplace) -->
+    <screenshot>
+      <caption>Android voice message playback with SeekBar + explicit wipe feedback (matches TUI parity).</caption>
+      <image>https://example.com/screenshots/hashchat-android-voice.png</image>
     </screenshot>
   </screenshots>
 

@@ -42,6 +42,7 @@ import qualified HashChat.Tor as Tor  -- Real Tor hidden service transport scaff
 import Control.Monad (when, void, foldM)
 import Control.Monad.IO.Class (liftIO)
 import System.Directory (doesFileExist)
+import System.Environment (lookupEnv)
 import Control.Exception (catch, SomeException, try)
 import System.Directory (removePathForcibly, createDirectoryIfMissing, listDirectory, doesFileExist, doesDirectoryExist)
 import System.FilePath (combine, takeDirectory)
@@ -92,26 +93,44 @@ data AppState = AppState
   }
 
 initialState :: AppState
-initialState = AppState
+initialState = 
+  let isDemo = unsafePerformIO (lookupEnv "HASHCHAT_DEMO") /= Nothing
+      demoContacts = [ Contact.defaultContact "Alice" "Alice" "alicehashchatv3example.onion"
+                     , Contact.defaultContact "Bob"   "Bob"   "bobhashchatv3example.onion"
+                     , Contact.defaultContact "Support" "Support" "supportv3hashchatdemo.onion"
+                     ]
+      demoMessages = if isDemo 
+                     then Map.fromList 
+                       [ ("Alice", [ Message 1 (BS.pack (map (fromIntegral . fromEnum) "Alice")) (BS.pack (map (fromIntegral . fromEnum) "Hey, using HashChat on Fedora for screenshots. Tor v3 + Double Ratchet active. Security Posture: MAX PARANOID.")) (BS.pack []) 0 False Nothing 5
+                                   , Message 2 (BS.pack (map (fromIntegral . fromEnum) "You")) (BS.pack (map (fromIntegral . fromEnum) "Gold bubbles look great in black+gold theme. Explicit wipe feedback on voice.")) (BS.pack []) 0 False Nothing 6
+                                   ])
+                       , ("Bob", [ Message 3 (BS.pack (map (fromIntegral . fromEnum) "Bob")) (BS.pack (map (fromIntegral . fromEnum) "Group QR ready? Sender keys working.")) (BS.pack []) 0 False Nothing 7 ])
+                       ]
+                     else Map.empty
+      demoGroups = if isDemo 
+                   then Map.fromList [("DemoGroup", [101,102])]
+                   else Map.empty
+      demoPosture = if isDemo 
+                    then "MAX PARANOID (Tails/Qubes + Tor recommended) [DEMO for screenshots]"
+                    else "MAX PARANOID (Tails/Qubes + Tor recommended)"
+  in AppState
   { currentProfile = "Default"
   , profiles       = Map.empty
-  , messages       = Map.empty
+  , messages       = demoMessages
   , input          = ""
   , inputHistory   = []
   , historyIndex   = -1
-  , currentContact = "Alice"
+  , currentContact = if isDemo then "Alice" else "Alice"
   , showHelp       = False
   , ratchets       = Map.empty
   , sessionPass    = BS.pack []   -- will be set during unlock in appStartEvent
-  , securityPosture = "MAX PARANOID (Tails/Qubes + Tor recommended)"
+  , securityPosture = demoPosture
   , blockedContacts = []
   , actionPending   = False
   , incomingBlobs   = unsafePerformIO (newMVar [])   -- real cross-thread queue for Tor receive
-  , contacts        = [ Contact.defaultContact "Alice" "Alice" "alicehashchatv3example.onion"
-                      , Contact.defaultContact "Bob"   "Bob"   "bobhashchatv3example.onion"
-                      ]
-  , groups          = Map.empty
-  , currentGroup    = Nothing
+  , contacts        = demoContacts
+  , groups          = demoGroups
+  , currentGroup    = if isDemo then Just "DemoGroup" else Nothing
   , proxies         = Map.empty   -- D: starts with default (local Tor) for all profiles
   }
 

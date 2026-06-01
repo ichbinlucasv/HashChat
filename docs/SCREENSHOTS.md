@@ -37,7 +37,13 @@
 ### 5. 'a' actions menu (Simplex parity)
 - Long-press equivalent: full list (Block, Report, Delete, Mute, Disappearing timer, Security Info / ratchet step / E2EE posture)
 
-**Capture tip**: Use `gnome-screenshot`, `scrot`, or `grim` on Wayland. Crop to content. Optimize PNG size (< 200KB each recommended).
+**Capture tip (Fedora desktop for marketplace)**: 
+- Install: `sudo dnf install grim slurp gnome-screenshot`
+- Prep: `HASHCHAT_DEMO=1 ./scripts/screenshot-prep-fedora.sh` (or direct: `HASHCHAT_DEMO=1 ./run-tui` after Tor; resizes term for 120x40+).
+- Capture: `grim -g "$(slurp)" hashchat-tui-main.png` (select window) or `gnome-screenshot -a`.
+- For refusal/voice demos: Trigger 'v'/'g' (or temp force LOW posture in getSecurityPosture).
+- Optimize: `optipng *.png` or `pngcrush`.
+- Fedora/Flathub: Upload to Codeberg releases or your host; replace in flatpak/org.hashchat.HashChat.metainfo.xml (see script for exact). Use black+gold theme exactly.
 
 ## Android Screenshots (Recommended 4 shots)
 
