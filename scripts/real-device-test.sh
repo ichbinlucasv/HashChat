@@ -87,6 +87,13 @@ cat > "$LOG_FILE" << EOF
 - [ ] No obvious sensitive data left in /tmp or cache
 - [ ] App behaves correctly after profile switch / decoy
 
+### 8. Extreme Mode (if tested - Critical/Strategic)
+- [ ] Extreme enabled (via :extreme on or Android toggle)
+- [ ] Groups/voice/export/decoy refused (hard, no menu or error)
+- [ ] Posture shows EXTREME, no long-term contact/QR exposure
+- [ ] Aggressive wipes, no history persistence
+- Observations:
+
 ---
 
 ## Overall Result
