@@ -633,6 +633,7 @@ impl VoiceStream {
 
     /// Real HKDF-based advancement for voice chunks (matches the pattern we proved with GroupSenderKey).
     /// Derives a per-chunk message key and advances the chain with domain separation.
+    /// Side-channel / constant-time review (Medium): HKDF is constant-time in sha2/hkdf crates; zeroize on chunk_key; no branching on secrets. Review for timing in future (High priority item).
     fn process_chunk(&mut self, encrypted: &[u8]) -> Vec<u8> {
         self.step = self.step.wrapping_add(1);
 
