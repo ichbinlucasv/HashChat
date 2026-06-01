@@ -26,6 +26,8 @@ module HashChat.Core
   , exportLongTermIdentity
   , importLongTermIdentity
   , wipeLongTermIdentity
+  , setExtremeMode
+  , isExtremeMode
   ) where
 
 import Control.Concurrent.STM
@@ -48,6 +50,8 @@ import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Unsafe
 import Data.Bits ((.|.), (.&.), testBit, setBit, clearBit)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import System.IO.Unsafe (unsafePerformIO)
 
 data ProfileKey = ProfileKey ByteString
 data Queue = Queue ByteString
@@ -220,6 +224,18 @@ sessionLongTermIdentityId = unsafePerformIO newLongTermIdentity
 
 getSessionLongTermPublic :: IO (Maybe (ByteString, ByteString))
 getSessionLongTermPublic = getLongTermIdentityPublic sessionLongTermIdentityId
+
+-- Extreme Mode flag (runtime, disabled by default)
+-- When enabled: forces strict posture, disables groups/voice/export/decoy, aggressive wipes, etc.
+{-# NOINLINE extremeModeRef #-}
+extremeModeRef :: IORef Bool
+extremeModeRef = unsafePerformIO $ newIORef False
+
+setExtremeMode :: Bool -> IO ()
+setExtremeMode = writeIORef extremeModeRef
+
+isExtremeMode :: IO Bool
+isExtremeMode = readIORef extremeModeRef
 
 -- === High-level Message System (REAL Double Ratchet + AES-GCM) ===
 

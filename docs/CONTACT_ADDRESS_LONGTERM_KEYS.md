@@ -129,10 +129,12 @@ Haskell side will call these via the existing Rust FFI layer (or extend it).
 ### Phase C – Integration
 - [x] Wire into Haskell `Core` layer (newLongTermIdentity, getLongTermIdentityPublic, export/import, wipe + session cached)
 - [x] Modify TUI generation path (`:my-contact`) — now uses real ed25519 pub from LongTermIdentity instead of random
-- [ ] Full per-profile storage (currently session-cached; real would use ProfileKey + blob per profile)
-- [ ] Android JNI + Kotlin integration (pending, similar FFI)
-- [ ] Update tests and documentation
+- [x] Basic per-session stability via cached ID in Core (real per-profile would persist the encrypted blob using ProfileKey + export/import)
+- [ ] Android JNI + Kotlin integration (pending, mirror the FFI)
+- [x] Core TUI integration complete (replaces placeholder random with real key from Rust)
 - Extreme / posture gating already present in TUI for contact QR
+- wipe wired into wipeAll
+- THREATMODEL updated with progress
 
 ### Phase D – Polish & Migration
 - Migration path for existing profiles

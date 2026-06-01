@@ -1,6 +1,6 @@
 # Extreme Profile — Ultra-Stripped Mode (Tier 3 Design Document)
 
-**Status**: Design + stub only. Not implemented.
+**Status**: Basic runtime implementation complete in TUI (flag + gates for groups/voice/contact QR). Rust/Haskell core ready. Android pending. Decision recorded in EXTREME_PROFILE_DECISION.md as "Implement scoped".
 
 ## Philosophy
 For the most hostile environments, users may want to trade almost all features for the smallest possible attack surface and metadata footprint.

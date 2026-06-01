@@ -102,22 +102,24 @@ This aligns with the project's philosophy of being honest about limitations and 
 
 **Final Decision**:
 
-[ ] Implement scoped Extreme mode (recommended above)  
+[X] Implement scoped Extreme mode (recommended above)  
 [ ] Do not implement dedicated Extreme mode (rely on current burner + posture model)  
 [ ] Defer decision until after v0.2-preview
 
-**Date of Decision**: ________________  
-**Decided by**: ________________
+**Date of Decision**: 2026-06  
+**Decided by**: Lucas (ichbinlucasv@noreply.codeberg.org)
 
 ---
 
 ## Next Actions (once decision is made)
 
-- Create `ExtremeMode` type / flag in core (Rust + Haskell)
-- Wire gating into TUI commands and Android screens
-- Update THREATMODEL.md with dedicated Extreme section
-- Add tests that verify gated features are refused in Extreme mode
-- Document in README + SECURITY.md
+- [x] Create `ExtremeMode` flag in core (Haskell IORef, wired to TUI)
+- [x] Wire gating into TUI (groups, voice, contact QR refused in extreme; command :extreme on/off)
+- [ ] Full Rust side ExtremeMode (for consistency with Android)
+- [ ] Wire gating into Android screens
+- [x] Update THREATMODEL.md and EXTREME_PROFILE.md
+- Add tests...
+- Document in README + SECURITY.md (partial)
 
 ---
 

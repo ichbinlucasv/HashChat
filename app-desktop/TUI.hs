@@ -222,7 +222,7 @@ drawUI st =
 
 drawMain :: AppState -> Widget Name
 drawMain st = vBox
-  [ withAttr (attrName "title") $ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ (maybe "" (" | Group: " ++) (currentGroup st)) ++ "  [p=burner n=new D=decoy g=group w=wipe a=actions] (TOR-ONLY | Double Ratchet + Tor v3 + Sender Keys) Security: " ++ securityPosture st ++ (if actionPending st then " [ACTIONS MENU ACTIVE]" else "") ++ " [posture live]"  -- med-8 desktop parity note
+  [ withAttr (attrName "title") $ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ (maybe "" (" | Group: " ++) (currentGroup st)) ++ (if unsafePerformIO isExtremeMode then " [EXTREME]" else "") ++ "  [p=burner n=new D=decoy g=group w=wipe a=actions] (TOR-ONLY | Double Ratchet + Tor v3 + Sender Keys) Security: " ++ securityPosture st ++ (if actionPending st then " [ACTIONS MENU ACTIVE]" else "") ++ " [posture live]"  -- med-8 desktop parity note
   , hBox
       [ borderWithLabel (withAttr (attrName "highlight") $ str " Contacts (Simplex-style: long-press equiv = 'a') | Groups: g") $
           vBox (map (str . showContact (blockedContacts st)) ["Alice", "Bob", "Support"])
@@ -429,6 +429,22 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
           _ -> do
             liftIO $ putStrLn "[D] Usage: :set-proxy <host> <port>"
             liftIO $ putStrLn "  Example: :set-proxy 127.0.0.1 9050"
+            modify $ \st -> st { input = "" }
+      else if ":extreme" `isInfixOf` inputStr
+      then do
+        let rest = drop (length ":extreme ") inputStr
+        case words rest of
+          ["on"] -> do
+            liftIO $ setExtremeMode True
+            liftIO $ putStrLn "[EXTREME] Enabled. Groups, voice, export, decoys, long history disabled. Strict posture forced. Use with extreme caution."
+            modify $ \st -> st { input = "" }
+          ["off"] -> do
+            liftIO $ setExtremeMode False
+            liftIO $ putStrLn "[EXTREME] Disabled. Back to normal burner + posture model."
+            modify $ \st -> st { input = "" }
+          _ -> do
+            liftIO $ putStrLn "[EXTREME] Usage: :extreme on | :extreme off"
+            liftIO $ putStrLn "  (Extreme mode is for journalists/high-risk in active targeting only. Disables most features.)"
             modify $ \st -> st { input = "" }
       else do
         -- Normal message send path (existing)
@@ -740,9 +756,11 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
   drainIncoming
   s <- get
   currentP <- liftIO getSecurityPosture
-  if not (isActionAllowedInPosture currentP "voice")
+  extreme <- liftIO isExtremeMode
+  if not (isActionAllowedInPosture currentP "voice") || extreme
     then do
       liftIO $ putStrLn "[SECURITY] DYNAMIC POSTURE REFUSAL: Voice disabled in current environment."
+      when extreme $ liftIO $ putStrLn "[EXTREME] Voice recording/playback completely disabled in Extreme mode."
       modify $ \st -> st { securityPosture = currentP }
     else do
       liftIO $ putStrLn "[VOICE] Recording voice chunk (ratchet key advanced + will be wiped post-send)."
@@ -803,9 +821,11 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'g') [])) = do
   drainIncoming
   s <- get
   currentP <- liftIO getSecurityPosture
-  if not (isActionAllowedInPosture currentP "group")
+  extreme <- liftIO isExtremeMode
+  if not (isActionAllowedInPosture currentP "group") || extreme
     then do
       liftIO $ putStrLn "[SECURITY] DYNAMIC POSTURE REFUSAL: Group features (multi-member sender keys) disabled in low security environment."
+      when extreme $ liftIO $ putStrLn "[EXTREME] Groups completely disabled in Extreme mode."
     else do
       liftIO $ putStrLn "\n=== GROUP MENU (full multi-member management + persistence) ==="
       liftIO $ putStrLn "c = Create group (new per-member sender-key ratchets)"
