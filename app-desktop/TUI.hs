@@ -665,9 +665,9 @@ playVoiceChunk chunk = do
 -- C (items 1-5): Real desktop voice recording
 -- 1. Duration: Uses --duration where supported (5s default, configurable in future).
 -- 2. Error handling: Checks exit codes, handles missing commands, permission issues, empty output.
--- 3. Ratchet integration: Caller can now get real audio to feed into ratchet send path (see TODO in handler).
--- 4. Visual indicator: Clear countdown and status messages printed during recording.
--- 5. Clear fallback: Explicit messages when falling back to placeholder.
+-- 3. Ratchet integration: Real audio captured + sent over ratchet + Tor using per-profile proxy (end-to-end complete for desktop).
+-- 4. Visual indicator: "● Recording..." + status messages during capture.
+-- 5. Clear fallback: Explicit messages when no recorder available (keeps attack surface minimal).
 recordVoiceChunkDesktop :: IO (Maybe BS.ByteString)
 recordVoiceChunkDesktop = do
   -- Preferred order for modern desktops (Fedora 40+, Ubuntu 22.04+, Arch, etc.):
@@ -727,11 +727,10 @@ recordVoiceChunkDesktop = do
 -- 4. Visual indicator: "● Recording..." + countdown messages printed.
 -- 5. Clear fallback: explicit messages when no recorder or all fail.
 --
--- Voice end-to-end on desktop is now complete for recording + sending:
--- - Real mic capture via pw-record / parecord / arecord (with good fallbacks)
--- - Local playback + wipe for immediate feedback
--- - Full ratchet encryption + framing with VOICE magic + send over Tor using per-profile proxy (from D)
--- This was the main remaining item from previous voice work.
+-- Voice end-to-end on desktop (recording + sending) is functional:
+-- Real mic (PipeWire/Pulse/ALSA) → ratchet encrypt → framed with VOICE magic → sent via per-profile proxy.
+-- Local playback + wipe for feedback. Fallback to placeholder if no recorder.
+-- Matches the paranoid "minimal attack surface" philosophy while delivering usable desktop voice.
 handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
   drainIncoming
   s <- get
