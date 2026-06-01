@@ -110,6 +110,9 @@ fi
 echo "[8/9] Generating basic SBOM..."
 ./scripts/generate-sbom.sh "$OUTPUT_DIR/sbom" || echo "  -> SBOM generation had issues (non-fatal for now)"
 
+# Medium: One final git history clean before v0.2 tag
+echo "[9/10] Git history clean note (Medium): Run ./scripts/clean-git-history.sh if needed for final clean before tag (removes sensitive history). See RELEASE_PROCESS.md."
+
 # 9. Testing strategy evidence (Tier 3 requirement - now treated as mandatory)
 echo "[9/10] Checking testing strategy requirements..."
 echo ""
