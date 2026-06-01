@@ -120,12 +120,11 @@ echo "  - The signed tag message MUST reference that this check was satisfied."
 echo ""
 echo "  This is a HARD REQUIREMENT. No signed tag will be considered complete without recent real-hardware testing evidence."
 
-# Enforce simple evidence file gate (even a dated log is accepted for v0.2-preview)
+# Wave 7 ALL: Evidence file gate is hard blocking (no more "even a dated log for v0.2-preview" leniency in spirit)
 EVIDENCE_FILE=$(ls -1t TESTING_EVIDENCE*.log 2>/dev/null | head -1 || true)
 if [ -z "$EVIDENCE_FILE" ]; then
-    echo "  >>> HARD FAIL for signed tags (Wave 3 ultra gate): No TESTING_EVIDENCE_*.log found."
-    echo "  >>> This is now a blocking requirement. Create dated real-hardware evidence log and re-run."
-    echo "  >>> Example: date > TESTING_EVIDENCE_2026-06-01.log && echo 'Real device: strict mode voice+groups refusal tested on Pixel' >> TESTING_EVIDENCE_2026-06-01.log"
+    echo "  >>> HARD FAIL for signed tags (Wave 7 ultra gate): No TESTING_EVIDENCE_*.log found."
+    echo "  >>> Blocking requirement. Create dated real-hardware evidence log and re-run before any tag attempt."
     exit 1
 else
     echo "  -> Found testing evidence: $EVIDENCE_FILE (modified $(stat -c %y "$EVIDENCE_FILE" 2>/dev/null || echo 'recently'))"

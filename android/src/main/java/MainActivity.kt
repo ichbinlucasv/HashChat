@@ -738,10 +738,12 @@ class MainActivity : AppCompatActivity() {
                                 // In a full implementation we would store and pass the actual exported blob here
                                 // =====================================================================
                                 // EXTREME OPSEC WARNING (crit-2 / Tier 1): HARDCODED DEMO PASSPHRASE
-                                // Now routed through the single guarded helper (tied to strict mode).
-                                // This is the last remaining usage surface for groups.
-                                // Wave 2: Prefer GroupSenderKey paths. This old ratchetImportEncrypted call is legacy.
+                                // Wave 7 deep: This legacy path is actively being removed. Under Extreme mode we refuse it entirely.
+                                // Goal: full replacement with real Keystore user-derived flow or hard-fail groups outside demo.
                                 // =====================================================================
+                                if (EXTREME_MODE) {
+                                    throw IllegalStateException("EXTREME MODE: Legacy group ratchet import disabled")
+                                }
                                 try {
                                     HashChatNative.ratchetImportEncrypted(rid, getInsecureGroupDemoPassphrase(), ByteArray(0))
                                 } catch (e: Exception) {
@@ -880,6 +882,11 @@ class MainActivity : AppCompatActivity() {
                     1 -> Toast.makeText(this, "E2EE sender-key + Tor + Keystore ratchet", Toast.LENGTH_SHORT).show()
                     2 -> onScanGroupQR(findViewById(android.R.id.content))
                     3 -> {
+                        // Wave 7 deep: Extreme mode refuses all group member management
+                        if (EXTREME_MODE) {
+                            Toast.makeText(this, "EXTREME MODE: Group member operations disabled for minimal surface.", Toast.LENGTH_LONG).show()
+                            return@setItems
+                        }
                         // Tier 1 Very High: strict mode gate for adding group members (new ratchets + persistence)
                         if (HashChatNative.shouldRefuseInStrictMode("groups")) {
                             Toast.makeText(this, "STRICT MODE: Add member REFUSED (bad environment)", Toast.LENGTH_LONG).show()
