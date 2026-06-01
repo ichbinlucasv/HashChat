@@ -148,6 +148,16 @@ See `THREATMODEL.md` for why this matters.
 
 For maximum security on any of these OSes, combine with the dynamic posture checks and nuclear wipe.
 
+**Quick Audio Enable One-Liners (for Voice on Desktop)**
+
+- **Fedora**: `sudo dnf install pipewire-utils alsa-utils && systemctl --user restart pipewire`
+- **Ubuntu 22.04+**: `sudo apt install pipewire pipewire-pulse wireplumber alsa-utils && systemctl --user restart pipewire`
+- **Arch**: `sudo pacman -S pipewire pipewire-pulse wireplumber alsa-utils && systemctl --user enable --now pipewire`
+- **Tails**: Audio is usually available; if not, use the "Configure" screen in Tails to enable it.
+- **Qubes**: In the template (preferably Fedora), run `sudo dnf install pipewire-utils alsa-utils`. Then in the HashChat qube: `qvm-service --enable <qube> audio`. Disposables need audio enabled in the template first.
+
+After enabling audio, run `./run-tui` — it will now clearly tell you which recorder is available.
+
 **Detailed per-OS Desktop Notes (Fedora / Ubuntu / Arch / Tails / Qubes)**
 
 **Fedora (40+ recommended)**:

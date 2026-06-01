@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 #
 # HashChat - Easy installation script for Fedora
-# This installs all dependencies, builds Rust + Haskell, and sets everything up.
+# (Also useful as reference for Ubuntu/Arch users — adapt package names)
+#
+# For normal users on other distros:
+# - Ubuntu: See INSTALL.md "Normal User Quick Path" + the new audio one-liners
+# - Arch:   Prefer Nix or adapt this script (pacman equivalents)
+# - Tails/Qubes: Use the dedicated qubes-build.sh or copy a pre-built Flatpak
 #
 # Usage:
 #   chmod +x install-fedora.sh

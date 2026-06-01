@@ -760,10 +760,10 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
       let status = if isJust mAudio then "real desktop mic" else "placeholder (no recorder available)"
       liftIO $ putStrLn $ "[VOICE] Voice chunk processed with ratchet streaming (" ++ status ++ ")."
 
-      -- C item 3 completed in this deep pass: Send the recorded voice over the ratchet + Tor (using per-profile proxy from D)
-      -- This completes the end-to-end voice flow on desktop for the current contact.
+      -- Item 1: Visual "sending voice..." UX polish + per-contact feedback
       when (currentContact s /= "") $ do
         let contact = currentContact s
+        liftIO $ putStrLn $ "[VOICE] Sending voice to " ++ contact ++ " ... (using per-profile proxy)"
         let prof    = currentProfile s
         let pass    = passForSession s
 
@@ -797,8 +797,8 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
         let currentProxy = Map.findWithDefault defaultProxyForProfile (currentProfile s) (proxies s)
         result <- liftIO $ try (Tor.sendOverProxy currentProxy targetOnion framedVoice)
         case result of
-          Left err -> liftIO $ putStrLn $ "[VOICE] ERROR sending voice chunk: " ++ show (err :: SomeException)
-          Right _  -> liftIO $ putStrLn $ "[VOICE] ✓ Real voice chunk sent over ratchet + Tor to " ++ contact ++ " using per-profile proxy."
+          Left err -> liftIO $ putStrLn $ "[VOICE] ERROR sending voice to " ++ contact ++ ": " ++ show (err :: SomeException)
+          Right _  -> liftIO $ putStrLn $ "[VOICE] ✓ Voice sent successfully to " ++ contact ++ " (proxy active for this profile)."
 
 -- Full multi-member group UI + sender keys (Simplex-style) — 'g' key opens menu
 handleEvent (VtyEvent (V.EvKey (V.KChar 'g') [])) = do
