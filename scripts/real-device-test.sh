@@ -106,6 +106,13 @@ cat > "$LOG_FILE" << EOF
 - [ ] Send works over I2P SOCKS
 - Observations:
 
+### 11. Fedora Desktop Test (for marketplace photos + evidence)
+- [ ] Run with HASHCHAT_DEMO=1 ./run-tui or prep script
+- [ ] Capture shots: main (E2EE badges, posture, proxy), refusal, voice wipe, groups, actions
+- [ ] Icons rasterized with rsvg-convert
+- [ ] OPSEC: clean-security before/after
+- Observations / photos taken:
+
 ---
 
 ## Overall Result

@@ -103,12 +103,12 @@ initialState =
                      ]
       demoMessages = if isDemo 
                      then Map.fromList 
-                       [ ("Alice", [ Message 1 (BS.pack (map (fromIntegral . fromEnum) "Alice")) (BS.pack (map (fromIntegral . fromEnum) "Hey, using HashChat on Fedora for screenshots. Tor v3 + Double Ratchet active. Security Posture: MAX PARANOID.")) (BS.pack []) 0 False Nothing 5
-                                   , Message 2 (BS.pack (map (fromIntegral . fromEnum) "You")) (BS.pack (map (fromIntegral . fromEnum) "Gold bubbles look great in black+gold theme. Explicit wipe feedback on voice.")) (BS.pack []) 0 False Nothing 6
-                                   , Message 4 (BS.pack (map (fromIntegral . fromEnum) "Alice")) (BS.pack (map (fromIntegral . fromEnum) "Group QR ready? Sender keys working for multi-member.")) (BS.pack []) 0 False Nothing 8
+                       [ ("Alice", [ Message 1 (BS.pack (map (fromIntegral . fromEnum) "Alice")) (BS.pack (map (fromIntegral . fromEnum) "Hey, using HashChat on Fedora for screenshots. Tor v3 + Double Ratchet active. Security Posture: MAX PARANOID.")) (BS.pack [0xE2,0xEE]) 0 False Nothing 5
+                                   , Message 2 (BS.pack (map (fromIntegral . fromEnum) "You")) (BS.pack (map (fromIntegral . fromEnum) "Gold bubbles look great in black+gold theme. Explicit wipe feedback on voice.")) (BS.pack [0xE2,0xEE]) 0 False Nothing 6
+                                   , Message 4 (BS.pack (map (fromIntegral . fromEnum) "Alice")) (BS.pack (map (fromIntegral . fromEnum) "Group QR ready? Sender keys working for multi-member.")) (BS.pack [0xE2,0xEE]) 0 False Nothing 8
                                    ])
-                       , ("Bob", [ Message 3 (BS.pack (map (fromIntegral . fromEnum) "Bob")) (BS.pack (map (fromIntegral . fromEnum) "Group QR ready? Sender keys working.")) (BS.pack []) 0 False Nothing 7 ])
-                       , ("Support", [ Message 5 (BS.pack (map (fromIntegral . fromEnum) "Support")) (BS.pack (map (fromIntegral . fromEnum) "Posture refusal demo: try 'v' in low env.")) (BS.pack []) 0 False Nothing 9 ])
+                       , ("Bob", [ Message 3 (BS.pack (map (fromIntegral . fromEnum) "Bob")) (BS.pack (map (fromIntegral . fromEnum) "Group QR ready? Sender keys working.")) (BS.pack [0xE2,0xEE]) 0 False Nothing 7 ])
+                       , ("Support", [ Message 5 (BS.pack (map (fromIntegral . fromEnum) "Support")) (BS.pack (map (fromIntegral . fromEnum) "Posture refusal demo: try 'v' in low env.")) (BS.pack [0xE2,0xEE]) 0 False Nothing 9 ])
                        ]
                      else Map.empty
       demoGroups = if isDemo 
