@@ -11,7 +11,9 @@ All new development, issues, releases, and CI now happen on **Codeberg**. GitHub
 
 > **Migration note**: The project has moved its primary home to Codeberg for better alignment with privacy-focused development. All links and processes have been updated.
 
-**Presidential-grade anonymous messenger** — SimplexChat-level UI/UX + Session-style metadata resistance, powered by a Rust Double Ratchet core + Tor v3 hidden services.
+**Presidential-grade anonymous messenger** — Strong SimplexChat-style feature parity (burner profiles, groups with sender keys, contact actions, voice, QR-style sharing) with Session-like metadata resistance. Powered by a Rust Double Ratchet core + Tor v3 hidden services.
+
+Note on "look": The desktop version is a powerful text-based TUI (black + gold theme, dense security information, explicit OPSEC cues). It prioritizes minimal attack surface and information density over graphical polish. It does not look like a modern GUI messenger (e.g. SimplexChat desktop). This is intentional for the threat model.
 
 **No phone numbers. No user IDs. No central servers. No logs. No metadata.**
 
