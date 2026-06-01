@@ -25,8 +25,13 @@ This release delivers on the core promise: maximum resistance to surveillance, d
 - Desktop TUI: live posture indicators (title + status line) + refresh on key events.
 - Partial mlock attempt on Android Rust side.
 - **Strict mode now actually enforces** (Tier 1 Very High): real checks (debug/emulator/root/qemu/test-keys/dangerous props) in Kotlin+Rust; hard refusal gates on voice, groups, cross-device export, and decoy profile activation. Wired and tested.
-- **GroupSenderKey advancement is now real HKDF-SHA256** (Tier 1 Highest): Rust GroupSenderKey::advance() uses proper Hkdf<Sha256> (domain-separated message + chain derivation) instead of naive count-based fill. Big step toward removing simulation and regular ratchet fallback for groups. (Haskell side still simulated; full demo-pass removal in Kotlin persistence paths remains a Tier 2 gap with loud warnings.)
-- **Wave 6 deep progress on all recommendations**: Extreme profile implementation expanded (real flag + multiple hard gates in Android + TUI notes), pre-tag-check now hard-fails on missing local evidence marker, VoiceStream per-stream management + cleanup notes added, more docs (THREATMODEL, TESTING_STRATEGY, EXTREME_PROFILE) updated with honest state. Full ritual maintained across all waves.
+- **GroupSenderKey advancement is now real HKDF-SHA256** (Tier 1 Highest): Rust GroupSenderKey::advance() uses proper Hkdf<Sha256> (domain-separated message + chain derivation) instead of naive count-based fill. Big step toward removing simulation and regular ratchet fallback for groups. (Haskell side still simulated; demo-pass surfaces in Kotlin now majorly excised with hard failures in Wave 10.)
+- **Wave 10 / Critical recommendations progress**: 
+  - Real long-term per-profile identity keypair for ContactAddress / profile sharing (Critical): Rust LongTermIdentity (ed25519 + x25519, Argon2id+AES envelope), FFI, Haskell Core integration, TUI :my-contact now uses real stable ed25519 pub (replaced random placeholder). See docs/CONTACT_ADDRESS_LONGTERM_KEYS.md and THREATMODEL update.
+  - Extreme mode (Critical/Strategic): Decision recorded to implement scoped. Runtime flag in Core, TUI :extreme on/off + hard gates on groups/voice/contact-QR, title indicator, wipe integration. Basic but functional in TUI path. See docs/EXTREME_PROFILE_DECISION.md.
+  - Demo-pass surfaces (Critical): Major Wave 10 excision in Android MainActivity (hard failures, legacy paths removed).
+  - Real hardware testing framework (Critical): scripts/real-device-test.sh + docs/REAL_DEVICE_TESTING.md created for required evidence logs.
+- Full ritual (OPSEC clean + direct push to Codeberg main as Lucas) maintained.
 - Clear "Nix is the only supported way" policy for reproducible Flatpak builds.
 
 **OPSEC Highlights**:
@@ -42,8 +47,10 @@ This is a preview release. The following are still weak or incomplete (see exper
 - Voice completeness: Real mic recording + JNI ratchet encrypt now on Android (cacheDir, immediate plaintext delete after read). TUI playback uses real ffplay + waitForProcess (fake progress loop removed); recording remains demo/placeholder on desktop (explicitly labeled). Per-chunk ratchet wipe feedback present on both.
 - Android mlock: This remains a significant and honestly documented limitation. On Android, full mlockall is not reliable for normal apps. The current code only performs a best-effort single-pointer mlock that can silently fail. Real memory protection on Android comes from Keystore + app-private storage + short data lifetime + ZeroizeOnDrop + process death on wipe, not from mlock. See the expanded section in THREATMODEL.md and the detailed comments in android/src/main/rust/src/lib.rs.
 - Kotlin instrumented tests: Mostly structural skeletons (assertTrue placeholders remain in places). Need real-device runs + actual assertions (polish-1).
+- Long-term ContactAddress identity: Core implemented (Rust + TUI integration); full per-profile persistence + Android + X3DH usage still polishing.
 - Screenshots: Detailed capture instructions + 4 descriptive slots in metainfo.xml created (docs/SCREENSHOTS.md). Actual images still needed.
-- No SBOM or formal supply-chain auditing yet (arch-3).
+- SBOM process: generate-sbom.sh exists; formal diff review between tags still needed for signed v0.2 (see RELEASE_PROCESS).
+- Extreme mode: Basic TUI support; full cross-platform + tests pending.
 - Not recommended for high-risk operational use without additional review.
 
 See THREATMODEL.md for the full honest threat model.
