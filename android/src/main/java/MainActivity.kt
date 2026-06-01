@@ -867,6 +867,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showGroupMemberActions(position: Int) {
+        // Wave 7 ALL: Extreme mode completely disables group member management
+        if (EXTREME_MODE) {
+            Toast.makeText(this, "EXTREME MODE: Group operations disabled for minimal attack surface.", Toast.LENGTH_LONG).show()
+            return
+        }
         AlertDialog.Builder(this)
             .setTitle("Group Member Actions (full persistence + Simplex parity)")
             .setItems(arrayOf("Remove member (wipe sender key + persist)", "View ratchet info", "Generate/Scan QR", "Add member", "Leave group (wipe + persist)")) { _, which ->

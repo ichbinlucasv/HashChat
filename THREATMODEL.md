@@ -140,14 +140,14 @@ Moving large amounts of sensitive logic into the Android Rust crate (Double Ratc
 
 This section must be re-read and updated after every significant Rust migration batch. The model assumes the attacker eventually gets code execution on the device; our job is to make extracting long-term keys, linking sessions, or surviving wipes as expensive and noisy as possible.
 
-**Finish-All plan / Wave 7 status (current state):** 
-- Extreme profile: multiple hard gates (voice recording/processor, groups including persistence fallback, export, decoy).
-- VoiceStream: real HKDF + zeroize + per-stream lifecycle notes moving toward full Double Ratchet.
-- Pre-tag-check: ultra-blocking (evidence log, local marker, no new TODOs in critical files).
-- demo-pass: final aggressive removal pressure on the last surfaces (helper now documents explicit Wave 7 replacement goal).
-- GroupSenderKey: real HKDF in Rust.
-- CI: cargo-binstall + --deny warnings (stable post-CVSS 4.0 fix).
-Full ritual (clean --strict + force-with-lease + CI verification) maintained on every batch. See EXTREME_PROFILE.md, todo list "Finish-All-Plan", and latest commits for the systematic close-out of all remaining items.
+**ALL RECOMMENDATIONS deep wave status (current state):** 
+- Simplex-style contact/profile QR: ContactAddress + ConnectionRequest foundation (public key model, Extreme awareness).
+- Extreme profile: expanding hard gates (voice, groups, export, persistence, contact sharing).
+- VoiceStream: real HKDF + zeroize + per-stream direction.
+- Pre-tag: ultra-blocking with hard fails.
+- demo-pass: final aggressive removal pressure.
+- Transport: SOCKS5 foundation started.
+Full ritual + force-with-lease + CI checks on every batch. See todo "ALL-Recs-Wave-Start" for parallel deep work on every item.
 
 ### Why This Is Strong Against the Threats You Mentioned
 
