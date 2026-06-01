@@ -62,7 +62,7 @@
 - **Evidence / CI gates**: pre-tag-check.sh has hard exits for TESTING_EVIDENCE*.log and local .pre-tag-check-local-ran-<SHA> marker. Workflow audit step hardened (no more silent || true). Marker CI enforcement still future comment but pre-tag makes it blocking for any signed tag.
 - **Supply chain**: cargo-binstall unpinned (CVSS 4.0 robust), ghcup SHA pinned, .so staging fail-hard. Still no reproducible Android .so or SBOM diff automation in CI.
 
-These close more of the original expert table (transport priorities, Simplex QR alignment, pre-tag enforcement, demo surface pressure). Remaining high-leverage: real long-term identity keys for ContactAddress, full VoiceStream per-stream Double Ratchet lifecycle in Rust, I2P actual start code, Extreme as first-class TUI profile, v0.2 signed tag with real-hardware evidence.
+These close more of the original expert table (transport priorities, Simplex QR alignment, pre-tag enforcement, demo surface pressure). Wave 10 progress: ContactAddress long-term keys full (Rust + TUI + Android parity for stable pub), Extreme scoped full in TUI (flag/cmd/gates/posture/state) + Android (setter/toggle/gates) + Rust (static/FFI/gates in ratchet/voice), VoiceStream advancing (per-stream elements + explicit end zeroize in Android Rust, call on playback). Remaining: full per-profile long-term persist + X3DH, complete VoiceStream per-stream + destroy everywhere, I2P actual, Android mlock full, real-hardware evidence logs (template ready), v0.2 tag.
 
 ### 3. Device Compromise / "Pegasus" Resistance
 **Best we can do (and what we are building toward):**
