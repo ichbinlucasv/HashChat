@@ -789,9 +789,9 @@ class MainActivity : AppCompatActivity() {
             // This is progress toward removing it entirely.
             throw IllegalStateException("STRICT MODE: demo-pass group persistence path is refused. Migrate to user-derived + Keystore.")
         }
-        // Still allowed only in clearly bad/dev environments (the original intent of the demo).
-        // Wave 6/7: We are actively removing the last usages. Next step = full user-derived + Keystore roundtrip or complete removal.
-        android.util.Log.w("HashChat", "LAST DEMO-PASS USAGE: group persistence path. This string must disappear before v0.2 final.")
+        // Wave 6 Finish / Wave 7 Launch: This is the final controlled surface for the last demo-pass.
+        // Goal for Wave 7: replace with real user-derived + HashChatKeystore roundtrip or hard-fail the entire group feature outside explicit demo builds.
+        android.util.Log.w("HashChat", "LAST DEMO-PASS USAGE (Wave 6/7): group persistence path. Must be removed before v0.2 final.")
         return DEMO_INSECURE_RATCHET_PASSPHRASE.toByteArray()
     }
 

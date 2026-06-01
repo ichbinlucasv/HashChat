@@ -52,4 +52,4 @@ This is no longer pure design — first real code enforcement exists.
 
 **Owner**: Continue expanding gates in subsequent waves. Update after philosophy decision.
 
-Last updated: Wave 5 deep push on all recommendations.
+Last updated: Wave 6 Finish + Wave 7 Launch deep push on all recommendations.
