@@ -80,6 +80,16 @@ Contributions are very welcome — especially in the remaining polish areas abov
 
 ---
 
+## Transport Expansion (Wave 7+)
+
+Major ongoing work to give users strong anonymity flexibility:
+
+- SOCKS5 proxy support (foundation) — allows routing through user Tor, I2P, Proton, Mullvad, IVPN, etc.
+- I2P as first-class transport (high strategic value).
+- Better Tor bridge / pluggable transport support.
+
+These features are being built in a way that preserves the core metadata-resistant model and integrates with the Extreme profile.
+
 ## Post-v0.2 Philosophy Decision Required (Tier 3)
 
 Before the next major phase we must explicitly decide the Android vs Desktop TUI strategy:
