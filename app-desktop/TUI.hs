@@ -94,7 +94,9 @@ data AppState = AppState
 
 initialState :: AppState
 initialState = 
-  let isDemo = unsafePerformIO (lookupEnv "HASHCHAT_DEMO") /= Nothing
+  let demoEnv = unsafePerformIO (lookupEnv "HASHCHAT_DEMO")
+      isDemo = demoEnv /= Nothing
+      demoMode = maybe "" id demoEnv  -- e.g. "main", "refusal", "voice", "groups", "actions" for specific marketplace shots
       demoContacts = [ Contact.defaultContact "Alice" "Alice" "alicehashchatv3example.onion"
                      , Contact.defaultContact "Bob"   "Bob"   "bobhashchatv3example.onion"
                      , Contact.defaultContact "Support" "Support" "supportv3hashchatdemo.onion"
@@ -103,21 +105,28 @@ initialState =
                      then Map.fromList 
                        [ ("Alice", [ Message 1 (BS.pack (map (fromIntegral . fromEnum) "Alice")) (BS.pack (map (fromIntegral . fromEnum) "Hey, using HashChat on Fedora for screenshots. Tor v3 + Double Ratchet active. Security Posture: MAX PARANOID.")) (BS.pack []) 0 False Nothing 5
                                    , Message 2 (BS.pack (map (fromIntegral . fromEnum) "You")) (BS.pack (map (fromIntegral . fromEnum) "Gold bubbles look great in black+gold theme. Explicit wipe feedback on voice.")) (BS.pack []) 0 False Nothing 6
+                                   , Message 4 (BS.pack (map (fromIntegral . fromEnum) "Alice")) (BS.pack (map (fromIntegral . fromEnum) "Group QR ready? Sender keys working for multi-member.")) (BS.pack []) 0 False Nothing 8
                                    ])
                        , ("Bob", [ Message 3 (BS.pack (map (fromIntegral . fromEnum) "Bob")) (BS.pack (map (fromIntegral . fromEnum) "Group QR ready? Sender keys working.")) (BS.pack []) 0 False Nothing 7 ])
+                       , ("Support", [ Message 5 (BS.pack (map (fromIntegral . fromEnum) "Support")) (BS.pack (map (fromIntegral . fromEnum) "Posture refusal demo: try 'v' in low env.")) (BS.pack []) 0 False Nothing 9 ])
                        ]
                      else Map.empty
       demoGroups = if isDemo 
                    then Map.fromList [("DemoGroup", [101,102])]
                    else Map.empty
       demoPosture = if isDemo 
-                    then "MAX PARANOID (Tails/Qubes + Tor recommended) [DEMO for screenshots]"
+                    then case demoMode of
+                           "refusal" -> "STANDARD / LOW (High risk environment — use with extreme caution) [DEMO: POSTURE REFUSAL]"
+                           "voice"   -> "MAX PARANOID (Tails/Qubes + Tor recommended) [DEMO: VOICE + WIPE]"
+                           _         -> "MAX PARANOID (Tails/Qubes + Tor recommended) [DEMO for screenshots]"
                     else "MAX PARANOID (Tails/Qubes + Tor recommended)"
+      demoCurrentGroup = if isDemo && (demoMode == "groups" || demoMode == "main") then Just "DemoGroup" else Nothing
+      demoActionPending = isDemo && demoMode == "actions"
   in AppState
   { currentProfile = "Default"
   , profiles       = Map.empty
   , messages       = demoMessages
-  , input          = ""
+  , input          = if isDemo && demoMode == "voice" then "[VOICE] Recording... (demo)" else ""
   , inputHistory   = []
   , historyIndex   = -1
   , currentContact = if isDemo then "Alice" else "Alice"
@@ -126,12 +135,12 @@ initialState =
   , sessionPass    = BS.pack []   -- will be set during unlock in appStartEvent
   , securityPosture = demoPosture
   , blockedContacts = []
-  , actionPending   = False
+  , actionPending   = demoActionPending
   , incomingBlobs   = unsafePerformIO (newMVar [])   -- real cross-thread queue for Tor receive
   , contacts        = demoContacts
   , groups          = demoGroups
-  , currentGroup    = if isDemo then Just "DemoGroup" else Nothing
-  , proxies         = Map.empty   -- D: starts with default (local Tor) for all profiles
+  , currentGroup    = demoCurrentGroup
+  , proxies         = if isDemo then Map.singleton "Default" (Tor.Socks5Proxy "127.0.0.1" 9050) else Map.empty   -- D: demo proxy for marketplace shots showing custom transport
   }
 
 -- === Real Encrypted Ratchet Persistence (Argon2id + AES-GCM) ===
@@ -247,7 +256,7 @@ drawUI st =
 
 drawMain :: AppState -> Widget Name
 drawMain st = vBox
-  [ withAttr (attrName "title") $ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ (maybe "" (" | Group: " ++) (currentGroup st)) ++ (if unsafePerformIO isExtremeMode then " [EXTREME]" else "") ++ "  [p=burner n=new D=decoy g=group w=wipe a=actions] (TOR-ONLY | Double Ratchet + Tor v3 + Sender Keys) Security: " ++ securityPosture st ++ (if actionPending st then " [ACTIONS MENU ACTIVE]" else "") ++ " [posture live]"  -- med-8 desktop parity note
+  [ withAttr (attrName "title") $ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ (maybe "" (" | Group: " ++) (currentGroup st)) ++ (if unsafePerformIO isExtremeMode then " [EXTREME]" else "") ++ (case Map.lookup (currentProfile st) (proxies st) of Just (Tor.Socks5Proxy h p) -> " | Proxy: " ++ h ++ ":" ++ show p; _ -> "") ++ "  [p=burner n=new D=decoy g=group w=wipe a=actions] (TOR-ONLY | Double Ratchet + Tor v3 + Sender Keys) Security: " ++ securityPosture st ++ (if actionPending st then " [ACTIONS MENU ACTIVE]" else "") ++ " [posture live]"  -- med-8 desktop parity note
   , hBox
       [ borderWithLabel (withAttr (attrName "highlight") $ str " Contacts (Simplex-style: long-press equiv = 'a') | Groups: g") $
           vBox (map (str . showContact (blockedContacts st)) ["Alice", "Bob", "Support"])
@@ -259,7 +268,9 @@ drawMain st = vBox
   , str " "
   , if "LOW" `isInfixOf` securityPosture st || "DEGRADED" `isInfixOf` securityPosture st
       then withAttr (attrName "danger") $ str "[!! POSTURE DEGRADED — Sensitive actions restricted !!]"
-      else str ""
+      else if "EXTREME" `isInfixOf` securityPosture st || unsafePerformIO isExtremeMode
+           then withAttr (attrName "danger") $ str "[!! EXTREME MODE — Groups/voice/export/decoy/history disabled, strict forced !!]"
+           else str ""
   , str " "  -- extra visual separation for posture status block (med-8 / polish-3)
   -- Additional status indicators for consistency with Android top-bar (voice wipe ready, OPSEC ritual)
   , withAttr (attrName "title") $ str "[Voice: real mic on Android / demo TUI | Wipe: explicit post-playback + nuclear 'w' | OPSEC: clean-security enforced]"

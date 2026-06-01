@@ -38,12 +38,16 @@
 - Long-press equivalent: full list (Block, Report, Delete, Mute, Disappearing timer, Security Info / ratchet step / E2EE posture)
 
 **Capture tip (Fedora desktop for marketplace)**: 
-- Install: `sudo dnf install grim slurp gnome-screenshot`
-- Prep: `HASHCHAT_DEMO=1 ./scripts/screenshot-prep-fedora.sh` (or direct: `HASHCHAT_DEMO=1 ./run-tui` after Tor; resizes term for 120x40+).
-- Capture: `grim -g "$(slurp)" hashchat-tui-main.png` (select window) or `gnome-screenshot -a`.
-- For refusal/voice demos: Trigger 'v'/'g' (or temp force LOW posture in getSecurityPosture).
-- Optimize: `optipng *.png` or `pngcrush`.
-- Fedora/Flathub: Upload to Codeberg releases or your host; replace in flatpak/org.hashchat.HashChat.metainfo.xml (see script for exact). Use black+gold theme exactly.
+- Install: `sudo dnf install grim slurp gnome-screenshot optipng`
+- Prep (recommended): `HASHCHAT_DEMO=main ./scripts/screenshot-prep-fedora.sh` (handles Tor, build hint, demo states for exact shots).
+- Specific shots (resize term ~120x40+):
+  - Main: `HASHCHAT_DEMO=main ./run-tui` → grim ...
+  - Refusal: `HASHCHAT_DEMO=refusal ./run-tui` (or temp force LOW in getSecurityPosture for 'v'/'g' trigger).
+  - Voice: `HASHCHAT_DEMO=voice ./run-tui` → 'v' then playback.
+  - Groups/QR + actions: `HASHCHAT_DEMO=groups ./run-tui` then 'g'/'a'.
+- Capture: `grim -g "$(slurp -o)" hashchat-tui-xxx.png` or `gnome-screenshot -a`.
+- Optimize: `optipng *.png`.
+- Fedora/Flathub: Upload to Codeberg releases (or host); replace example.com in flatpak/org.hashchat.HashChat.metainfo.xml with real https://... . Use exact black+gold theme. See prep script for icon raster (rsvg-convert) and Flatpak submit steps.
 
 ## Android Screenshots (Recommended 4 shots)
 
