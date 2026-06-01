@@ -2,6 +2,9 @@
 
 Thank you for your interest in HashChat — a maximum-anonymity messenger built with Haskell + Rust.
 
+**Primary development happens on Codeberg**: https://codeberg.org/ichbinlucasv/HashChat  
+GitHub is maintained only as a read-only mirror.
+
 ## Code of Conduct
 
 - Security first. Always.

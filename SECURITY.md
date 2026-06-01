@@ -2,6 +2,9 @@
 
 HashChat is a **maximum-anonymity** messenger. Security is the #1 priority.
 
+**Primary repository**: https://codeberg.org/ichbinlucasv/HashChat  
+**Mirror**: https://github.com/ichbinlucasv/HashChat
+
 ## Supported Versions
 
 Only the latest `main` branch is supported for security issues.

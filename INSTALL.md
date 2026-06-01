@@ -1,5 +1,11 @@
 # HashChat Installation Guide
 
+**Repository Status**
+- **Primary**: https://codeberg.org/ichbinlucasv/HashChat
+- **Mirror**: https://github.com/ichbinlucasv/HashChat (read-only)
+
+All development happens on Codeberg. GitHub is kept only as a mirror.
+
 ## For Fedora (Recommended Easy Method)
 
 ```bash

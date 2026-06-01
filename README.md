@@ -3,6 +3,12 @@
 > **Maximum-anonymity messenger** built with Haskell + Rust.
 > See [SECURITY.md](SECURITY.md) before contributing.
 
+**Repository Status (as of 2026)**
+- **Primary**: https://codeberg.org/ichbinlucasv/HashChat
+- **Mirror**: https://github.com/ichbinlucasv/HashChat (kept for discoverability)
+
+All new development, issues, and releases happen on Codeberg. GitHub is maintained as a read-only mirror.
+
 **Presidential-grade anonymous messenger** — SimplexChat-level UI/UX + Session-style metadata resistance, powered by a Rust Double Ratchet core + Tor v3 hidden services.
 
 **No phone numbers. No user IDs. No central servers. No logs. No metadata.**
