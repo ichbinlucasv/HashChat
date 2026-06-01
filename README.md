@@ -11,6 +11,23 @@ All new development, issues, releases, and CI now happen on **Codeberg**. GitHub
 
 > **Migration note**: The project has moved its primary home to Codeberg for better alignment with privacy-focused development. All links and processes have been updated.
 
+---
+
+**For Normal Users (Fedora / Ubuntu / Arch / Tails / Qubes)**
+
+You don't need to be a security researcher to use this.
+
+Quick start:
+1. `git clone https://codeberg.org/ichbinlucasv/HashChat.git`
+2. `./run-tui` (it will guide you on audio and Tor)
+3. Press `n` for a burner profile
+4. Press `v` to test voice recording (real mic on most modern desktops)
+5. Use `:set-proxy` if you're in Qubes or behind a VPN
+
+The TUI is text-based but deliberately designed to be usable by normal people on the 5 recommended OSes while keeping the paranoid security model. Full GUI is not planned unless it can be done without increasing attack surface.
+
+See the expanded "Desktop Runtime Notes" section in INSTALL.md for your specific OS.
+
 **Presidential-grade anonymous messenger** — Strong SimplexChat-style feature parity (burner profiles, groups with sender keys, contact actions, voice, QR-style sharing) with Session-like metadata resistance. Powered by a Rust Double Ratchet core + Tor v3 hidden services.
 
 Note on "look": The desktop version is a powerful text-based TUI (black + gold theme, dense security information, explicit OPSEC cues). It prioritizes minimal attack surface and information density over graphical polish. It does not look like a modern GUI messenger (e.g. SimplexChat desktop). This is intentional for the threat model.

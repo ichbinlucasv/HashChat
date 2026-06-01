@@ -8,6 +8,31 @@ All development happens on **Codeberg**. GitHub is kept only as a read-only mirr
 
 > The project has migrated its primary home to Codeberg. Use the Codeberg clone for all new work.
 
+---
+
+**Normal User Quick Path (Recommended for most people on these OSes)**
+
+You do **not** need to be an expert.
+
+1. Clone from Codeberg (primary):
+   ```bash
+   git clone https://codeberg.org/ichbinlucasv/HashChat.git
+   cd HashChat
+   ```
+
+2. Run the improved launcher:
+   ```bash
+   ./run-tui
+   ```
+   It will tell you exactly what audio backends and Tor status you have.
+
+3. Inside the TUI:
+   - Press `n` → create a burner profile
+   - Press `v` → test real voice recording (works on modern Fedora/Ubuntu/Arch via PipeWire)
+   - Use `:set-proxy 127.0.0.1 9050` if needed (very useful in Qubes)
+
+See the big "Desktop Runtime Notes per OS" section below for your specific operating system.
+
 ## For Fedora (Recommended Easy Method)
 
 ```bash

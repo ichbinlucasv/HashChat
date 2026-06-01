@@ -272,7 +272,14 @@ isJust _        = False
 
 drawHelp :: Widget Name
 drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll 1 $ vBox
-  [ str "Enter          → Send encrypted message (real ratchet + AES-GCM)"
+  [ withAttr (attrName "success") $ str "=== Normal User Quick Start (Fedora/Ubuntu/Arch/Tails/Qubes) ==="
+  , str "1. Run ./run-tui  → it shows your audio backends and Tor status"
+  , str "2. Press 'n' to create a burner profile"
+  , str "3. Press 'v' to test voice (real mic if pw-record/parecord/arecord available)"
+  , str "4. Use :set-proxy 127.0.0.1 9050 if you need custom transport (Qubes/Tails)"
+  , str "5. '?' toggles this help. 'w' is the nuclear wipe (use it!)"
+  , str ""
+  , str "Enter          → Send encrypted message (real ratchet + AES-GCM)"
   , str "Backspace      → Delete char"
   , str "Esc / q        → Quit"
   , str "?              → Toggle this help"
@@ -1022,7 +1029,16 @@ app = App
 
 main :: IO ()
 main = do
-  putStrLn "Starting HashChat TUI with real message system + persistence..."
+  putStrLn "=== HashChat Desktop TUI ==="
+  putStrLn "For normal users on Fedora/Ubuntu/Arch/Tails/Qubes:"
+  putStrLn "  1. Make sure Tor is running with ControlPort 9051"
+  putStrLn "  2. Run this launcher: ./run-tui"
+  putStrLn "  3. It will show your audio backends and basic status"
+  putStrLn "  4. Press '?' anytime for help. Start with a burner profile (n key)."
+  putStrLn "  5. Use :set-proxy if you need custom transport (e.g. in Qubes)"
+  putStrLn ""
+  putStrLn "Paranoid users: Always run clean-security.sh before/after sensitive sessions."
+  putStrLn "Starting with real message system + persistence..."
   -- Mix of direct + qualified to handle vty version differences
   initialVty <- mkVty V.defaultConfig
   void $ customMain initialVty (mkVty V.defaultConfig) Nothing app initialState
