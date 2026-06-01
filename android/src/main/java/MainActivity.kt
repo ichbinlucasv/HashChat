@@ -754,6 +754,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
         if (groups.isEmpty()) {
+            if (EXTREME_MODE) {
+                // Wave 6/7: In Extreme mode we refuse any demo group fallback entirely
+                throw IllegalStateException("EXTREME MODE: No group persistence allowed")
+            }
             // Use the new GroupSenderKey system for demo groups (A3 wiring)
             val gskId = HashChatNative.createGroupSenderKey(HashChatNative.ratchetNew())
             groups["DemoGroup"] = mutableListOf(gskId)
