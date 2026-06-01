@@ -51,7 +51,8 @@
 ### Wave 8 Additions: Simplex-style Contact/Profile QR + Transport Expansion
 - **ContactAddress / profile sharing**: Implemented hashchat://contact/v1/<onion>/<len:hexpub> links + parse/generate roundtrip in Haskell (Contact.hs). Wired into both thin CLI and real Brick TUI (app-desktop/TUI.hs) with :my-contact / :add-contact. ConnectionRequest mirror for the "scanner replies" flow.
   - **Metadata reality**: Only public onion + public identity key in the QR/link. Private material never leaves device. Matches Simplex model and our burner philosophy.
-  - **Remaining gap (brutally honest)**: caPubKey is currently a ratchet-derived placeholder (contactToAddress). Full strength requires per-profile long-term identity keypair (generated/stored in Rust, exported only the pub for QR). Until X3DH-style setup lands, this is "good enough for v0.2-preview" but not maximal.
+  - **Progress on this gap (E)**: Desktop TUI now uses proper cryptographically secure random (via cryptonite) for the pub in generated contact QR links. Android has a basic generator. 
+  - Remaining: Real persisted per-profile long-term signing/identity keypair (XEd25519 or similar) generated and stored securely (Rust + Keystore on Android, equivalent on desktop), with only the public part exported for QR. This is still the biggest open item for full Simplex-style profile sharing strength.
   - Extreme mode: generation should be refused (notes added; full gate pending deeper Android/TUI posture integration).
 - **Transport (SOCKS5 foundation + I2P/bridges path)**: Generalized sendCiphertextOverTor + sendOverProxy(ProxyConfig) in Tor.hs. TUI and callsites updated to use it. Default = local Tor 9050.
   - **I2P**: Documented as next: run i2pd, point Socks5Proxy at its SOCKS port (usually 4444 or 9050-equivalent). Garlic routing gives different metadata/latency profile vs Tor (stronger against some correlation, weaker exit diversity).

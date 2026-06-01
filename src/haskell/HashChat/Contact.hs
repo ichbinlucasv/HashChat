@@ -147,10 +147,12 @@ contactAddressToLink ca =
 -- Returns Nothing if format is invalid or data malformed.
 -- SECURITY MODEL (Simplex-style, Wave 7/8): QR/link carries ONLY public onion + public identity key.
 -- Private ratchet keys + long-term identity secrets stay on device and are never shared.
--- Current deep gap (Wave 8): caPubKey source is still ratchet-derived placeholder (see contactToAddress).
--- Real deployment needs per-profile long-term signing/identity keypair (XEd25519 or similar) generated
--- in Rust, persisted via Keystore, and used here. Until then, this provides good metadata resistance
--- but not the full "one-time or reusable public profile" strength of mature SimplexChat.
+-- Progress on E (as of this wave):
+-- - Desktop TUI now uses proper crypto random (cryptonite getSystemDRG) for the pub in generated QR links.
+-- - Android side has a minimal generator (still fresh random for now).
+-- Remaining: Real persisted per-profile long-term signing/identity keypair (generated + stored securely,
+-- only pub exported for QR). See THREATMODEL "big remaining gap". This is the last major placeholder
+-- for full Simplex-style profile sharing strength.
 parseContactAddress :: String -> Maybe ContactAddress
 parseContactAddress link = do
   guard ( "hashchat://contact/v" `isPrefixOf` link )

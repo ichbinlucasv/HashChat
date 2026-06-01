@@ -60,6 +60,7 @@ import Control.Concurrent.MVar (MVar, newMVar, modifyMVar_, takeMVar, putMVar, n
 import qualified Data.ByteString as BS  -- already present but ensure for clarity
 import qualified Data.ByteString.Char8 as BC
 import System.IO.Unsafe (unsafePerformIO)
+import Crypto.Random (getSystemDRG, randomBytesGenerate)  -- for E: proper long-term identity pub for Contact QR
 import Data.Maybe (listToMaybe, isJust)
 
 data Name = ChatInput | ContactList | Help deriving (Eq, Ord, Show)
@@ -378,10 +379,13 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
             liftIO $ putStrLn "Wave 10: Using fresh random long-term pub for QR (minimal closure of 0xAB dummy). Full persisted per-profile identity keypair + X3DH is next major rec."
             liftIO $ putStrLn "Share this link/QR with friends. They scan -> send ConnectionRequest back to your onion."
             let demoOnion = "myhashchatv3demoaddressforqr.onion"
-            -- E started: Better (non-obvious) random bytes for the long-term pub in the QR.
-            -- Full E: Real persisted per-profile long-term signing/identity keypair
-            -- (generated/stored in Rust, only pub exported for QR). See THREATMODEL "big remaining gap".
-            let longTermPub = BS.pack $ take 32 $ randoms (mkStdGen 42) :: [Word8]  -- simple improvement; real crypto random in next step
+            -- E (finishing): Use proper cryptographically secure random for the long-term pub in the QR.
+            -- This removes the last obvious pattern. Full persisted per-profile long-term keypair
+            -- (Rust + secure storage, only pub exported) remains the end goal (see THREATMODEL).
+            let longTermPub = unsafePerformIO $ do
+                  drg <- getSystemDRG
+                  let (bs, _) = randomBytesGenerate 32 drg
+                  pure bs
             let addr = createContactAddress demoOnion longTermPub
             let link = contactAddressToLink addr
             liftIO $ putStrLn $ "hashchat://contact link (copy or QR this): " ++ link
