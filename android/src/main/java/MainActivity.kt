@@ -351,6 +351,7 @@ class MainActivity : AppCompatActivity() {
                 "Export ratchet for new device (cross-device, STRICT gated)",
                 "Toggle decoy profile (plausible deniability, STRICT gated)",
                 "Share my contact (real long-term identity pub for QR)",
+                "Toggle Extreme mode (ultra stripped, this session)",
                 "Cancel"
             )) { _, which ->
                 when (which) {
@@ -388,6 +389,11 @@ class MainActivity : AppCompatActivity() {
                         val preview = pub.take(8).joinToString("") { "%02x".format(it) }
                         Toast.makeText(this, "My contact pub (ed25519 from real LongTermIdentity): $preview... (use for QR/share like TUI)", Toast.LENGTH_LONG).show()
                         // In full: generate hashchat://contact/v1/<onion>/len:hexpub using the pub and current onion, show QR.
+                    }
+                    9 -> {
+                        EXTREME_MODE = !EXTREME_MODE
+                        HashChatNative.setExtremeMode(EXTREME_MODE)
+                        Toast.makeText(this, "Extreme mode: " + if (EXTREME_MODE) "ON (groups/voice/export/decoy disabled)" else "OFF", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
