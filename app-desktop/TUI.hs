@@ -86,6 +86,8 @@ data AppState = AppState
   , contacts        :: [Contact.Contact]                -- proper onion + pubHint per contact for framing
   , groups          :: Map String [Word32]                  -- groupName -> list of member ratchet IDs (sender keys model)
   , currentGroup    :: Maybe String                         -- active group for multi-member chat
+  -- D: Per-profile proxy store (Wave 9 skeleton now being wired)
+  , proxies         :: ProfileProxyStore                    -- profile -> SOCKS5/I2P/VPN config
   }
 
 initialState :: AppState
@@ -109,6 +111,7 @@ initialState = AppState
                       ]
   , groups          = Map.empty
   , currentGroup    = Nothing
+  , proxies         = Map.empty   -- D: starts with default (local Tor) for all profiles
   }
 
 -- === Real Encrypted Ratchet Persistence (Argon2id + AES-GCM) ===
@@ -402,11 +405,20 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
             modify $ \st -> st { input = "" }
       else if ":set-proxy " `Data.List.isPrefixOf` inputStr
       then do
-        liftIO $ putStrLn "[TRANSPORT] Proxy config command received (Wave 8 foundation)."
-        liftIO $ putStrLn "  Example: :set-proxy 127.0.0.1 9050  (Tor) or I2P SOCKS port or user VPN."
-        liftIO $ putStrLn "  Full per-profile ProxyConfig storage + sendOverProxy wiring is next transport priority."
-        liftIO $ putStrLn "  For now all traffic uses Tor.defaultProxyConfig (local 9050)."
-        modify $ \st -> st { input = "" }
+        let rest = drop (length ":set-proxy ") inputStr
+        let prof = currentProfile s
+        -- Very simple parser for now: "host port" → Socks5Proxy
+        case words rest of
+          [h, pStr] | Just p <- readMaybe pStr -> do
+            let newCfg = Socks5Proxy h p
+            let newProxies = setProfileProxy prof newCfg (proxies s)
+            liftIO $ putStrLn $ "[D] Proxy for profile '" ++ prof ++ "' set to " ++ show newCfg
+            liftIO $ putStrLn "  (Will be used on next send once full wiring in send path is complete.)"
+            modify $ \st -> st { input = "", proxies = newProxies }
+          _ -> do
+            liftIO $ putStrLn "[D] Usage: :set-proxy <host> <port>"
+            liftIO $ putStrLn "  Example: :set-proxy 127.0.0.1 9050"
+            modify $ \st -> st { input = "" }
       else do
         -- Normal message send path (existing)
         currentP <- liftIO getSecurityPosture
