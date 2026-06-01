@@ -52,4 +52,18 @@ This is no longer pure design — first real code enforcement exists.
 
 **Owner**: Continue expanding gates in subsequent waves. Update after philosophy decision.
 
-Last updated: Wave 6 Finish + Wave 7 Launch deep push on all recommendations.
+Wave 7 Simplex-style Contact Sharing update:
+- ContactAddress + ConnectionRequest types added (public onion + public key model, Simplex-inspired).
+- Extreme mode awareness: profile sharing should be disabled by default when EXTREME_MODE is active.
+
+New recommendations (using Simplex as reference while leveraging HashChat strengths):
+- Contact QR = public data only (onion + public identity key). Private key never leaves device.
+- Primary way to add friends should be scanning/sharing these contact QRs (not manual entry).
+- After scanning a contact QR, the app should initiate a secure introduction using the existing Double Ratchet system.
+- In Extreme mode, generating or scanning contact QRs must be hard-disabled.
+- TUI: At minimum show the text link for the contact address; later generate real QR image.
+- Android: Add full generate + scan flow for individual contact QRs (similar to existing group QR).
+- Consider making contact addresses rotatable for stronger metadata resistance over time.
+- Clearly document in THREATMODEL the risks of the QR itself being a metadata vector when shared.
+
+Last updated: Wave 7 deep implementation of Simplex-style profile sharing on top of HashChat architecture.
