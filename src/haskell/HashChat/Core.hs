@@ -31,6 +31,9 @@ module HashChat.Core
   -- Rust Extreme for parity
   , rust_set_extreme_mode
   , rust_is_extreme_mode
+  -- Per-profile proxy persistence (High #4)
+  , exportEncryptedProxy
+  , importEncryptedProxy
   ) where
 
 import Control.Concurrent.STM
@@ -50,6 +53,7 @@ import Foreign.Marshal.Alloc (malloc)
 import Foreign.Marshal.Array (withArray, peekArray, mallocArray, newArray)
 import Foreign.Storable (peek, poke)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
+import HashChat.Tor (ProxyConfig(..), Socks5Proxy(..))
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Unsafe
 import Data.Bits ((.|.), (.&.), testBit, setBit, clearBit)
@@ -634,4 +638,42 @@ readMaybe :: Read a => String -> Maybe a
 readMaybe s = case reads s of
   [(x, "")] -> Just x
   _ -> Nothing
+
+-- === Per-profile Proxy persistence (High #4: make fully functional, stable, working)
+-- Persist per burner using encrypted blob (rust_encrypt_blob_with_passphrase).
+-- Used in send paths. Extreme can force default Tor-only.
+-- UI shows in title/status. :set-proxy persists it.
+
+exportEncryptedProxy :: ProxyConfig -> ByteString -> IO (Maybe ByteString)
+exportEncryptedProxy (Socks5Proxy h p) pass = do
+  let dataStr = BS.pack (map (fromIntegral . fromEnum) (h ++ ":" ++ show p))
+  outPtr <- mallocArray 4096
+  outLenPtr <- malloc
+  poke outLenPtr 4096
+  ok <- withArray (unpack pass) $ \pp ->
+          withArray (unpack dataStr) $ \dp ->
+            rust_encrypt_blob_with_passphrase pp (BS.length pass) dp (BS.length dataStr) outPtr outLenPtr
+  if ok then do
+    actualLen <- peek outLenPtr
+    blob <- peekArray actualLen outPtr
+    pure (Just $ pack blob)
+  else
+    pure Nothing
+
+importEncryptedProxy :: ByteString -> ByteString -> IO (Maybe ProxyConfig)
+importEncryptedProxy blob pass =
+  withArray (unpack pass) $ \pp ->
+    withArray (unpack blob) $ \bp -> do
+      outPtr <- mallocArray 4096
+      outLenPtr <- malloc
+      poke outLenPtr 4096
+      ok <- rust_decrypt_blob_with_passphrase pp (BS.length pass) bp (BS.length blob) outPtr outLenPtr
+      if ok then do
+        len <- peek outLenPtr
+        dec <- peekArray len outPtr
+        let str = map (toEnum . fromIntegral) dec
+        case break (== ':') str of
+          (host, ':' : portStr) | Just p <- readMaybe portStr -> pure (Just (Socks5Proxy host p))
+          _ -> pure Nothing
+      else pure Nothing
 

@@ -154,6 +154,13 @@ getRatchetPath :: ProfileName -> String -> FilePath
 getRatchetPath profile contact =
   combine (getProfileDir profile) (contact ++ ".ratchet.enc")
 
+-- Proxy persistence paths (High #4)
+proxyBaseDir :: FilePath
+proxyBaseDir = "hashchat_data/proxies"
+
+getProxyPath :: ProfileName -> FilePath
+getProxyPath profile = combine proxyBaseDir (profile ++ ".proxy.enc")
+
 -- Prompt for passphrase (simple, echoes for demo; later use haskeline or similar)
 promptPassphrase :: String -> IO BS.ByteString
 promptPassphrase msg = do
@@ -461,11 +468,23 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
         -- Very simple parser for now: "host port" → Socks5Proxy
         case words rest of
           [h, pStr] | Just p <- readMaybe pStr -> do
-            let newCfg = Socks5Proxy h p
-            let newProxies = setProfileProxy prof newCfg (proxies s)
-            liftIO $ putStrLn $ "[D] Proxy for profile '" ++ prof ++ "' set to " ++ show newCfg
-            liftIO $ putStrLn "  (Will be used on next send once full wiring in send path is complete.)"
-            modify $ \st -> st { input = "", proxies = newProxies }
+            extreme <- liftIO isExtremeMode
+            if extreme
+              then do
+                liftIO $ putStrLn "[EXTREME] Custom proxy refused in Extreme mode (forces default Tor-only for minimal surface)."
+                modify $ \st -> st { input = "" }
+              else do
+                let newCfg = Socks5Proxy h p
+                let newProxies = setProfileProxy prof newCfg (proxies s)
+                -- persist encrypted per profile (High #4 full functional)
+                mBlob <- liftIO $ exportEncryptedProxy newCfg (sessionPass s)
+                case mBlob of
+                  Just blob -> do
+                    createDirectoryIfMissing True (takeDirectory (getProxyPath prof))
+                    BS.writeFile (getProxyPath prof) blob
+                    liftIO $ putStrLn $ "[D] Proxy for profile '" ++ prof ++ "' set to " ++ show newCfg ++ " (persisted encrypted per-profile)"
+                  Nothing -> liftIO $ putStrLn "[SECURITY] Failed to persist proxy blob"
+                modify $ \st -> st { input = "", proxies = newProxies }
           _ -> do
             liftIO $ putStrLn "[D] Usage: :set-proxy <host> <port>"
             liftIO $ putStrLn "  Example: :set-proxy 127.0.0.1 9050"
@@ -661,7 +680,18 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'p') [])) = do
   newP <- liftIO getSecurityPosture
   liftIO $ putStrLn $ "[SECURITY] Dynamic posture re-evaluated after switch: " ++ newP
   liftIO $ putStrLn "[SECURITY] Previous context erased."
-  modify $ \st -> st { currentProfile = next, historyIndex = -1, securityPosture = newP }
+  -- load persisted proxy for the new profile (per-profile storage)
+  mLoadedP <- liftIO $ do
+    let ppath = getProxyPath next
+    ex <- doesFileExist ppath
+    if ex then do
+      enc <- BS.readFile ppath
+      importEncryptedProxy enc (sessionPass s)
+    else pure Nothing
+  let updatedPxs = case mLoadedP of
+        Just cfg -> setProfileProxy next cfg (proxies s)
+        Nothing -> proxies s
+  modify $ \st -> st { currentProfile = next, historyIndex = -1, securityPosture = newP, proxies = updatedPxs }
 
 handleEvent (VtyEvent (V.EvKey (V.KChar 'n') [])) = do
   s <- get
