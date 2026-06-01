@@ -274,3 +274,55 @@ launchTorIfNeeded cfg torrcPath = do
 
 -- Security note: Never log or persist the actual private key of the hidden service
 -- in plaintext. It should be stored encrypted or handled entirely by Tor.
+
+-- =====================================================================
+-- Phase 1 (Comprehensive Roadmap): I2P to "actual/working" + multi-path foundation
+-- (High #5 completion + Sec 1 hybrid transport start). Extends existing
+-- sendOverProxy + SOCKS abstraction (no ratchet/framing/Contact breakage).
+-- Tor v3 remains mandatory primary. I2P optional overlay (garlic routing
+-- for different metadata profile). Extreme will refuse custom in strict modes.
+-- =====================================================================
+
+-- I2P actual support (Phase 1): Assume user runs i2pd (or we add process spawn later).
+-- i2pd provides SOCKS on 4444 by default + optional .i2p hidden services.
+-- Use: sendOverProxy (i2pProxyConfig) targetOnionOrI2P ct
+-- For full .i2p support in Contact/onion flow: extend OnionAddress or add I2PAddress
+-- type later; for now reuse ProxyConfig + send path (works for .i2p destinations
+-- if the proxy routes them).
+--
+-- launchI2pdIfNeeded: helper to document/start (user action or future auto).
+-- In production: check PATH for i2pd, spawn with --conf or default, wait for
+-- SOCKS ready (or use SAMv3 for native .i2p HS creation). Garlic routing
+-- provides different anonymity tradeoffs vs Tor (resilient to some correlation).
+-- Multi-path example (future redundancy): try primary Tor, fallback I2P,
+-- generate decoy on secondary for correlation resistance.
+launchI2pdIfNeeded :: IO ()
+launchI2pdIfNeeded = do
+  putStrLn "=== I2P (garlic routing) support (Phase 1 Roadmap) ==="
+  putStrLn "1. Install i2pd (dnf/apt/brew: i2pd or from source)."
+  putStrLn "2. Run: i2pd --daemon (or i2pd in background). Default SOCKS 127.0.0.1:4444."
+  putStrLn "3. In HashChat TUI: :set-proxy 127.0.0.1 4444  (per-profile, encrypted persist)."
+  putStrLn "   Title will show 'Proxy: 127.0.0.1:4444'. sendOverProxy uses it for .onion or .i2p."
+  putStrLn "4. Multi-path (Tor primary + I2P): configure per-contact or profile; future queue rotation"
+  putStrLn "   will send decoys/redundancy across paths (see Queue.hs + Tor multi-path notes)."
+  putStrLn "Garlic vs Tor: different circuit metadata; use for diversity or when Tor is blocked."
+  putStrLn "Extreme mode: will refuse custom proxies (forces Tor-only minimal surface)."
+  putStrLn "See ROADMAP.md (hybrid transport section), THREATMODEL (I2P notes), TUI help."
+  -- Future: actual Process.createProcess for i2pd with our config + readiness poll.
+
+-- Basic multi-path helper stub (Phase 1 start; used by higher layers for failover).
+-- In real: attempt primary, on failure/timeout try secondary (I2P), log for OPSEC review.
+sendOverMultiProxy :: ProxyConfig -> ProxyConfig -> String -> BS.ByteString -> IO (Either String ())
+sendOverMultiProxy primary secondary dest ct = do
+  res <- sendOverProxy primary dest ct
+  case res of
+    Right () -> pure (Right ())
+    Left _   -> do
+      putStrLn "[Transport] Primary failed, trying secondary (multi-path/hybrid)..."
+      sendOverProxy secondary dest ct
+
+-- Note: Full unidirectional simplex queue layer (newSMPQueue real impl, rotation,
+-- per-contact per-dir queues for metadata elimination, decoy generator) lives in
+-- Queue.hs + integration in Core/TUI (queues feed existing framing/send paths;
+-- ratchets stay per-contact). See approved Phase 1 plan + ROADMAP.md.
+-- This keeps Tor v3 HS mandatory primary while adding optional overlays.

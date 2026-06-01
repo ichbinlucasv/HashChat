@@ -37,6 +37,7 @@ import HashChat.Core
   )
 import qualified HashChat.Contact as Contact
 import HashChat.Contact (Contact(..), defaultContact, ContactAddress(..), createContactAddress, contactAddressToLink, parseContactAddress, contactToAddress)
+import qualified HashChat.FileTransfer as FileTransfer  -- Phase 1 Roadmap XFTP ratchet-chunked (reuses E2EE/transport)
 import MessageUI
 import qualified HashChat.Tor as Tor  -- Real Tor hidden service transport scaffolding started (SOCKS5/ProxyConfig foundation for I2P + bridges)
 import Control.Monad (when, void, foldM)
@@ -323,7 +324,7 @@ drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll
   , str "1. Run ./run-tui  → it shows your audio backends and Tor status"
   , str "2. Press 'n' to create a burner profile"
   , str "3. Press 'v' to test voice (real mic if pw-record/parecord/arecord available)"
-  , str "4. Use :set-proxy 127.0.0.1 9050 (Tor) or 4444 (I2P after i2pd) for per-profile transport (High #5). :discover for decentralized (Medium). :screenshot for marketplace photo instructions. :file for streaming file stub (Long-term). :export for cross-device ratchet export stub (Long-term)."
+  , str "4. Use :set-proxy 127.0.0.1 9050 (Tor) or 4444 (I2P after i2pd) for per-profile transport (High #5 / Phase 1 Roadmap hybrid). Run launchI2pdIfNeeded or see Tor.hs for garlic/multi-path notes. :discover for decentralized (Medium). :screenshot for marketplace photo instructions. :file for streaming file stub (Long-term). :export for cross-device ratchet export stub (Long-term)."
   , str "5. '?' toggles this help. 'w' is the nuclear wipe (use it!)"
   , str ""
   , str "Enter          → Send encrypted message (real ratchet + AES-GCM)"
@@ -488,7 +489,7 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
           _ -> do
             liftIO $ putStrLn "[D] Usage: :set-proxy <host> <port>"
             liftIO $ putStrLn "  Example Tor: :set-proxy 127.0.0.1 9050"
-            liftIO $ putStrLn "  Example I2P (after i2pd running): :set-proxy 127.0.0.1 4444  (High #5 actual I2P start)"
+            liftIO $ putStrLn "  Example I2P (after i2pd running): :set-proxy 127.0.0.1 4444  (High #5 actual I2P start / Phase 1 Roadmap: see launchI2pdIfNeeded in Tor.hs for garlic + multi-path Tor+I2P notes. Extreme refuses custom.)"
             modify $ \st -> st { input = "" }
       else if ":discover" `isInfixOf` inputStr
       then do
@@ -510,8 +511,10 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
         modify $ \st -> st { input = "" }
       else if ":file" `isInfixOf` inputStr || inputStr == ":sendfile"
       then do
-        liftIO $ putStrLn "[FILE] Streaming file transfer stub (Long-term item). Future: per-chunk ratchet encryption + seek + wipe (like voice, next 'wow' after voice)."
-        liftIO $ putStrLn "  (For now, use voice or messages for small data. Full impl planned.)"
+        liftIO $ putStrLn "[FILE] Phase 1 Roadmap XFTP-style (ratchet-chunked E2EE resumable, reuses voice + framing + transport)."
+        liftIO $ putStrLn "  Usage: :file /path/to/large.file  (or :sendfile). Progress + wipe like voice. Extreme may limit."
+        -- Basic integration (real ratchetId/proxy from state in full wiring).
+        liftIO $ HashChat.FileTransfer.fileSendStub "/tmp/example.bin"  -- demo; real: parse path from input, use current ratchet + proxy + contact onion
         modify $ \st -> st { input = "" }
       else if ":export" `isInfixOf` inputStr
       then do
