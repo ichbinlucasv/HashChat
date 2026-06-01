@@ -59,7 +59,7 @@ import Control.Concurrent.MVar (MVar, newMVar, modifyMVar_, takeMVar, putMVar, n
 import qualified Data.ByteString as BS  -- already present but ensure for clarity
 import qualified Data.ByteString.Char8 as BC
 import System.IO.Unsafe (unsafePerformIO)
-import Data.Maybe (listToMaybe)
+import Data.Maybe (listToMaybe, isJust)
 
 data Name = ChatInput | ContactList | Help deriving (Eq, Ord, Show)
 
@@ -630,7 +630,6 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'D') [])) = do
 
 -- Real voice chunk receive + playback in TUI (matches Android MediaPlayer + ratchet streaming)
 -- On receive of voice chunk: decrypt with ratchet, write temp (ephemeral), ffplay, wait for exit, wipe file + ratchet key.
--- Desktop TUI voice recording is best-effort/demo (no heavy audio deps); real mic capture on Android.
 playVoiceChunk :: BS.ByteString -> IO ()
 playVoiceChunk chunk = do
   (tmpPath, h) <- openTempFile "/tmp" "hashchat_voice_XXXX.wav"
@@ -643,6 +642,37 @@ playVoiceChunk chunk = do
   putStrLn "[VOICE] Playback complete. Chunk file + associated ratchet material wiped."
   -- Extra disappearing key wipe for voice chunks (tied to ratchet)
   wipeRatchetMessageKey 0 0  -- in real: use the actual ratchetId + step from the chunk
+
+-- C: Real desktop voice recording (started after finishing B)
+-- Uses external arecord (ALSA) or parecord (PulseAudio) for actual mic input.
+-- Falls back to placeholder only if no recorder is available.
+-- Keeps attack surface low by using short fixed-length recordings and immediate processing.
+recordVoiceChunkDesktop :: IO (Maybe BS.ByteString)
+recordVoiceChunkDesktop = do
+  -- Try PulseAudio first (more common on modern desktops), then ALSA
+  let recorders = [("parecord", ["--format=s16le", "--rate=16000", "--channels=1", "--raw", "--file-format=wav"])
+                  ,("arecord", ["-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "wav"])]
+  tryRecorders recorders
+  where
+    tryRecorders [] = do
+      putStrLn "[VOICE] No audio recorder found (parecord/arecord). Using placeholder for now."
+      pure Nothing
+    tryRecorders ((cmd, args):rest) = do
+      (tmpPath, h) <- openTempFile "/tmp" "hashchat_rec_XXXX.wav"
+      hClose h
+      putStrLn $ "[VOICE] Recording 3 seconds via " ++ cmd ++ "... (press Ctrl+C to stop early in real impl)"
+      ph <- spawnProcess cmd (args ++ [tmpPath])
+      -- For a first version we do a fixed short record (3s). Real version can use --duration or user interrupt.
+      threadDelay (3 * 1000 * 1000)  -- 3 seconds
+      terminateProcess ph `catch` \_ -> pure ()
+      _ <- waitForProcess ph
+      audio <- BS.readFile tmpPath `catch` \_ -> pure BS.empty
+      removeFile tmpPath `catch` \_ -> pure ()
+      if BS.null audio
+        then tryRecorders rest
+        else do
+          putStrLn "[VOICE] Real audio captured from desktop mic."
+          pure (Just audio)
 
 -- Voice record/playback (end-to-end ratchet streaming)
 -- Real version: record -> chunk -> per-chunk ratchet key (advance + encrypt) -> frame + Tor
@@ -658,13 +688,15 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
       modify $ \st -> st { securityPosture = currentP }
     else do
       liftIO $ putStrLn "[VOICE] Recording voice chunk (ratchet key advanced + will be wiped post-send)."
-      liftIO $ putStrLn "[VOICE] NOTE: Desktop TUI uses demo audio bytes. Real mic recording + chunking is on Android (MediaRecorder + cacheDir + JNI)."
-      let voiceChunk = BS.pack (replicate 1024 0x56)  -- demo placeholder on TUI (keeps attack surface minimal; no audio lib)
+      mAudio <- liftIO recordVoiceChunkDesktop
+      let voiceChunk = case mAudio of
+            Just realAudio -> realAudio
+            Nothing        -> BS.pack (replicate 1024 0x56)  -- fallback placeholder
       liftIO $ playVoiceChunk voiceChunk
       -- live posture refresh after voice (med-8 frontend)
       freshP <- liftIO getSecurityPosture
       modify $ \st -> st { securityPosture = freshP }
-      liftIO $ putStrLn "[VOICE] Voice chunk processed with ratchet streaming (demo on TUI)."
+      liftIO $ putStrLn $ "[VOICE] Voice chunk processed with ratchet streaming (" ++ (if isJust mAudio then "real desktop mic" else "placeholder") ++ ")."
 
 -- Full multi-member group UI + sender keys (Simplex-style) — 'g' key opens menu
 handleEvent (VtyEvent (V.EvKey (V.KChar 'g') [])) = do
