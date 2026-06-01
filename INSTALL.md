@@ -4,7 +4,9 @@
 - **Primary**: https://codeberg.org/ichbinlucasv/HashChat
 - **Mirror**: https://github.com/ichbinlucasv/HashChat (read-only)
 
-All development happens on Codeberg. GitHub is kept only as a mirror.
+All development happens on **Codeberg**. GitHub is kept only as a read-only mirror.
+
+> The project has migrated its primary home to Codeberg. Use the Codeberg clone for all new work.
 
 ## For Fedora (Recommended Easy Method)
 

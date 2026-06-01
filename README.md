@@ -7,7 +7,9 @@
 - **Primary**: https://codeberg.org/ichbinlucasv/HashChat
 - **Mirror**: https://github.com/ichbinlucasv/HashChat (kept for discoverability)
 
-All new development, issues, and releases happen on Codeberg. GitHub is maintained as a read-only mirror.
+All new development, issues, releases, and CI now happen on **Codeberg**. GitHub is kept only as a read-only mirror.
+
+> **Migration note**: The project has moved its primary home to Codeberg for better alignment with privacy-focused development. All links and processes have been updated.
 
 **Presidential-grade anonymous messenger** — SimplexChat-level UI/UX + Session-style metadata resistance, powered by a Rust Double Ratchet core + Tor v3 hidden services.
 
