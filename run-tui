@@ -1,22 +1,49 @@
 #!/usr/bin/env bash
-# Convenient launcher for the HashChat Brick TUI
-# Sets LD_LIBRARY_PATH correctly and prefers a release build if available.
+# Convenient launcher for the HashChat Brick TUI (desktop focus)
+# Sets LD_LIBRARY_PATH correctly, prefers release build, gives clear diagnostics.
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/rust-lib"
+RUST_LIB="$LIB_DIR/libhashchat_rust.so"
 
-if [ ! -d "$LIB_DIR" ] || [ ! -f "$LIB_DIR/libhashchat_rust.so" ]; then
-  echo "Rust library not found in rust-lib/. Building..."
-  cargo build --release
-  mkdir -p "$LIB_DIR"
-  cp target/release/libhashchat_rust.so "$LIB_DIR/" 2>/dev/null || true
+echo "=== HashChat Desktop TUI Launcher ==="
+
+# Check for Rust FFI lib (critical for ratchet)
+if [ ! -f "$RUST_LIB" ]; then
+  echo "[INFO] Rust library not found in rust-lib/. Attempting build..."
+  if command -v cargo >/dev/null 2>&1; then
+    cargo build --release --locked || {
+      echo "[ERROR] cargo build failed. Run 'cargo build --release' manually in project root."
+      exit 1
+    }
+    mkdir -p "$LIB_DIR"
+    cp target/release/libhashchat_rust.so "$LIB_DIR/" 2>/dev/null || true
+  else
+    echo "[ERROR] cargo not found. Install Rust (rustup) or use Nix: nix build .#hashchat-tui"
+    exit 1
+  fi
 fi
 
 export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-echo "Starting HashChat TUI (real Double Ratchet + encrypted persistence)..."
-echo "LD_LIBRARY_PATH: $LIB_DIR"
+# Basic Tor hint (user must have ControlPort 9051 + CookieAuth for hidden service)
+if ! pgrep -x tor >/dev/null 2>&1; then
+  echo "[WARNING] Tor does not appear to be running."
+  echo "          For full anonymity you need: sudo systemctl start tor + ControlPort 9051 in /etc/tor/torrc"
+  echo "          See INSTALL.md and THREATMODEL.md"
+fi
 
-exec cabal run hashchat-tui -- "$@"
+echo "Starting HashChat TUI (Double Ratchet + Tor v3 + encrypted persistence)..."
+echo "LD_LIBRARY_PATH: $LIB_DIR"
+echo "Tip: Press '?' for help, 'w' for nuclear wipe, 'v' for voice (demo on desktop)."
+
+# Prefer cabal run for the tui target (respects extra-lib-dirs in cabal file)
+if command -v cabal >/dev/null 2>&1; then
+  exec cabal run hashchat-tui -- "$@"
+else
+  echo "[ERROR] cabal not found in PATH."
+  echo "        Recommended: use Nix (nix build .#hashchat-flatpak) or run install-fedora.sh / manual GHC install."
+  exit 1
+fi

@@ -60,8 +60,12 @@ cp target/release/libhashchat_rust.so rust-lib/ || true
 # 6. Build Haskell parts
 echo "[6/7] Building Haskell components..."
 cabal update
-cabal build -f-tui hashchat-cli
-cabal build -f-tui hashchat-tui || echo "Note: TUI build may need extra steps on some systems."
+cabal build -f-tui hashchat-cli || echo "[WARN] CLI build had issues (may still work for TUI)"
+cabal build -f-tui hashchat-tui || {
+  echo "[WARN] TUI build had issues."
+  echo "       For best results on Fedora use the Nix path: nix build .#hashchat-flatpak"
+  echo "       Or ensure ghc/cabal are recent and vty/brick are resolvable."
+}
 
 echo "[7/7] Installation complete!"
 
