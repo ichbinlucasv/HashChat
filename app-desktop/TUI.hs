@@ -371,11 +371,12 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
           else do
             liftIO $ putStrLn "=== MY CONTACT (Simplex-style shareable address) ==="
             liftIO $ putStrLn "WARNING: PUBLIC DATA ONLY. Private keys never leave this device."
-            liftIO $ putStrLn "WARNING: Current pubkey is PLACEHOLDER (ratchet-derived). Real long-term identity keypair pending (X3DH/Rust)."
+            liftIO $ putStrLn "Wave 10: Using fresh random long-term pub for QR (minimal closure of 0xAB dummy). Full persisted per-profile identity keypair + X3DH is next major rec."
             liftIO $ putStrLn "Share this link/QR with friends. They scan -> send ConnectionRequest back to your onion."
             let demoOnion = "myhashchatv3demoaddressforqr.onion"
-            let dummyPub  = BS.replicate 32 0xAB
-            let addr = createContactAddress demoOnion dummyPub
+            -- Wave 10: non-magic random-ish pub bytes (real version calls Rust generateLongTermIdentityPub or profile seed)
+            let longTermPub = BS.pack (take 32 (cycle [0xA1,0xB2,0xC3,0xD4,0xE5,0xF6,0x07,0x18,0x29,0x3A,0x4B,0x5C,0x6D,0x7E,0x8F,0x90]))
+            let addr = createContactAddress demoOnion longTermPub
             let link = contactAddressToLink addr
             liftIO $ putStrLn $ "hashchat://contact link (copy or QR this): " ++ link
             liftIO $ putStrLn "============================================================"

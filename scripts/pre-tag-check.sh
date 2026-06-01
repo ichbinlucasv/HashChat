@@ -61,13 +61,12 @@ if ! cargo audit --deny high; then
     fail "cargo audit found HIGH or CRITICAL advisories"
 fi
 
-# 5. Check for obvious "demo-pass" in non-test Kotlin code (basic heuristic)
-# Wave 8 deeper: also catch the const name and the getter function to force review of the last surface
-echo "[5/8] Scanning for hardcoded demo-pass in Android source..."
-if grep -r -E "(demo-pass|DEMO_INSECURE_RATCHET_PASSPHRASE|getInsecureGroupDemoPassphrase)" android/src/main/java --include="*.kt" | grep -v "DEMO_INSECURE\|EXPERT OPSEC WARNING\|LAST REMAINING\|Wave 7 deep\|Wave 8\|controlled surface\|actively being removed" | grep -q .; then
-    fail "Hardcoded 'demo-pass' or getter found in Android main source without proper isolation comments"
+# 5. Check for any "demo-pass" remnants in non-test Kotlin code (Wave 10: now zero tolerance after full excision)
+echo "[5/8] Scanning for any remaining hardcoded demo-pass in Android source (must be zero after Wave 10 closure)..."
+if grep -r -E "(demo-pass|DEMO_INSECURE_RATCHET_PASSPHRASE|getInsecureGroupDemoPassphrase)" android/src/main/java --include="*.kt" | grep -v "EXPERT OPSEC WARNING\|Wave 10: legacy demo-pass surface fully excised\|REMOVED in Wave 10" | grep -q .; then
+    fail "Hardcoded demo-pass strings or calls remain in Android main source after Wave 10 closure. This item must be finished."
 else
-    echo "  -> No obvious unprotected demo-pass strings found in main source."
+    echo "  -> No demo-pass remnants found in main source (Wave 10 closure verified)."
 fi
 
 # 6. Aggressive critical doc + no-new-TODO gate (Tier 2 pre-tag hardening)

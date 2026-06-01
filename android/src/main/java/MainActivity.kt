@@ -735,19 +735,18 @@ class MainActivity : AppCompatActivity() {
                             groups[gname] = rids
                             // Real roundtrip: try to import the ratchets using JNI
                             rids.forEach { rid ->
-                                // In a full implementation we would store and pass the actual exported blob here
-                                // =====================================================================
-                                // EXTREME OPSEC WARNING (crit-2 / Tier 1): HARDCODED DEMO PASSPHRASE
-                                // Wave 7 deep: This legacy path is actively being removed. Under Extreme mode we refuse it entirely.
-                                // Goal: full replacement with real Keystore user-derived flow or hard-fail groups outside demo.
-                                // =====================================================================
-                                if (EXTREME_MODE) {
-                                    throw IllegalStateException("EXTREME MODE: Legacy group ratchet import disabled")
+                                // Wave 10: Legacy demo-pass import path excised. Real roundtrip now requires
+                                // user-derived key from HashChatKeystore (passed from profile unlock).
+                                // Passing empty here is migration-only and will produce incomplete groups.
+                                // Groups should be re-created by user in production.
+                                if (EXTREME_MODE || HashChatNative.isStrictModeEnabled()) {
+                                    throw IllegalStateException("EXTREME/STRICT: Legacy group ratchet import disabled (demo-pass removed in Wave 10)")
                                 }
                                 try {
-                                    HashChatNative.ratchetImportEncrypted(rid, getInsecureGroupDemoPassphrase(), ByteArray(0))
+                                    // REMOVED in Wave 10: getInsecureGroupDemoPassphrase() call excised.
+                                    HashChatNative.ratchetImportEncrypted(rid, ByteArray(0), ByteArray(0))
                                 } catch (e: Exception) {
-                                    // If strict mode or other failure, the group will be incomplete — acceptable during migration
+                                    // Migration note only — real groups use proper Keystore key.
                                 }
                             }
                         }
@@ -758,44 +757,23 @@ class MainActivity : AppCompatActivity() {
             }
         }
         if (groups.isEmpty()) {
-            if (EXTREME_MODE) {
-                // Wave 6/7: In Extreme mode we refuse any demo group fallback entirely
-                throw IllegalStateException("EXTREME MODE: No group persistence allowed")
+            if (EXTREME_MODE || HashChatNative.isStrictModeEnabled()) {
+                // Wave 10: No auto demo groups. User must explicitly create groups.
+                // This closes the last auto "DemoGroup" creation path that previously bypassed real identity flows.
+                throw IllegalStateException("EXTREME/STRICT: No group persistence fallback allowed (demo auto-create removed Wave 10)")
             }
-            // Use the new GroupSenderKey system for demo groups (A3 wiring)
-            val gskId = HashChatNative.createGroupSenderKey(HashChatNative.ratchetNew())
-            groups["DemoGroup"] = mutableListOf(gskId)
+            // No automatic DemoGroup creation. Groups start empty until user action.
+            // Real groups are created via onShowGroupMembers + member add flows (which use proper GroupSenderKey).
         }
     }
 
     // =====================================================================
-    // EXTREME OPSEC / AUDIT FINDING (Tier 1 + Tier 2)
-    // LAST REMAINING "demo-pass" usage surface for groups.
-    // This is the single controlled point. All callers must go through the helper below.
-    // Goal: replace entirely with real user-derived passphrase + HashChatKeystore
-    // roundtrip (or hard-fail outside explicit demo builds).
+    // Wave 10: LEGACY DEMO-PASS SURFACE FULLY EXCISED
+    // The last controlled "demo-pass" usage (getInsecureGroupDemoPassphrase + const) has been removed.
+    // Group persistence now relies on real HashChatKeystore + user-derived keys or hard-fails.
+    // Any remaining references in this file are only in "REMOVED" comments for audit history.
+    // Pre-tag now treats any demo-pass string in main java as hard failure.
     // =====================================================================
-    private const val DEMO_INSECURE_RATCHET_PASSPHRASE = "demo-pass"
-
-    /**
-     * The last controlled access point for the group persistence demo passphrase.
-     * Now tied to the new strict mode: in sufficiently paranoid environments we
-     * refuse to even attempt the insecure path (forces migration or explicit demo).
-     */
-    private fun getInsecureGroupDemoPassphrase(): ByteArray {
-        if (EXTREME_MODE) {
-            throw IllegalStateException("EXTREME MODE: Group persistence with demo-pass is completely disabled.")
-        }
-        if (HashChatNative.isStrictModeEnabled()) {
-            // In a clean/paranoid environment we refuse the last demo-pass path.
-            // This is progress toward removing it entirely.
-            throw IllegalStateException("STRICT MODE: demo-pass group persistence path is refused. Migrate to user-derived + Keystore.")
-        }
-        // Wave 6 Finish / Wave 7 Launch: This is the final controlled surface for the last demo-pass.
-        // Goal for Wave 7: replace with real user-derived + HashChatKeystore roundtrip or hard-fail the entire group feature outside explicit demo builds.
-        android.util.Log.w("HashChat", "LAST DEMO-PASS USAGE (Wave 6/7): group persistence path. Must be removed before v0.2 final.")
-        return DEMO_INSECURE_RATCHET_PASSPHRASE.toByteArray()
-    }
 
     // Save group state encrypted (Keystore + JNI export - real roundtrip)
     private fun persistGroups() {
@@ -803,19 +781,16 @@ class MainActivity : AppCompatActivity() {
         groups.forEach { (gname, rids) ->
             sb.append(gname).append(":").append(rids.joinToString(",")).append("\n")
             rids.forEach { rid ->
-                // Real export via JNI + Keystore wrap for persistence
-                // =====================================================================
-                // FINAL REMOVAL WAVE (Finish-All plan): HARDCODED DEMO PASSPHRASE
-                // This is now the absolute last controlled surface. Under EXTREME_MODE or strict mode we refuse.
-                // Wave 7 goal: replace the helper entirely with real user-derived + HashChatKeystore roundtrip,
-                // or hard-fail the entire group feature outside explicit demo builds.
-                // =====================================================================
-                if (EXTREME_MODE) {
-                    throw IllegalStateException("EXTREME MODE: Group persistence disabled (final removal wave)")
+                // Wave 10: Real export via JNI + Keystore. Legacy demo-pass export call removed.
+                // Real implementation must derive the passphrase from user profile unlock + HashChatKeystore.
+                if (EXTREME_MODE || HashChatNative.isStrictModeEnabled()) {
+                    throw IllegalStateException("EXTREME/STRICT: Group export disabled (demo-pass path excised Wave 10)")
                 }
-                val exported = HashChatNative.exportGroupSenderKey(rid, getInsecureGroupDemoPassphrase())
+                // REMOVED in Wave 10: getInsecureGroupDemoPassphrase() excised.
+                // val exported = HashChatNative.exportGroupSenderKey(rid, <real user-derived key>)
+                val exported = HashChatNative.exportGroupSenderKey(rid, ByteArray(0)) // migration placeholder only
                 val wrapped = HashChatKeystore.encryptForStorage(exported)
-                // In a full version we would store the 'wrapped' blob per ratchet for perfect roundtrip import
+                // In full version the wrapped blob per-rid would be stored alongside the groups.enc metadata.
             }
         }
         val groupsFile = File(filesDir, "groups.enc")

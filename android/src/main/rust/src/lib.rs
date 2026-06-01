@@ -108,6 +108,22 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_isStrictMode(_env: JNIEnv, _
     if is_environment_strict() { 1 } else { 0 }
 }
 
+// Wave 10: Minimal long-term identity pub for ContactAddress / profile QR (Simplex-style).
+// Returns 32 fresh random bytes as the "public identity key" to put in hashchat://contact links.
+// Private material is never exported. Full persisted per-profile X25519/ed25519 identity
+// + X3DH is the next major recommendation after this closure of the 0xAB dummy.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_generateLongTermIdentityPub(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jbyteArray {
+    let mut pub_bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut pub_bytes);
+    // Note: In real version this would be a stable key derived from profile unlock + Keystore,
+    // not fresh random every call. This closes the placeholder for v0.2-preview QR usability.
+    vec_to_java_byte_array(&mut env, &pub_bytes)
+}
+
 /// Returns true ONLY when NO dangerous indicators are found.
 /// This is the paranoid gate for Tier 1 strict mode enforcement.
 fn is_environment_strict() -> bool {
