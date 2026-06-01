@@ -52,6 +52,8 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_init(_env: JNIEnv, _class: J
     mlock_android_ratchet_store();
     // Also for long-term identity store (High #3 mlock on Android Rust)
     // mlock_android_longterm_store(); // add similar if needed.
+    // Voice streams too (Extreme + Voice full)
+    // mlock for VOICE_STREAMS if we add helper.
 }
 
 // ============================================================================
