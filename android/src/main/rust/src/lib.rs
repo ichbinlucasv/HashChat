@@ -531,6 +531,13 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_feedReceivedData(
 // Each VoiceStream now owns its own forward-secret chain (HKDF-SHA256 advancement).
 // This moves voice closer to the same security model as GroupSenderKey and the main DoubleRatchet.
 // Still not a full per-stream DoubleRatchet (future), but no longer pure simulation.
+//
+// Wave 8 deeper notes (keep going):
+// - Full lifecycle: explicit create (JNI) + destroy that zeroizes chain_key + step.
+// - Skipped keys BTreeMap like main ratchet (for out-of-order voice chunks in bad networks).
+// - Extreme gate: refuse VoiceStream::new if is_strict_mode() or EXTREME_MODE const (already wired at Kotlin onVoiceMessage).
+// - Expose to desktop TUI via FFI or separate voice module for parity.
+// - When destroying a stream (call end), zeroize + remove from any global map to minimize sensitive material lifetime.
 struct VoiceStream {
     id: u32,
     chain_key: [u8; 32],

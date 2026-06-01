@@ -36,9 +36,9 @@ import HashChat.Core
   , unframeFromWire
   )
 import qualified HashChat.Contact as Contact
-import HashChat.Contact (Contact(..), defaultContact)
+import HashChat.Contact (Contact(..), defaultContact, ContactAddress(..), createContactAddress, contactAddressToLink, parseContactAddress, contactToAddress)
 import MessageUI
-import qualified HashChat.Tor as Tor  -- Real Tor hidden service transport scaffolding started
+import qualified HashChat.Tor as Tor  -- Real Tor hidden service transport scaffolding started (SOCKS5/ProxyConfig foundation for I2P + bridges)
 import Control.Monad (when, void, foldM)
 import Control.Monad.IO.Class (liftIO)
 import System.Directory (doesFileExist)
@@ -48,7 +48,7 @@ import System.FilePath (combine, takeDirectory)
 import Data.Time.Clock (getCurrentTime)
 import System.IO (hFlush, stdout, hSetEcho, stdin)
 import qualified Data.List
-import Data.List (elemIndex, isInfixOf)
+import Data.List (elemIndex, isInfixOf, isPrefixOf)
 import System.Process (callCommand, spawnProcess, waitForProcess)
 import Control.Monad (whenM)
 import System.IO (openTempFile, hClose)
@@ -347,17 +347,68 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
     let contact = currentContact s
     let prof    = currentProfile s
     let pass    = passForSession s
+    let inputStr = T.unpack txt
 
-    currentP <- liftIO getSecurityPosture
-    if not (isActionAllowedInPosture currentP "send")
+    -- =====================================================================
+    -- Wave 8 DEEP: Simplex-style Contact / Profile QR commands (TUI wiring)
+    -- :my-contact   -> generate and print hashchat://contact/v1/... link (PUBLIC onion+pubkey only)
+    -- :add-contact <hashchat://contact/v1/...>  -> parse + add as Contact (onion + pubHint from key)
+    -- :set-proxy <host> <port>   -> future per-profile SOCKS (currently logs; real config TODO)
+    -- Extreme / posture: these are metadata-sensitive (long-term identity surface). In strict
+    -- environments the TUI should refuse or warn louder. Current impl always allows but logs.
+    -- Placeholder pubkey warning: until real per-profile identity keypair exists in Profile/Rust,
+    -- the generated link uses dummy key (still provides onion metadata resistance + ratchet E2EE).
+    -- =====================================================================
+    if ":my-contact" `isInfixOf` inputStr || inputStr == ":contact"
       then do
-        liftIO $ putStrLn "[SECURITY] DYNAMIC POSTURE REFUSAL: Send blocked."
-        liftIO $ putStrLn "[SECURITY] Re-evaluated posture: " ++ currentP
-        liftIO $ putStrLn "[SECURITY] Switch to Tails/Qubes or fix environment (no root, no swap, container-free) to send."
-        modify $ \st -> st { securityPosture = currentP }   -- live update UI
+        liftIO $ putStrLn "=== MY CONTACT (Simplex-style shareable address) ==="
+        liftIO $ putStrLn "WARNING: PUBLIC DATA ONLY. Private keys never leave this device."
+        liftIO $ putStrLn "WARNING: Current pubkey is PLACEHOLDER (ratchet-derived). Real long-term identity keypair pending (X3DH/Rust)."
+        liftIO $ putStrLn "Share this link/QR with friends. They scan -> send ConnectionRequest back to your onion."
+        let demoOnion = "myhashchatv3demoaddressforqr.onion"  -- In real: from running hidden service or per-profile stored
+        let dummyPub  = BS.replicate 32 0xAB  -- TODO Wave 8+: replace with real exported long-term pub from Rust/Profile
+        let addr = createContactAddress demoOnion dummyPub
+        let link = contactAddressToLink addr
+        liftIO $ putStrLn $ "hashchat://contact link (copy or QR this): " ++ link
+        liftIO $ putStrLn "============================================================"
+        modify $ \st -> st { input = "", inputHistory = inputHistory st ++ [txt] }
+      else if ":add-contact " `Data.List.isPrefixOf` inputStr
+      then do
+        let link = drop (length ":add-contact ") inputStr
+        case parseContactAddress link of
+          Just ca -> do
+            liftIO $ putStrLn $ "[CONTACT] Parsed valid ContactAddress for onion: " ++ caOnion ca
+            liftIO $ putStrLn "[CONTACT] Adding as new contact (public key becomes pubHint base). Extreme mode would restrict this."
+            let newC = defaultContact (take 8 (caOnion ca)) (take 8 (caOnion ca)) (caOnion ca)
+            -- In real: store the caPubKey somewhere for future verification / ratchet init
+            modify $ \st -> st
+              { contacts = newC : filter (\c -> Contact.onionAddress c /= caOnion ca) (contacts st)
+              , input = ""
+              , inputHistory = inputHistory st ++ [txt]
+              }
+            liftIO $ putStrLn "[CONTACT] Contact added from QR/link. You can now send (ratchet will be created on first message)."
+          Nothing -> do
+            liftIO $ putStrLn "[CONTACT] Invalid or malformed contact link. Must be hashchat://contact/v1/<onion>/<len:hexpub>"
+            modify $ \st -> st { input = "" }
+      else if ":set-proxy " `Data.List.isPrefixOf` inputStr
+      then do
+        liftIO $ putStrLn "[TRANSPORT] Proxy config command received (Wave 8 foundation)."
+        liftIO $ putStrLn "  Example: :set-proxy 127.0.0.1 9050  (Tor) or I2P SOCKS port or user VPN."
+        liftIO $ putStrLn "  Full per-profile ProxyConfig storage + sendOverProxy wiring is next transport priority."
+        liftIO $ putStrLn "  For now all traffic uses Tor.defaultProxyConfig (local 9050)."
+        modify $ \st -> st { input = "" }
       else do
-        -- live update posture on every send attempt (dynamic)
-        modify $ \st -> st { securityPosture = currentP }
+        -- Normal message send path (existing)
+        currentP <- liftIO getSecurityPosture
+        if not (isActionAllowedInPosture currentP "send")
+          then do
+            liftIO $ putStrLn "[SECURITY] DYNAMIC POSTURE REFUSAL: Send blocked."
+            liftIO $ putStrLn "[SECURITY] Re-evaluated posture: " ++ currentP
+            liftIO $ putStrLn "[SECURITY] Switch to Tails/Qubes or fix environment (no root, no swap, container-free) to send."
+            modify $ \st -> st { securityPosture = currentP }   -- live update UI
+          else do
+            -- live update posture on every send attempt (dynamic)
+            modify $ \st -> st { securityPosture = currentP }
         -- Get or create ratchet (now with real encrypted persistence)
         rid <- case Map.lookup contact (ratchets s) of
                  Just r  -> pure r
@@ -387,8 +438,10 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
               Nothing -> (BS.pack (map (fromIntegral . fromEnum) contact), "unknown.onion")
         let framed = frameForWire hint (ratchetStep msgWithTime) (ciphertext msgWithTime)
         liftIO $ putStrLn $ "[TOR] Sending framed ciphertext to " ++ targetOnion ++ " (real contact mapping + header)"
-        _ <- liftIO $ Tor.sendCiphertextOverTor targetOnion framed
-        liftIO $ putStrLn "[TOR] Framed blob handed to real Tor transport layer using Contact data."
+        -- Wave 8: Updated to use generalized sendOverProxy (foundation for SOCKS5 per-profile, I2P, custom bridges/VPNs)
+        -- Uses default (local Tor 9050). Future: per-contact or global proxy config from UI/Settings.
+        _ <- liftIO $ Tor.sendOverProxy Tor.defaultProxyConfig targetOnion framed
+        liftIO $ putStrLn "[TOR] Framed blob handed to real Tor transport layer using Contact data + ProxyConfig."
 
         -- Disappearing messages: process expiry + key wipe (real ratchet key zeroization path)
         cleaned <- liftIO $ processDisappearingMessages (Map.findWithDefault [] contact (messages st))

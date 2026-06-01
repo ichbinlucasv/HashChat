@@ -48,6 +48,22 @@
 - Dynamic Security Posture gating actions on both platforms.
 - Reproducible Nix paths (Flatpak strong, Android still requires cargo-ndk path but now fail-hard).
 
+### Wave 8 Additions: Simplex-style Contact/Profile QR + Transport Expansion
+- **ContactAddress / profile sharing**: Implemented hashchat://contact/v1/<onion>/<len:hexpub> links + parse/generate roundtrip in Haskell (Contact.hs). Wired into both thin CLI and real Brick TUI (app-desktop/TUI.hs) with :my-contact / :add-contact. ConnectionRequest mirror for the "scanner replies" flow.
+  - **Metadata reality**: Only public onion + public identity key in the QR/link. Private material never leaves device. Matches Simplex model and our burner philosophy.
+  - **Remaining gap (brutally honest)**: caPubKey is currently a ratchet-derived placeholder (contactToAddress). Full strength requires per-profile long-term identity keypair (generated/stored in Rust, exported only the pub for QR). Until X3DH-style setup lands, this is "good enough for v0.2-preview" but not maximal.
+  - Extreme mode: generation should be refused (notes added; full gate pending deeper Android/TUI posture integration).
+- **Transport (SOCKS5 foundation + I2P/bridges path)**: Generalized sendCiphertextOverTor + sendOverProxy(ProxyConfig) in Tor.hs. TUI and callsites updated to use it. Default = local Tor 9050.
+  - **I2P**: Documented as next: run i2pd, point Socks5Proxy at its SOCKS port (usually 4444 or 9050-equivalent). Garlic routing gives different metadata/latency profile vs Tor (stronger against some correlation, weaker exit diversity).
+  - **Tor bridges/pluggable**: User configures local Tor (torrc or Tor Browser bridges) with obfs4/snowflake; our SOCKS client just talks to the local port. No code change needed for basic support.
+  - **Per-profile proxy**: Still TODO (store ProxyConfig in profile state, expose in TUI settings, pass to every send). This is high-leverage for "use my VPN + Tor" or "I2P for this contact only" without global leak.
+- **Extreme / posture expansion**: More refusal points added in prior waves (voice/groups/export in Android). TUI has dynamic posture on send. Contact QR generation is metadata surface and should gate similarly.
+- **Demo-pass surface**: Last remaining controlled usage isolated to Android group persistence (getInsecureGroupDemoPassphrase + DEMO_INSECURE const). Hard-throws in EXTREME_MODE and isStrictModeEnabled(). Pre-tag scan + comments tightened in Wave 8. Goal: replace with real user-derived Keystore key or disable groups outside explicit demo/Extreme.
+- **Evidence / CI gates**: pre-tag-check.sh has hard exits for TESTING_EVIDENCE*.log and local .pre-tag-check-local-ran-<SHA> marker. Workflow audit step hardened (no more silent || true). Marker CI enforcement still future comment but pre-tag makes it blocking for any signed tag.
+- **Supply chain**: cargo-binstall unpinned (CVSS 4.0 robust), ghcup SHA pinned, .so staging fail-hard. Still no reproducible Android .so or SBOM diff automation in CI.
+
+These close more of the original expert table (transport priorities, Simplex QR alignment, pre-tag enforcement, demo surface pressure). Remaining high-leverage: real long-term identity keys for ContactAddress, full VoiceStream per-stream Double Ratchet lifecycle in Rust, I2P actual start code, Extreme as first-class TUI profile, v0.2 signed tag with real-hardware evidence.
+
 ### 3. Device Compromise / "Pegasus" Resistance
 **Best we can do (and what we are building toward):**
 

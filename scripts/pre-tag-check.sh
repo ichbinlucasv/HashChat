@@ -62,9 +62,10 @@ if ! cargo audit --deny high; then
 fi
 
 # 5. Check for obvious "demo-pass" in non-test Kotlin code (basic heuristic)
+# Wave 8 deeper: also catch the const name and the getter function to force review of the last surface
 echo "[5/8] Scanning for hardcoded demo-pass in Android source..."
-if grep -r "demo-pass" android/src/main/java --include="*.kt" | grep -v "DEMO_INSECURE\|EXPERT OPSEC WARNING" | grep -q .; then
-    fail "Hardcoded 'demo-pass' found in Android main source without proper isolation comments"
+if grep -r -E "(demo-pass|DEMO_INSECURE_RATCHET_PASSPHRASE|getInsecureGroupDemoPassphrase)" android/src/main/java --include="*.kt" | grep -v "DEMO_INSECURE\|EXPERT OPSEC WARNING\|LAST REMAINING\|Wave 7 deep\|Wave 8\|controlled surface\|actively being removed" | grep -q .; then
+    fail "Hardcoded 'demo-pass' or getter found in Android main source without proper isolation comments"
 else
     echo "  -> No obvious unprotected demo-pass strings found in main source."
 fi

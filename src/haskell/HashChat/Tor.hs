@@ -198,6 +198,19 @@ sendOverProxy :: ProxyConfig -> String -> BS.ByteString -> IO (Either String ())
 sendOverProxy NoProxy dest ct = sendCiphertextOverTor Nothing dest ct
 sendOverProxy (Socks5Proxy h p) dest ct = sendCiphertextOverTor (Just (h, p)) dest ct
 
+-- =====================================================================
+-- Wave 8 Transport Deepening (I2P + Tor bridges / pluggable)
+-- =====================================================================
+-- Next big wins after SOCKS5 foundation:
+-- 1. I2P: Start i2pd or use SAMv3, expose as Socks5Proxy "127.0.0.1" 4444 (or custom).
+--    Then sendOverProxy (Socks5Proxy "127.0.0.1" 4444) onion ct  -- works for .i2p too with care.
+-- 2. Tor bridges / obfs4 / Snowflake: Configure Tor client with bridge lines (torrc or control),
+--    then the local SOCKS (9050) already routes via bridge. No code change, just user torrc.
+-- 3. Per-profile proxy: store ProxyConfig in ProfileStore or settings, pass down to send.
+-- This gives mesh/VPN/I2P/bridge flexibility without rewriting the ratchet or framing layer.
+-- See ROADMAP.md and THREATMODEL.md for metadata implications (I2P is garlic routing, different tradeoffs vs Tor).
+
+
 -- Basic receive server for the hidden service side.
 -- Call this (in a forkIO thread) after startHiddenService when you map Port=...,127.0.0.1:LOCAL_PORT
 -- It accepts circuits from Tor and reads length-prefixed ciphertext blobs.

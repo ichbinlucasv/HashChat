@@ -102,7 +102,10 @@ jobs:
           # We use `--deny warnings` which fails the build on any known vulnerability.
           # Use cargo-binstall (no version pin) so we always get a version that can parse the current advisory DB
           # (including CVSS 4.0 entries that started appearing in 2026).
-          cargo install cargo-binstall --locked 2>/dev/null || true
+          # Wave 8: Removed "|| true" (was source of silent "no audit command" failures in prior CI runs).
+          # Fail hard on install problems so supply-chain step is trustworthy.
+          set -e
+          cargo install cargo-binstall --locked
           cargo binstall cargo-audit --locked -y
           cargo audit --deny warnings || {
             echo ""
@@ -112,6 +115,9 @@ jobs:
             exit 1
           }
           echo "cargo audit passed (no advisories)"
+          set +e
+          # Future (v0.2 final): add step that checks for .pre-tag-check-local-ran-<sha> in tree or fails with reminder.
+          # Currently the hard gate lives in scripts/pre-tag-check.sh (evidence log + local marker + doc freshness + no-new-TODO).
         env:
           CARGO_TERM_COLOR: always
 

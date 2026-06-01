@@ -14,6 +14,9 @@ Goal: Build a SimplexChat-level (or better) anonymous messenger using only **Has
 - Dynamic Security Posture with real environment inspection + action refusals
 - Burner profiles + plausible deniability decoy profiles with automatic wipe on switch
 - Disappearing messages tied to ratchet key erasure
+- Wave 8: Simplex-style ContactAddress + ConnectionRequest (public-only QR links hashchat://contact/v1/...), full TUI wiring (:my-contact / :add-contact in Brick TUI + CLI), safer parser, export of helpers
+- Wave 8: Generalized SOCKS5/ProxyConfig transport (sendOverProxy) with I2P + bridge/pluggable notes + call-site updates; hardened CI audit (no || true) + pre-tag demo-pass scan
+- Wave 8: Brutal honest THREATMODEL update on all remaining gaps (placeholder pubkey in QR, last gated demo-pass surface, no per-profile proxy yet, evidence logs required for tags)
 
 ### SimplexChat-Level UX Parity (both platforms)
 - Full contact actions: Block, Mute, Delete, Report, View security info, Disappearing timer

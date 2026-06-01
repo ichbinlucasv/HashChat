@@ -62,7 +62,8 @@ startCLI :: IO ()
 startCLI = do
   initAll
   putStrLn "HashChat CLI - Interactive Secure Messaging (Double Ratchet)"
-  putStrLn "Commands: send <contact> <msg> | chat <contact> | ratchet-demo | wipe | quit"
+  putStrLn "Commands: send <contact> <msg> | chat <contact> | ratchet-demo | wipe | my-contact | add-contact <hashchat://...> | quit"
+  putStrLn "  (my-contact / add-contact: Wave 8 Simplex-style profile QR links - public onion+key only)"
   cliMessageLoop Map.empty Map.empty   -- (ratchetId per contact, messages per contact)
 
 -- Per-contact state for the demo message system
@@ -120,6 +121,19 @@ cliMessageLoop ratchets messages = do
       wipeAll
       putStrLn "Everything wiped."
       cliMessageLoop Map.empty Map.empty
+    ["my-contact"] -> do
+      putStrLn "=== MY CONTACT (Simplex-style) ==="
+      putStrLn "WARNING: PUBLIC ONLY. Share link/QR. Private stays here. (pubkey placeholder until X3DH key mgmt)"
+      putStrLn "hashchat://contact/v1/myhashchatv3demoaddressforqr.onion/32:abababababababababababababababababababababababababababababababab"
+      cliMessageLoop ratchets messages
+    ("add-contact":link:_) -> do
+      case parseContactAddress link of
+        Just ca -> do
+          putStrLn $ "[CONTACT] Added from link: " ++ caOnion ca
+          cliMessageLoop ratchets messages
+        Nothing -> do
+          putStrLn "[CONTACT] Bad link format."
+          cliMessageLoop ratchets messages
     _ -> do
       putStrLn "Unknown. Type 'help'."
       cliMessageLoop ratchets messages

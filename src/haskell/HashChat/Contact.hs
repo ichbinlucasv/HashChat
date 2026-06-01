@@ -10,6 +10,11 @@ module HashChat.Contact
   , createContactAddress
   , contactAddressToLink
   , parseContactAddress
+  -- Connection request (what the scanner sends back) + helpers for full Simplex-style roundtrip
+  , ConnectionRequest(..)
+  , createConnectionRequest
+  , connectionRequestToLink
+  , contactToAddress
   ) where
 
 import qualified Data.ByteString as BS
@@ -19,6 +24,7 @@ import Data.List (isPrefixOf)
 import Text.Read (readMaybe)
 import Numeric (readHex)
 import Text.Printf (printf)
+import Control.Monad (guard)
 
 type ContactId = String
 
@@ -82,7 +88,14 @@ connectionRequestToLink :: ConnectionRequest -> String
 connectionRequestToLink cr =
   "hashchat://connect/v" ++ show (crVersion cr) ++ "/" ++
   takeWhile (/= '.') (crOnion cr) ++ "/" ++
+  show (BS.length (crPubKey cr)) ++ ":" ++
   concatMap (printf "%02x") (BS.unpack (crPubKey cr))
+
+-- EXTREME MODE NOTE (Wave 8):
+-- Generation of fresh ContactAddress / ConnectionRequest (i.e. profile QR) should be refused
+-- or heavily rate-limited when EXTREME_MODE or strict posture is active. The TUI/Android layers
+-- must call isStrictMode / EXTREME_MODE checks before exposing "share my contact" UI.
+-- This minimizes long-term identity surface.
 
 -- In the real app these would be persisted encrypted per profile (like ratchets)
 -- and exchanged via QR / link (X3DH-style) over Tor.
@@ -129,7 +142,13 @@ contactAddressToLink ca =
   concatMap (printf "%02x") (BS.unpack (caPubKey ca))
 
 -- Parse a contact link (from QR or pasted)
--- Returns Nothing if format is invalid
+-- Returns Nothing if format is invalid or data malformed.
+-- SECURITY MODEL (Simplex-style, Wave 7/8): QR/link carries ONLY public onion + public identity key.
+-- Private ratchet keys + long-term identity secrets stay on device and are never shared.
+-- Current deep gap (Wave 8): caPubKey source is still ratchet-derived placeholder (see contactToAddress).
+-- Real deployment needs per-profile long-term signing/identity keypair (XEd25519 or similar) generated
+-- in Rust, persisted via Keystore, and used here. Until then, this provides good metadata resistance
+-- but not the full "one-time or reusable public profile" strength of mature SimplexChat.
 parseContactAddress :: String -> Maybe ContactAddress
 parseContactAddress link = do
   guard ( "hashchat://contact/v" `isPrefixOf` link )
@@ -141,7 +160,10 @@ parseContactAddress link = do
   let onion = onionPart ++ ".onion"
   (lenStr, hexKey) <- breakOn ':' keyPart
   keyLen <- readMaybe lenStr
-  let keyBytes = BS.pack $ map (fromIntegral . fst . head . readHex) (chunksOf 2 hexKey)
+  -- Safer decode: skip empty/invalid hex pairs from malformed input (QR damage, paste error)
+  let decodedPairs = chunksOf 2 hexKey
+  let safeDecode p = case readHex p of (x:_) -> [fst x]; _ -> []
+  let keyBytes = BS.pack $ map fromIntegral (concatMap safeDecode decodedPairs)
   guard (BS.length keyBytes == keyLen)
   pure $ ContactAddress onion keyBytes ver
   where
