@@ -9,6 +9,7 @@ module HashChat.Tor
   , sendCiphertextOverTor
   , ProxyConfig(..)
   , defaultProxyConfig
+  , i2pProxyConfig
   ) where
 
 import Network.Socket
@@ -51,6 +52,10 @@ defaultTorConfig = TorConfig
 
 defaultProxyConfig :: ProxyConfig
 defaultProxyConfig = Socks5Proxy "127.0.0.1" 9050   -- Default: local Tor
+
+-- High #5: I2P support start (run i2pd, use its SOCKS for .i2p or outproxies)
+i2pProxyConfig :: ProxyConfig
+i2pProxyConfig = Socks5Proxy "127.0.0.1" 4444  -- Default i2pd SOCKS port (after starting i2pd)
 
 -- Connect to Tor control port and send a command
 sendTorCommand :: TorConfig -> String -> IO (Either String String)

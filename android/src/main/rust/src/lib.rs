@@ -50,10 +50,8 @@ static mut EXTREME_MODE: bool = false;  // Extreme profile flag for Rust-level g
 pub extern "C" fn Java_chat_hashchat_HashChatNative_init(_env: JNIEnv, _class: JClass) {
     // Partial real mlock attempt on init (high-5 / expert request)
     mlock_android_ratchet_store();
-    // Also for long-term identity store (High #3 mlock on Android Rust)
-    // mlock_android_longterm_store(); // add similar if needed.
-    // Voice streams too (Extreme + Voice full)
-    // mlock for VOICE_STREAMS if we add helper.
+    mlock_android_longterm_store();  // High #3 mlock for long-term (Contact keys)
+    mlock_android_voice_store();  // High #3 + Voice full + Extreme for voice streams
 }
 
 // ============================================================================
@@ -96,6 +94,32 @@ fn mlock_android_ratchet_store() {
 fn mlock_android_ratchet_store() {
     // No-op on non-Android (desktop uses the separate mlock function)
 }
+
+// Best-effort mlock for VoiceStream store (High #3 + Voice full + Extreme)
+#[cfg(target_os = "android")]
+fn mlock_android_voice_store() {
+    unsafe {
+        let ptr = VOICE_STREAMS.as_ptr() as *const libc::c_void;
+        let len = std::mem::size_of_val(&VOICE_STREAMS);
+        let _ = libc::mlock(ptr, len);
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn mlock_android_voice_store() {}
+
+// Best-effort mlock for LongTermIdentity store (High #3 + Contact long-term + Extreme)
+#[cfg(target_os = "android")]
+fn mlock_android_longterm_store() {
+    unsafe {
+        let ptr = ANDROID_LONGTERM_STORE.as_ptr() as *const libc::c_void;
+        let len = std::mem::size_of_val(&ANDROID_LONGTERM_STORE);
+        let _ = libc::mlock(ptr, len);
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn mlock_android_longterm_store() {}
 
 // === Strict Mode / Environment Check (Tier 1 Very High - now actually enforces) ===
 // Real checks live in BOTH Kotlin (Android SDK signals) + Rust (deeper /proc + fs indicators).
@@ -654,7 +678,7 @@ fn process_voice_chunk_internal(encrypted: &[u8]) -> Vec<u8> {
         // ALL RECOMMENDATIONS deep wave: Real per-stream direction
         if VOICE_STREAMS.is_empty() {
             VOICE_STREAMS.push(VoiceStream::new(0));
-            mlock_android_ratchet_store();  // best-effort mlock for voice (High #3 mlock + Extreme full)
+            mlock_android_voice_store();  // best-effort mlock for voice store (High #3 + Voice full + Extreme)
         }
 
         // Moving toward full per-stream Double Ratchet (key chain, zeroize on close, skipped keys)
@@ -1075,7 +1099,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_longtermNew(
     unsafe {
         let id = ANDROID_LONGTERM_STORE.len() as jint;
         ANDROID_LONGTERM_STORE.push(longterm_identity::LongTermIdentity::generate());
-        mlock_android_ratchet_store();  // mlock for long-term identity store (High #3)
+        mlock_android_longterm_store();  // best-effort mlock for long-term store (High #3 + Contact full + Extreme)
         id
     }
 }
