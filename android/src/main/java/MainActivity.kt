@@ -464,9 +464,11 @@ class MainActivity : AppCompatActivity() {
     private var currentVoiceRecordingFile: File? = null   // OPSEC: app-private cacheDir only; deleted after ratchet processing
 
     fun onVoiceMessage(v: View) {
-        // Deep Wave: Extreme mode completely disables voice for minimal surface
+        // Wave 6 Finish: Extreme mode completely disables voice (no recording, no playback path)
         if (EXTREME_MODE) {
-            Toast.makeText(this, "EXTREME MODE: Voice disabled for smallest attack surface.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "EXTREME MODE: Voice completely disabled for minimal attack surface.", Toast.LENGTH_LONG).show()
+            // Extra OPSEC: clear any pending state even on refusal
+            clearSensitiveScreenState()
             return
         }
         // Tier 1 Very High: strict mode gate (refuse voice in debug/emulator/rooted/qemu envs)

@@ -157,6 +157,7 @@ echo "  - At least one full real-hardware test pass (Tails/Qubes + physical Andr
 echo "  - Icons and screenshots status acceptable for the release type"
 echo "  - RELEASE_NOTES_v0.2.md and THREATMODEL.md are up to date and brutally honest"
 echo "  - All 'demo-pass' usages have been reviewed and accepted for this release"
+echo "  - Local pre-tag evidence marker + TESTING_EVIDENCE log must exist for this exact commit (hard enforced by this script)"
 echo ""
 echo "When creating the signed tag, include a reference that this script was run:"
 echo "  ./scripts/pre-tag-check.sh --strict"
