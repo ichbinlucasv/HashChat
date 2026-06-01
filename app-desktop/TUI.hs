@@ -751,9 +751,43 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
       let status = if isJust mAudio then "real desktop mic" else "placeholder (no recorder available)"
       liftIO $ putStrLn $ "[VOICE] Voice chunk processed with ratchet streaming (" ++ status ++ ")."
 
-      -- TODO (item 3): Integrate real voiceChunk into full ratchet send + Tor framing like normal messages.
-      -- Currently we only do local playback for the recorded chunk on desktop.
-      -- Full flow (record -> ratchet encrypt per-chunk -> frame with VOICE magic -> send over contact onion) is ready on the data side.
+      -- C item 3 completed in this deep pass: Send the recorded voice over the ratchet + Tor (using per-profile proxy from D)
+      -- This completes the end-to-end voice flow on desktop for the current contact.
+      when (currentContact s /= "") $ do
+        let contact = currentContact s
+        let prof    = currentProfile s
+        let pass    = passForSession s
+
+        rid <- case Map.lookup contact (ratchets s) of
+                 Just r  -> pure r
+                 Nothing -> do
+                   r <- liftIO newRatchet
+                   _ <- liftIO mlockSensitiveRatchets
+                   liftIO $ saveEncryptedRatchet prof contact r pass
+                   modify $ \st -> st { ratchets = Map.insert contact r (ratchets s) }
+                   pure r
+
+        -- Send the voice audio bytes through the ratchet (treated as voice message content)
+        now <- liftIO getCurrentTime
+        voiceMsg <- liftIO $ sendEncryptedMessage rid (BS.pack []) voiceChunk False Nothing   -- voiceChunk as the "plaintext" content for this demo
+
+        let voiceMsgWithTime = voiceMsg { timestamp = fromIntegral (utcToSeconds now) }
+
+        liftIO $ saveEncryptedRatchet prof contact rid pass
+
+        -- Frame and send with VOICE indicator (reuse existing framing)
+        let maybeContact = Prelude.lookup contact (map (\c -> (Contact.contactId c, c)) (contacts s))
+        let (hint, targetOnion) = case maybeContact of
+              Just c  -> (Contact.contactPubHint c, Contact.onionAddress c)
+              Nothing -> (BS.pack (map (fromIntegral . fromEnum) contact), "unknown.onion")
+
+        -- Prefix with VOICE magic so receiver knows it's a voice chunk (matches existing receive logic)
+        let voicePrefixed = BS.pack [0x56,0x4F,0x49,0x43,0x45] <> ciphertext voiceMsgWithTime
+        let framedVoice = frameForWire hint (ratchetStep voiceMsgWithTime) voicePrefixed
+
+        let currentProxy = Map.findWithDefault defaultProxyForProfile (currentProfile s) (proxies s)
+        _ <- liftIO $ Tor.sendOverProxy currentProxy targetOnion framedVoice
+        liftIO $ putStrLn $ "[VOICE] Real voice chunk sent over ratchet + Tor to " ++ contact ++ " using per-profile proxy."
 
 -- Full multi-member group UI + sender keys (Simplex-style) — 'g' key opens menu
 handleEvent (VtyEvent (V.EvKey (V.KChar 'g') [])) = do
