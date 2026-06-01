@@ -323,7 +323,7 @@ drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll
   , str "1. Run ./run-tui  → it shows your audio backends and Tor status"
   , str "2. Press 'n' to create a burner profile"
   , str "3. Press 'v' to test voice (real mic if pw-record/parecord/arecord available)"
-  , str "4. Use :set-proxy 127.0.0.1 9050 (Tor) or 4444 (I2P after i2pd) for per-profile transport (High #5). :discover for decentralized (Medium). :screenshot for marketplace photo instructions. :file for streaming file stub (Long-term)."
+  , str "4. Use :set-proxy 127.0.0.1 9050 (Tor) or 4444 (I2P after i2pd) for per-profile transport (High #5). :discover for decentralized (Medium). :screenshot for marketplace photo instructions. :file for streaming file stub (Long-term). :export for cross-device ratchet export stub (Long-term)."
   , str "5. '?' toggles this help. 'w' is the nuclear wipe (use it!)"
   , str ""
   , str "Enter          → Send encrypted message (real ratchet + AES-GCM)"
@@ -512,6 +512,11 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
       then do
         liftIO $ putStrLn "[FILE] Streaming file transfer stub (Long-term item). Future: per-chunk ratchet encryption + seek + wipe (like voice, next 'wow' after voice)."
         liftIO $ putStrLn "  (For now, use voice or messages for small data. Full impl planned.)"
+        modify $ \st -> st { input = "" }
+      else if ":export" `isInfixOf` inputStr
+      then do
+        liftIO $ putStrLn "[EXPORT] Secure cross-device ratchet export stub (Long-term). Future: first-class well-tested (QR or file, source wipe after, forward secrecy preserved)."
+        liftIO $ putStrLn "  (For now, use the 'a' actions 'Export ratchet for new device' or Android equivalent.)"
         modify $ \st -> st { input = "" }
       else if ":extreme" `isInfixOf` inputStr
       then do
@@ -1153,7 +1158,7 @@ main = do
   putStrLn "  → Just run: ./run-tui"
   putStrLn "  → It will tell you your audio backends and Tor status"
   putStrLn "  → Press 'n' for a burner profile, 'v' to test voice"
-  putStrLn "  → Type :set-proxy <host> <port> for per-profile (e.g. 127.0.0.1 4444 for I2P after starting i2pd); :discover for decentralized (Medium); :screenshot for marketplace photo instructions (your Fedora photos); :file for streaming file stub (Long-term)."
+  putStrLn "  → Type :set-proxy <host> <port> for per-profile (e.g. 127.0.0.1 4444 for I2P after starting i2pd); :discover for decentralized (Medium); :screenshot for marketplace photo instructions (your Fedora photos); :file for streaming file stub (Long-term); :export for cross-device ratchet export stub (Long-term)."
   putStrLn "  → Press '?' for full help anytime"
   putStrLn ""
   putStrLn "Full 'Normal User Quick Path' + per-OS audio/proxy one-liners are in INSTALL.md"
