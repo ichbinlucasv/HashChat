@@ -99,11 +99,11 @@ jobs:
 
           # Supply-chain (arch-3): Dependency audit (cargo-audit) - BLOCKING
           # From a paranoid perspective, non-blocking audit is security theater.
-          # We use `--deny warnings` (the reliable, modern way) which fails the build on *any* known vulnerability.
-          # This is simpler, more robust, and actually stricter than trying to parse severity levels via CLI flags.
-          # Use cargo-binstall for fast + reliable prebuilt binary installation.
+          # We use `--deny warnings` which fails the build on any known vulnerability.
+          # Use cargo-binstall (no version pin) so we always get a version that can parse the current advisory DB
+          # (including CVSS 4.0 entries that started appearing in 2026).
           cargo install cargo-binstall --locked 2>/dev/null || true
-          cargo binstall cargo-audit --version 0.20.0 --locked -y
+          cargo binstall cargo-audit --locked -y
           cargo audit --deny warnings || {
             echo ""
             echo "!!! CRITICAL: cargo audit found security advisories !!!"
