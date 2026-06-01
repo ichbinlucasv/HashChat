@@ -100,8 +100,9 @@ jobs:
           # Supply-chain (arch-3): Dependency audit (cargo-audit) - NOW BLOCKING ON HIGH/CRITICAL
           # From a paranoid perspective, non-blocking audit is security theater.
           # We fail the build on high or critical advisories.
-          # Pinned version + no silent failure so install problems surface clearly.
-          cargo install cargo-audit --version 0.20.0 --locked
+          # Use cargo-binstall for fast + reliable prebuilt binary installation (much more stable on CI than compiling from source every run).
+          cargo install cargo-binstall --locked 2>/dev/null || true
+          cargo binstall cargo-audit --version 0.20.0 --locked -y
           cargo audit --deny high --deny critical || {
             echo ""
             echo "!!! CRITICAL: cargo audit found HIGH or CRITICAL security advisories !!!"
