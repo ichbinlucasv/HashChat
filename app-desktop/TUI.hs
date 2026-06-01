@@ -443,11 +443,11 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
           ["on"] -> do
             liftIO $ setExtremeMode True
             liftIO $ putStrLn "[EXTREME] Enabled. Groups, voice, export, decoys, long history disabled. Strict posture forced. Use with extreme caution."
-            modify $ \st -> st { input = "", groups = Map.empty, currentGroup = Nothing }
+            modify $ \st -> st { input = "", groups = Map.empty, currentGroup = Nothing, securityPosture = "EXTREME (ultra-stripped mode — groups/voice/export/decoy/history disabled, strict forced)" }
           ["off"] -> do
             liftIO $ setExtremeMode False
             liftIO $ putStrLn "[EXTREME] Disabled. Back to normal burner + posture model."
-            modify $ \st -> st { input = "" }
+            modify $ \st -> st { input = "", securityPosture = "MAX PARANOID (Tails/Qubes + Tor recommended)" }
           _ -> do
             liftIO $ putStrLn "[EXTREME] Usage: :extreme on | :extreme off"
             liftIO $ putStrLn "  (Extreme mode is for journalists/high-risk in active targeting only. Disables most features.)"
