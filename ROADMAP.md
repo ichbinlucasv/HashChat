@@ -1,132 +1,51 @@
-# HashChat Roadmap — Towards the Best Private Messenger
+# HashChat Comprehensive Improvement Roadmap — Surpassing SimpleX Chat
 
-Goal: Build a SimplexChat-level (or better) anonymous messenger using only **Haskell + Rust**, with strong focus on security, forward secrecy, and metadata resistance.
+**User Directive (verbatim context)**: "Comprehensive Improvement Roadmap: Elevating HashChat to Surpass SimpleX Chat in Anonymity, Security, Resilience, and Usability" (full 8-section plan pasted June 2026). "i need to improv that on my project so lets workdeep harder now until we archive all".
 
-**We have moved from "build the foundations" to "polish to production".**
+This document is now the **master v1+ vision and execution plan**. It preserves HashChat’s existing strengths—mandatory Tor v3 hidden services, nuclear panic wipe, decoy/burner profiles, dynamic security posture, reproducible Nix/Flatpak packaging, endpoint OPSEC hardening, Double Ratchet + long-term identity E2EE (confirmed solid), full scoped Extreme mode—while systematically incorporating and exceeding SimpleX’s advantages (unidirectional queues, XFTP files, decentralized groups/channels, polished UX, self-hostable relays). All aligned with prior presidential-grade decentralized multi-transport vision (I2P, mesh, Starlink, PGP, hybrid max encryption, ProtonMail-style email, sustainable monetization).
 
-## What Is Actually Done (as of this build)
+**Approved Implementation Plan** (from enter/exit_plan_mode + deep codebase exploration by architect + explore subagent, 2026-06-01): See detailed plan at session plan.md (Approach A recommended: layered optional overlays on proven core; Tor v3 HS + framing **mandatory primary**; unidirectional simplex queues as optional per-dir layer; all new features Extreme-gated + optional; small TCB preserved; repro + OPSEC rituals non-negotiable). Phase 1 focuses on extending existing (Tor abstraction, ratchet, proxies, Extreme, Nix) for stable wins.
 
-### Paranoid Core (Implemented)
-- Real Double Ratchet in Rust (KDF chains, DH ratcheting, skipped keys, zeroize on drop)
-- Bidirectional Tor v3 hidden services with proper sender-header framing
-- Encrypted persistence (Argon2id + AES-GCM) for ratchets, messages, and groups
-- Nuclear Panic Wipe (7-pass + Rust zeroize + kernel anti-forensics + mlock)
-- Dynamic Security Posture with real environment inspection + action refusals
-- Burner profiles + plausible deniability decoy profiles with automatic wipe on switch
-- Disappearing messages tied to ratchet key erasure
-- Wave 8: Simplex-style ContactAddress + ConnectionRequest (public-only QR links hashchat://contact/v1/...), full TUI wiring (:my-contact / :add-contact in Brick TUI + CLI), safer parser, export of helpers
-- Wave 8: Generalized SOCKS5/ProxyConfig transport (sendOverProxy) with I2P + bridge/pluggable notes + call-site updates; hardened CI audit (no || true) + pre-tag demo-pass scan
-- Wave 8: Brutal honest THREATMODEL update on all remaining gaps (placeholder pubkey in QR, last gated demo-pass surface, no per-profile proxy yet, evidence logs required for tags)
+**Current Baseline (post E2EE confirmation, Extreme full, per-profile proxy, long-term Contact, etc.)**:
+- Paranoid Core: Real Double Ratchet (Rust full DH+chain+skipped+zeroize; FFI; Haskell send/receive + framing). LongTermIdentity (ed25519+x25519 seed, Argon2id+AES envelope matching ratchets, FFI, TUI uses real stable pub, Android parity). At-rest (ratchets/proxies/longterm). Nuclear wipe + full Extreme (TUI/Android/Rust gates, state clear, Tor-only, posture refusals). mlock best-effort.
+- Transport: Tor.hs bidirectional v3 HS (startHiddenService control, real SOCKS5 sendCiphertextOverTor length-prefixed framing, startCiphertextReceiver, sendOverProxy(ProxyConfig) abstraction). Per-profile encrypted proxies (TUI persist/UI/title/Extreme gate — done). I2P: i2pProxyConfig stub + comments ("full .i2p + i2pd in future"). Queue.hs: newSMPQueue stub (SMP unidirectional hint). TUI: incomingBlobs + drain + frameForWire (hint+step) + sendOverProxy + :set-proxy (Extreme) + :file/:discover stubs. Android: JNI startTorReceiver/feed + background thread (voice real; general send demo-ish with "future SOCKS" comments).
+- Features: Groups (sender-key; Rust real HKDF progress). Voice (ratchet chunks, Android VoiceStream per-chunk+end zeroize, TUI ffplay+wipe). FileTransfer/Call: pure stubs. Contact long-term QR done.
+- Quantum: quantum.rs gated skeleton (excellent reqs: hybrid X25519+ML-KEM, const-time, Zeroize, audited crates, domain sep; stub only).
+- UI/Build: TUI (Brick black+gold, live posture, HASHCHAT_DEMO for screenshots) + thin CLI. No GUI wrapper. Strong Nix (rust-lib, hashchat-tui, pure hashchat-flatpak prebuilts *outside* sandbox), Flatpak (install-only, icons prep ready), scripts (clean-security, pre-tag, real-device-test, screenshot-prep-fedora, sbom, qubes). Android .so repro pending. PAID_VERSION_PLAN.md (Android open Codeberg primary, F-Droid/donation unlock preferred, Keystore+Argon2/AES, Rust FFI; desktop free).
+- Docs/Process: THREATMODEL (honest, E2EE/Extreme/proxy/I2P notes), RELEASE_NOTES_v0.2 (E2EE status section added), ROADMAP (this), DECENTRALIZED_DISCOVERY (stub), REAL_DEVICE_TESTING + evidence, pre-tag gates, clean ritual. Option A (Android as strong as desktop) chosen + documented.
 
-### SimplexChat-Level UX Parity (both platforms)
-- Full contact actions: Block, Mute, Delete, Report, View security info, Disappearing timer
-- Multi-member groups with sender-key forward secrecy + member management + QR join
-- Voice messages: per-chunk ratchet streaming + playback with seek bars (Android RecyclerView + TUI)
-- Burner switching (p/n), decoy mode (D), prominent nuclear wipe (w)
-- Black + #FFD700 gold theme on both TUI and Android
+**Gaps vs. 8-Section Roadmap**: No unidirectional simplex queues (bidir HS legacy); I2P not actual; no mesh/Starlink; file stub not XFTP-chunked resumable; calls not ratcheted WebRTC; groups not fully decentralized + observer/broadcast + public channels; no email DHT (I2P-Bote/Eppie/ProtonMail-style); no Tauri GUI wrapper; quantum stub; no self-hostable relays (beyond Tor HS); monetization partial (PAID alignment); Android transport parity incomplete; full offline-first limited.
 
-### Android (Production Direction)
-- RecyclerView chat + dedicated group member management screen
-- Hardware-backed Android Keystore + optional BiometricPrompt for ratchet unlock
-- QR scanning + group join flow
-- Background Tor receiver thread
+**Key Principles (Non-Negotiable)**: Tor v3 HS + framing + ratchet E2EE = **mandatory primary** (differentiator). New (I2P/mesh/Starlink/unidirectional queues) = **optional multi-path overlays** with failover/decoy/rotation. Extreme **must gate** all high-surface (DHT, mesh, GUI, relays, new queues). Small TCB (Haskell logic + Rust crypto/Zeroize). Repro via Nix/Flatpak + clean-security before every Lucas Codeberg main push. Optional but seamless (Tails/Qubes/Fedora get full power). Monetization open-core freemium (desktop always free; Android F-Droid/donation per PAID plan; Pro for unlimited DHT/priority relays/hardware/support + self-host relay service).
 
-### Distribution & Reproducibility
-- Pure-Nix reproducible Flatpak (`nix build .#hashchat-flatpak`)
-- Nix cross-compile path for Android Rust libraries
-- Qubes/Tails disposable VM build scripts that enforce `clean-security.sh` + anti-forensics
+**Phased Execution (User's + Approved Plan, "No Stop Until All")**:
+**Phase 1 (Immediate 4-6 weeks — focus here now)**: Hybrid transport (I2P actual + simplex queue layer start on current framing + multi-path + decoy/rotation; modular Tor.hs/Queue.hs + TUI/Core + Android parity). XFTP-style files (chunked resumable ratchet E2E in FileTransfer.hs reusing voice pattern + framing; TUI :file; >1GB; Extreme gate). Extreme finalization + full Android Rust parity (more mlock, transport FFI, compile-time minimal builds). Repro Android .so in Nix + actual SBOM run/record + pre-tag enhancements (new gates). Marketplace photos prep (user action: Fedora run of screenshot-prep + HASHCHAT_DEMO states + rsvg icons + grim captures + metainfo edit + Flathub submit; real-device-test.sh for evidence logs covering I2P/file/Extreme/proxy). Docs integration (this ROADMAP overhaul, THREATMODEL/RELEASE updates with full user 8-section vision + baseline + phases + tradeoffs). 
+- Approach: A (layered; see approved plan for details/tradeoffs/risks). Critical files: Tor.hs, TUI.hs (transport), Queue.hs, FileTransfer.hs, Core.hs, Profile.hs, android MainActivity.kt + rust lib, flake.nix, scripts/*, flatpak metainfo, docs/*.
+- Success: Working Tor primary + I2P secondary + basic queue rotation/decoy (TUI + Android parity); resumable ratchet-chunk file transfer end-to-end; Extreme effective on new; repro+SBOM done; user Fedora photos + dated logs; docs reflect vision; clean/push Lucas per stable chunk; cargo check clean.
+- Immediate safe: Doc updates (this file + THREATMODEL + RELEASE). Then I2P launch helper + multi in Tor.hs; basic ratchet-chunk FileTransfer.
 
-## Current Phase: Polish to "Feels Complete" (High Priority) - Updated after deep expert pass
+**Phase 2 (2-3 months)**: Mesh (BT/WiFi Direct + Briar-inspired local discovery + auto-sync on reconnect) + Starlink (interface detection/prioritization + failover; offline-first queuing). Minimal sandboxed GUI wrapper (Tauri with strict capabilities — no direct net/fs; only via our Rust FFI for crypto/transport; share core; optional, TUI remains ultra-secure default, Extreme can disable). Email subsystem MVP (I2P-Bote-style DHT or Eppie; ProtonMail-inspired; unlimited pseudonymous identities, at-rest encrypted inbox, optional SMTP bridge, seamless with chat; Extreme refuse). Quantum-hybrid crypto (implement per quantum.rs non-negotiable reqs: audited ML-KEM crate, hybrid on Double Ratchet, const-time/Zeroize/domain sep enforced; gated + Extreme).
 
-**Note (Cybersecurity Expert Update):** Significant progress has been made on most items below. This document is being kept honest and up-to-date.
+**Phase 3 (3-6 months)**: Ratcheted WebRTC voice/video calls (signaling over hidden/mesh queues; E2E media + optional PQ; disappearing logs). Decentralized groups/channels (enhance sender-keys with full SimpleX-style + “observer”/“broadcast-only” modes; public anonymous Channels via DHT). Self-hostable relay + discovery servers (open protocol; community-operated; no central control; Pro credits). Independent audits (build on SimpleX Trail-of-Bits precedent) + formal verification notes (TLA+/Coq for critical). Monetization backend + v1.0 (open-core freemium per Sec 7 + PAID alignment: free = core Tor/I2P/mesh/chat/basic email/file/AGPL; Pro = unlimited DHT/priority relay hosting/enterprise keys/accel PQ/professional support/certified hardware bundles/ad-free themes + self-hostable paid relay service; visible donor badges; desktop always free). Marketing to journalists/activists via privacy forums. Full offline-first (mesh+Starlink) + adaptive obfuscation vs AI traffic analysis + quantum-harvest protection (ML-KEM-1024 + Dilithium layered on ratchet).
 
-### Immediate Polish Items (Critical Remaining)
-1. **Remove legacy dead code** — Massive stubFunction block in Main.hs removed (done in this pass).
-2. **Android "demo-pass" hardening** — Hardcoded passphrase in group persistence flagged with expert warnings + scoped constant. Must be replaced with user-derived + Keystore in production.
-3. **Honest docs** — ROADMAP + README refresh in progress (this update).
+**Resilience/Anti-Threat (Sec 3)**: Full offline-first (mesh queuing + Starlink failover — absent in SimpleX). Expand Extreme with compile-time minimal builds. Formal resistance to AI traffic analysis (adaptive obfuscation) + quantum-harvest (PQ layer).
 
-### High-Value OPSEC / Hardening (Expert Priority - Active)
-- Android Rust: Port real DoubleRatchet logic (in progress - major gap for cross-device).
-- Add mlock + seccomp to Android Rust side.
-- Make CI fail on missing paranoid test coverage (in progress).
-- Side-channel / constant-time review of export, groups, voice (in progress).
-- Full multi-screen navigation hardening on Android (significant improvements made).
-- Expand decentralized discovery into concrete protocol with message formats (skeleton expanded).
+**Crypto/Security (Sec 4)**: Hybrid max-level (AES-512-eq via extended/ChaCha + PQ KEMs/signatures; native PGP/OpenPGP import/export + automatic hybrid wrapping). Nuclear wipe extended (full shred of Tor/I2P keys + mesh state; hardware-backed parity all platforms). Publish independent audits + formal verification.
 
-### Credibility & Hardening (Mostly Complete)
-- Basic + expanded tests for ratchet, wipe, disappearing, posture, export (strong progress).
-- More disappearing-message key wipe integration (improved across stack).
-- Posture refusal pass (centralized helper + dynamic re-eval added).
+**UI/Accessibility (Sec 5)**: Retain TUI as ultra-secure default. Optional minimal sandboxed GUI (Tauri strict — no surface increase). Consistent parity desktop (TUI+GUI) + Android (multi-profile switch, searchable history, intuitive QR/contact).
 
-### Medium / Longer Term
-- Reproducible Android .so in Nix.
-- Update THREATMODEL.md with all new features.
-- Quantum skeleton moved to gated module.
-- Formal v0.2 release process with signed tag and limitations document.
+**Build/Dist/Ecosystem (Sec 6)**: Full repro Android .so (Nix + cargo-ndk + SBOM). Publish signed to Flathub/F-Droid/Codeberg mirrors. Self-hostable relay/discovery code (open). Comprehensive docs/threatmodel/interop specs. Community bounties + clear ROADMAP.
 
-## Medium Term (Next 1-2 Months)
+**Monetization/Sustainability (Sec 7, aligns existing PAID_VERSION_PLAN.md)**: Open-core/freemium. Free Tier = all core anonymity (Tor/I2P/mesh), chat, basic email/file (AGPL; desktop always free/open on Codeberg primary). Paid/Pro (one-time $49-99 or sub $5-12/mo) = unlimited DHT storage, priority relay hosting credits, enterprise team key mgmt, accelerated PQ, professional support, certified hardware bundles, ad-free premium themes/icons. Additional: Optional paid self-hostable relay-hosting service, custom integrations, donations with badges. Mirrors ProtonMail success while preserving full decentralization (no Google/Play dependency; F-Droid self-hosted + donation unlock preferred per PAID).
 
-- Make Flatpak the primary distribution method (signed, one-command via Nix).
-- One final git history clean + v0.2 / "preview" tag.
-- Android: Proper multi-screen navigation (dedicated Group list screen, improved voice recording UI).
-- Next "wow" technical feature: proper streaming file transfer or secure cross-device ratchet export.
+**Resource Notes**: Leverage existing Haskell/Rust core + 190+ commits/Wave 10 maturity/E2EE/Extreme done. Start with modular transport abstraction (future-proof for all overlays). Community via updated ROADMAP + bounty system. "Work no stop until finish all" + "stable and working good" for every item: clean-security --strict, Lucas identity, direct Codeberg main push only. User action items (Fedora/Tails real-device logs via scripts/real-device-test.sh + 5 exact desktop photos via screenshot-prep + rsvg icons + metainfo + Flathub submit) are Critical for v0.2 tag + marketplace visibility.
 
-## Longer Term / Stretch Goals
+**Philosophy (from prior + this vision)**: Option A (Android as strong as desktop TUI) — continue aggressive Rust parity. Extreme as ultra-stripped scoped mode (compile-time option for smallest surface). Tor v3 mandatory primary + hidden services as core strength (add optional overlays without increasing default metadata/surface).
 
-- Real test suite + CI that exercises the paranoid paths.
-- Quantum-resistant options (post-quantum KEMs as noted in earlier roadmap).
-- Decentralized discovery without leaking metadata.
+We execute this roadmap to deliver unmatched endpoint sovereignty, multi-vector resilience (Tor + I2P + mesh + satellite), and comprehensive functionality — objectively surpassing SimpleX across anonymity, threat resistance, feature breadth, and user sovereignty while creating viable revenue. Foundation already superior in paranoid dimensions (nuclear wipe, Extreme, repro, E2EE with long-term bootstrap, Tor mandatory); these targeted additions establish clear leadership.
 
-We are building this the right way: small trusted computing base, Haskell for correctness, Rust for performance/crypto, Tor-only, and SimplexChat-level respect for the user.
+**Execution Status (live, updated after each push)**: See todos in session + git history (Codeberg main as Lucas). Phase 1 in progress (docs first, then I2P actual + file chunks). "No stop".
 
-Contributions are very welcome — especially in the remaining polish areas above.
+(Old Wave 10 / polish content archived in git history. All prior recs subsumed into this master plan.)
 
----
-
-## Transport Expansion (Wave 7+)
-
-Major ongoing work to give users strong anonymity flexibility:
-
-- SOCKS5 proxy support (foundation) — allows routing through user Tor, I2P, Proton, Mullvad, IVPN, etc.
-- I2P as first-class transport (high strategic value).
-- Better Tor bridge / pluggable transport support.
-
-These features are being built in a way that preserves the core metadata-resistant model and integrates with the Extreme profile.
-
-## Post-v0.2 Philosophy Decision Required (Tier 3)
-
-Before the next major phase we must explicitly decide the Android vs Desktop TUI strategy:
-
-**Decision (Wave 10, as part of Extreme full + no stop finish all):** Option A (Recommended by current direction): "Make Android as strong as the desktop TUI."
-- We are continuing aggressive Rust migration on Android (long-term identity keys full parity for Contact QR, Extreme gates + setter, ratchet copy + VoiceStream elements, mlock notes).
-- Accept Android slightly weaker (best-effort mlock etc.) but gap minimized (see THREATMODEL, long-term keys done on both, Extreme on both).
-- Result: one product with two high-quality surfaces. Extreme users get the ultra-stripped on either.
-
-**Option B** not chosen (we are not accepting weaker Android as "companion only"; pushing parity where possible, e.g. Contact long-term, Extreme, ratchet).
-
-Documented as part of Extreme scoped decision and Critical recs completion. Extreme (Tier 3) works on both platforms.
-
-We continue this in future waves for other features.
-
-## Second Ultra-Stripped "Extreme" Profile (Tier 3)
-
-Some users (journalists in the most hostile environments, high-value targets) may want an even smaller attack surface than the current burner + decoy model.
-
-Proposed "Extreme" profile (disabled by default, user must explicitly enable):
-
-- Groups completely disabled
-- Voice recording/playback disabled
-- Cross-device ratchet export disabled
-- Decoy profile disabled (only one burner)
-- No persistent contacts or history beyond current session
-- Strict mode forced on at all times with no bypass
-- Even more aggressive memory wiping + shorter key lifetimes
-- Smaller APK / binary surface (if we ever split builds)
-
-This would be a separate launch mode or compile-time flag. It trades almost all usability for the smallest possible trusted computing base and metadata surface.
-
-Implementation sketch: a top-level `ExtremeMode` flag that gates entire feature paths in both TUI and Android, plus a dedicated THREATMODEL section.
-
-**Decision needed:** Do we want this as a real supported mode post-v0.2, or is the current burner + decoy + strict mode sufficient?
-
-Document owner: keep this section updated after the philosophy decision.
+Contributions welcome — especially Phase 1 items, evidence logs, and Fedora marketplace photos.

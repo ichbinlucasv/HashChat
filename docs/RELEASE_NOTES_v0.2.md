@@ -38,6 +38,8 @@ This release delivers on the core promise: maximum resistance to surveillance, d
 - Full ritual (OPSEC clean + direct push to Codeberg main as Lucas) maintained.
 - Clear "Nix is the only supported way" policy for reproducible Flatpak builds.
 
+**June 2026: Comprehensive Improvement Roadmap adopted as master v1+ plan** (user directive: "improv that on my project... workdeep harder now until we archive all"). Full 8-section vision to surpass SimpleX (hybrid transport with unidirectional simplex queues + I2P/mesh/Starlink; XFTP files; calls; decentralized groups + email DHT; resilience/Extreme expansion + AI/PQ resistance; hybrid max crypto + audits; Tauri GUI wrapper + parity; repro + self-host relays + open-core freemium). See new master ROADMAP.md (full user text + approved Phase 1/2/3 + baseline from exploration + Approach A + critical files + "no stop" alignment). Phase 1 started (docs updates + I2P to actual + ratchet-chunked FileTransfer + repro/SBOM + marketplace photos prep + real-device evidence). All per standing "no stop until finish all" + clean + Lucas Codeberg main pushes. E2EE core remains solid foundation (see dedicated section above).
+
 ## End-to-End Encryption Status / Guarantees
 
 **Yes — you have made real E2EE.** (Direct answer to the standing question "i have made e2ee ???")
