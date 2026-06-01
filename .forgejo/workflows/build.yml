@@ -1,0 +1,118 @@
+name: Build HashChat (Codeberg / Forgejo)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    # On Forgejo/Codeberg we don't have the exact same github.repository filter.
+    # We rely on repo settings + branch protection instead.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache ghcup and cargo toolchains (supply chain + speed)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ghcup
+            ~/.cargo
+          key: ${{ runner.os }}-ghcup-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-ghcup-cargo-
+
+      - name: Install dependencies (pinned GHC 9.8.4 + Rust - improved supply chain hygiene)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl gcc make libgmp-dev zlib1g-dev libncurses-dev pkg-config
+
+          # Supply chain hardened direct ghcup download with SHA256 verification.
+          # This hash must be refreshed when we intentionally upgrade ghcup.
+          GHCUP_SHA256="480e05e414d2efa5abbda0006984a3343cd4973ead7b5c48d65a55a47b40ce59"
+
+          mkdir -p "$HOME/.ghcup/bin"
+          curl -sSL "https://downloads.haskell.org/~ghcup/$(uname -m)-linux-ghcup" -o /tmp/ghcup
+
+          echo "$GHCUP_SHA256  /tmp/ghcup" | sha256sum -c --status || {
+            echo "!!! ghcup binary checksum verification FAILED !!!"
+            echo "This is a supply chain integrity failure. Aborting."
+            exit 1
+          }
+
+          install -m 755 /tmp/ghcup "$HOME/.ghcup/bin/ghcup"
+          export PATH="$HOME/.ghcup/bin:$PATH"
+
+          ghcup install ghc 9.8.4 --set
+          ghcup install cabal 3.10.3.0 --set
+
+          # Rust - controlled user-local install (same as GitHub CI)
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none
+          source "$HOME/.cargo/env"
+
+          echo "Using GHC: $(ghc --version)"
+          echo "Using Cabal: $(cabal --version)"
+
+      - name: Build everything safely
+        run: |
+          # Make sure our direct ghcup binary and cargo are in PATH
+          export PATH="$HOME/.ghcup/bin:$HOME/.cargo/bin:$PATH"
+
+          echo "GHC: $(ghc --version 2>/dev/null || echo 'not found')"
+          echo "Cabal: $(cabal --version 2>/dev/null || echo 'not found')"
+          echo "Cargo: $(cargo --version 2>/dev/null || echo 'not found')"
+
+          # Rust core (always works, no system deps needed beyond what's in the runner)
+          cargo build --release
+
+          # Stage the Rust FFI library so Cabal finds it (extra-lib-dirs: rust-lib in the .cabal file).
+          # CI resilience improvement: fail hard if the core Rust lib is missing.
+          mkdir -p rust-lib
+          cp target/release/libhashchat_rust.so rust-lib/ || { echo "FATAL: libhashchat_rust.so missing after cargo build"; exit 1; }
+
+          # Haskell: update index first (critical)
+          cabal update
+
+          # Core library + CLI only (TUI has heavier deps)
+          cabal build -f-tui hashchat
+          cabal build -f-tui hashchat-cli
+
+          echo "TUI build skipped in CI (use -f+tui locally with proper system deps)."
+
+          # Note on pre-tag checks:
+          # The hard gates (TESTING_EVIDENCE log + local .pre-tag-check-local-ran-<sha> marker)
+          # live in scripts/pre-tag-check.sh and are enforced before any signed tag.
+          # We cannot easily fail the Forgejo build on missing local marker (different from GitHub).
+
+          # Note: We no longer use Python. All builds use pure Bash + Cargo + Cabal.
+
+          cargo test --release
+
+          # Supply-chain (arch-3): Dependency audit (cargo-audit) - BLOCKING
+          # We use `--deny warnings` which fails the build on any known vulnerability.
+          # Use cargo-binstall (no version pin) so we always get a version that can parse the current advisory DB.
+          set -e
+          cargo install cargo-binstall --locked
+          cargo binstall cargo-audit --locked -y
+          cargo audit --deny warnings || {
+            echo ""
+            echo "!!! CRITICAL: cargo audit found security advisories !!!"
+            echo "The build is failing because of this. Review the output above."
+            echo "For v0.2-preview we still allow some lower-severity noise if explicitly accepted in RELEASE_PROCESS.md."
+            exit 1
+          }
+          echo "cargo audit passed (no advisories)"
+          set +e
+
+        env:
+          CARGO_TERM_COLOR: always
+
+  android-stub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Android build check (stub)
+        run: |
+          echo "Android build requires cargo-ndk + NDK. Skipping full build in CI for now."
+          ls -la android/
