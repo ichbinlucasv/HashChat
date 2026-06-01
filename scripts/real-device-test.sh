@@ -94,6 +94,18 @@ cat > "$LOG_FILE" << EOF
 - [ ] Aggressive wipes, no history persistence
 - Observations:
 
+### 9. Per-profile Proxy (High #4 - if tested)
+- [ ] :set-proxy <host> <port> (e.g. I2P 4444)
+- [ ] Persisted (check hashchat_data/proxies/)
+- [ ] Used in send (visible in title/status)
+- [ ] Extreme refuses custom
+- Observations:
+
+### 10. I2P (High #5 - if tested)
+- [ ] i2pd running, :set-proxy 127.0.0.1 4444
+- [ ] Send works over I2P SOCKS
+- Observations:
+
 ---
 
 ## Overall Result
