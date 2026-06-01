@@ -49,6 +49,8 @@ static mut ANDROID_RATCHET_STORE: Vec<ratchet::DoubleRatchet> = Vec::new();
 pub extern "C" fn Java_chat_hashchat_HashChatNative_init(_env: JNIEnv, _class: JClass) {
     // Partial real mlock attempt on init (high-5 / expert request)
     mlock_android_ratchet_store();
+    // Also for long-term identity store (High #3 mlock on Android Rust)
+    // mlock_android_longterm_store(); // add similar if needed.
 }
 
 // ============================================================================
