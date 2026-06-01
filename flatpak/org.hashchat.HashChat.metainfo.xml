@@ -24,9 +24,17 @@
 
   <launchable type="desktop-id">org.hashchat.HashChat.desktop</launchable>
 
+  <!-- Primary repository -->
+  <url type="homepage">https://codeberg.org/ichbinlucasv/HashChat</url>
+  <url type="bugtracker">https://codeberg.org/ichbinlucasv/HashChat/issues</url>
+  <url type="vcs-browser">https://codeberg.org/ichbinlucasv/HashChat</url>
+
+  <!-- GitHub mirror -->
+  <!--
   <url type="homepage">https://github.com/ichbinlucasv/HashChat</url>
   <url type="bugtracker">https://github.com/ichbinlucasv/HashChat/issues</url>
   <url type="vcs-browser">https://github.com/ichbinlucasv/HashChat</url>
+  -->
 
   <developer id="org.hashchat">
     <name>ichbinlucasv</name>

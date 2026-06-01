@@ -84,7 +84,7 @@ git push --force-with-lease origin --tags
 ```
 
 - [ ] Update known limitations in RELEASE_NOTES_v0.2.md before creating the tag.
-- [ ] Announce only after the signed tag exists on GitHub.
+- [ ] Announce only after the signed tag exists on Codeberg (primary) and GitHub mirror.
 
 ## 4. Post-Release
 

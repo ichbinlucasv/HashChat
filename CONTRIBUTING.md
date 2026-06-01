@@ -14,7 +14,7 @@ Thank you for your interest in HashChat — a maximum-anonymity messenger built 
 
 **Security vulnerabilities must be reported privately.**
 
-- Use GitHub Security Advisories, or
+- Use Codeberg Security Advisories (primary) or GitHub mirror, or
 - Contact the maintainer directly.
 
 Public issues for security problems will be closed without comment.

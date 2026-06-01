@@ -3,7 +3,12 @@
 ## For Fedora (Recommended Easy Method)
 
 ```bash
-git clone https://github.com/ichbinlucasv/HashChat.git
+# Primary repository (recommended)
+git clone https://codeberg.org/ichbinlucasv/HashChat.git
+
+# Mirror (GitHub)
+# git clone https://github.com/ichbinlucasv/HashChat.git
+
 cd HashChat
 chmod +x install-fedora.sh
 ./install-fedora.sh

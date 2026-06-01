@@ -1,7 +1,7 @@
 # Android Paid Version Plan
 
 ## Goals
-- Keep full source code open on GitHub for auditability and trust.
+- Keep full source code open on Codeberg (primary) and GitHub mirror for auditability and trust.
 - Offer the Android app as a paid download (initially ~20 CHF, later cheaper) to help fund infrastructure.
 - Maintain the strongest possible security and OPSEC on Android.
 
@@ -32,7 +32,7 @@ A basic Rust + JNI skeleton now exists under `android/src/main/rust/`.
 ## Monetization Philosophy (Updated Recommendation)
 
 - **Linux / Desktop**: Always free and fully open source.
-- **Android**: Source remains 100% public on GitHub. Distribution can be:
+- **Android**: Source remains 100% public on Codeberg (primary) + GitHub mirror. Distribution can be:
   - Self-hosted F-Droid repository (recommended for privacy)
   - Direct APK with donation-based unlock (preferred over Google Play billing)
   - Optional paid unlock key for convenience

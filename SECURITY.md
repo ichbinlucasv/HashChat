@@ -11,7 +11,7 @@ Only the latest `main` branch is supported for security issues.
 **Please do NOT open public issues for security problems.**
 
 Instead, report privately by:
-- Opening a private security advisory on GitHub (if available), or
+- Opening a private security advisory on Codeberg (primary) or GitHub mirror (if available), or
 - Contacting the maintainer directly (preferred for serious issues).
 
 We take reports seriously and will respond within 48 hours.
