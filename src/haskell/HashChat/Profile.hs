@@ -6,18 +6,33 @@ module HashChat.Profile
   , switchBurnerProfile
   , getCurrentRatchets
   , addContactToProfile
+  -- Wave 9: per-profile transport proxy foundation (SOCKS5 / I2P / VPN per burner)
+  , ProxyConfig(..)
+  , ProfileProxyStore
+  , defaultProxyForProfile
+  , setProfileProxy
   ) where
 
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.ByteString (ByteString)
 import Data.Word (Word32)
+import HashChat.Tor (ProxyConfig(..), defaultProxyConfig)
 
 type ProfileName = String
 type ContactRatchets = Map String Word32   -- contact name -> ratchet ID
 
 -- A profile owns its own set of ratchets (complete isolation between burners)
 type ProfileStore = Map ProfileName ContactRatchets
+
+-- Wave 9: per-profile proxy storage (foundation for "use different transport per burner identity")
+type ProfileProxyStore = Map ProfileName ProxyConfig
+
+defaultProxyForProfile :: ProxyConfig
+defaultProxyForProfile = defaultProxyConfig
+
+setProfileProxy :: ProfileName -> ProxyConfig -> ProfileProxyStore -> ProfileProxyStore
+setProfileProxy name cfg store = Map.insert name cfg store
 
 -- Create a new burner profile (starts with no contacts)
 createBurnerProfile :: ProfileName -> ProfileStore -> ProfileStore

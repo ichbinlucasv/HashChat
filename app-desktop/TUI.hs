@@ -361,17 +361,25 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
     -- =====================================================================
     if ":my-contact" `isInfixOf` inputStr || inputStr == ":contact"
       then do
-        liftIO $ putStrLn "=== MY CONTACT (Simplex-style shareable address) ==="
-        liftIO $ putStrLn "WARNING: PUBLIC DATA ONLY. Private keys never leave this device."
-        liftIO $ putStrLn "WARNING: Current pubkey is PLACEHOLDER (ratchet-derived). Real long-term identity keypair pending (X3DH/Rust)."
-        liftIO $ putStrLn "Share this link/QR with friends. They scan -> send ConnectionRequest back to your onion."
-        let demoOnion = "myhashchatv3demoaddressforqr.onion"  -- In real: from running hidden service or per-profile stored
-        let dummyPub  = BS.replicate 32 0xAB  -- TODO Wave 8+: replace with real exported long-term pub from Rust/Profile
-        let addr = createContactAddress demoOnion dummyPub
-        let link = contactAddressToLink addr
-        liftIO $ putStrLn $ "hashchat://contact link (copy or QR this): " ++ link
-        liftIO $ putStrLn "============================================================"
-        modify $ \st -> st { input = "", inputHistory = inputHistory st ++ [txt] }
+        -- Wave 9: Concrete posture refusal for contact QR (metadata surface = long-term identity exposure)
+        currentP <- liftIO getSecurityPosture
+        if not (isActionAllowedInPosture currentP "contact_qr") || not ("MAX PARANOID" `isInfixOf` (securityPosture s))
+          then do
+            liftIO $ putStrLn "[SECURITY] POSTURE REFUSAL: Generating contact / profile QR link blocked."
+            liftIO $ putStrLn "[SECURITY] This expands long-term identity surface. Only in trusted/strict environments."
+            modify $ \st -> st { input = "", securityPosture = currentP }
+          else do
+            liftIO $ putStrLn "=== MY CONTACT (Simplex-style shareable address) ==="
+            liftIO $ putStrLn "WARNING: PUBLIC DATA ONLY. Private keys never leave this device."
+            liftIO $ putStrLn "WARNING: Current pubkey is PLACEHOLDER (ratchet-derived). Real long-term identity keypair pending (X3DH/Rust)."
+            liftIO $ putStrLn "Share this link/QR with friends. They scan -> send ConnectionRequest back to your onion."
+            let demoOnion = "myhashchatv3demoaddressforqr.onion"
+            let dummyPub  = BS.replicate 32 0xAB
+            let addr = createContactAddress demoOnion dummyPub
+            let link = contactAddressToLink addr
+            liftIO $ putStrLn $ "hashchat://contact link (copy or QR this): " ++ link
+            liftIO $ putStrLn "============================================================"
+            modify $ \st -> st { input = "", inputHistory = inputHistory st ++ [txt] }
       else if ":add-contact " `Data.List.isPrefixOf` inputStr
       then do
         let link = drop (length ":add-contact ") inputStr

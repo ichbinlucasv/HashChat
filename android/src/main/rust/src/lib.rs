@@ -68,6 +68,10 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_init(_env: JNIEnv, _class: J
 // NEVER rely on this mlock for protection against memory forensics on Android.
 // The posture hook already surfaces "mlock best-effort only".
 //
+// Wave 9: VoiceStream chain keys + skipped keys are also sensitive and should eventually
+// be covered by the same best-effort mlock (or explicit madvise + zeroize on destroy).
+// Real protection on Android remains Keystore + short lifetime + explicit wipe.
+//
 // This limitation must remain loudly documented until (if ever) a reliable
 // solution exists. See also: THREATMODEL.md, RELEASE_NOTES_v0.2.md, TESTING_STRATEGY.md
 // ============================================================================
@@ -542,6 +546,8 @@ struct VoiceStream {
     id: u32,
     chain_key: [u8; 32],
     step: u32,
+    // Wave 9: basic skipped keys support (real Double Ratchet parity direction)
+    skipped_keys: Vec<(u32, [u8; 32])>, // (step, key) for out-of-order chunks
 }
 
 impl VoiceStream {
@@ -550,7 +556,18 @@ impl VoiceStream {
             id,
             chain_key: [0u8; 32],
             step: 0,
+            skipped_keys: Vec::new(),
         }
+    }
+
+    /// Wave 9: explicit destroy with zeroization (lifecycle completeness)
+    fn destroy(&mut self) {
+        self.chain_key.zeroize();
+        for (_, k) in &mut self.skipped_keys {
+            k.zeroize();
+        }
+        self.skipped_keys.clear();
+        self.step = 0;
     }
 
     /// Real HKDF-based advancement for voice chunks (matches the pattern we proved with GroupSenderKey).
@@ -616,6 +633,12 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_processVoiceChunk(
     _class: JClass,
     encrypted: jbyteArray,
 ) -> jbyteArray {
+    // Wave 9: Real Extreme / strict gate at the Rust boundary for voice (defense in depth)
+    // Even if Kotlin already refused in EXTREME_MODE, the FFI surface must also refuse.
+    if !is_environment_strict() {
+        let msg = b"STRICT/EXTREME: Voice chunk processing refused in bad environment";
+        return vec_to_java_byte_array(&mut env, msg);
+    }
     // This is the official entry point. All future voice security logic belongs here.
     let enc_jba = unsafe { wrap_byte_array(encrypted) };
     let enc_len = env.get_array_length(&enc_jba).unwrap_or(0) as usize;
