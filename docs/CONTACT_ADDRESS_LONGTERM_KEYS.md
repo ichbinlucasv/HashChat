@@ -120,18 +120,19 @@ Haskell side will call these via the existing Rust FFI layer (or extend it).
 - [ ] Decide storage format and encryption envelope
 
 ### Phase B – Core Rust Implementation
-- Add `LongTermIdentity` struct + generation in Rust
-- Implement encrypted storage (reuse ratchet envelope logic)
-- Add FFI functions: `create`, `get_public_keys`, `wipe`
-- Unit tests + zeroization tests
+- [x] Add `LongTermIdentity` struct + generation in Rust
+- [x] Implement encrypted storage (reuse ratchet envelope logic)
+- [x] Add FFI functions: new, get_public (ed+x), export/import encrypted, wipe
+- [x] Compiles and basic tests in module
+- Wired into Haskell Core.hs with wrappers + session cached ID for stability
 
 ### Phase C – Integration
-- Wire into Haskell `Profile` / `Core` layer
-- Update `Contact.hs` if needed (or keep it as pure data type)
-- Modify TUI generation path (`:my-contact`)
-- Add Extreme / posture gating
-- Android JNI + Kotlin integration
-- Update tests and documentation
+- [x] Wire into Haskell `Core` layer (newLongTermIdentity, getLongTermIdentityPublic, export/import, wipe + session cached)
+- [x] Modify TUI generation path (`:my-contact`) — now uses real ed25519 pub from LongTermIdentity instead of random
+- [ ] Full per-profile storage (currently session-cached; real would use ProfileKey + blob per profile)
+- [ ] Android JNI + Kotlin integration (pending, similar FFI)
+- [ ] Update tests and documentation
+- Extreme / posture gating already present in TUI for contact QR
 
 ### Phase D – Polish & Migration
 - Migration path for existing profiles

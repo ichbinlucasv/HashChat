@@ -49,10 +49,9 @@
 - Reproducible Nix paths (Flatpak strong, Android still requires cargo-ndk path but now fail-hard).
 
 ### Wave 8 Additions: Simplex-style Contact/Profile QR + Transport Expansion
-- **ContactAddress / profile sharing**: Implemented hashchat://contact/v1/<onion>/<len:hexpub> links + parse/generate roundtrip in Haskell (Contact.hs). Wired into both thin CLI and real Brick TUI (app-desktop/TUI.hs) with :my-contact / :add-contact. ConnectionRequest mirror for the "scanner replies" flow.
+- **ContactAddress / profile sharing**: Implemented hashchat://contact/v1/<onion>/<len:hexpub> links + parse/generate roundtrip in Haskell (Contact.hs). Wired into both thin CLI and real Brick TUI (app-desktop/TUI.hs) with :my-contact / :add-contact.
   - **Metadata reality**: Only public onion + public identity key in the QR/link. Private material never leaves device. Matches Simplex model and our burner philosophy.
-  - **Progress on this gap (E)**: Desktop TUI now uses proper cryptographically secure random (via cryptonite) for the pub in generated contact QR links. Android has a basic generator. 
-  - Remaining: Real persisted per-profile long-term signing/identity keypair (XEd25519 or similar) generated and stored securely (Rust + Keystore on Android, equivalent on desktop), with only the public part exported for QR. This is still the biggest open item for full Simplex-style profile sharing strength.
+  - **Wave 10 progress (Critical item)**: Real LongTermIdentity implemented in Rust (ed25519 + x25519 from seed, Argon2id+AES-GCM encrypted envelope reusing ratchet patterns, zeroize). FFI for new/get_public/export/import/wipe. Haskell Core wrappers + session-cached ID. TUI :my-contact now uses real ed25519 pub from the identity system instead of per-call random. Full per-profile encrypted storage + Android still to be wired (session demo for now). See docs/CONTACT_ADDRESS_LONGTERM_KEYS.md.
   - Extreme mode: generation should be refused (notes added; full gate pending deeper Android/TUI posture integration).
 - **Transport (SOCKS5 foundation + I2P/bridges path)**: Generalized sendCiphertextOverTor + sendOverProxy(ProxyConfig) in Tor.hs. TUI and callsites updated to use it. Default = local Tor 9050.
   - **I2P**: Documented as next: run i2pd, point Socks5Proxy at its SOCKS port (usually 4444 or 9050-equivalent). Garlic routing gives different metadata/latency profile vs Tor (stronger against some correlation, weaker exit diversity).

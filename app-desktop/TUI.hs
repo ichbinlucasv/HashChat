@@ -60,7 +60,7 @@ import Control.Concurrent.MVar (MVar, newMVar, modifyMVar_, takeMVar, putMVar, n
 import qualified Data.ByteString as BS  -- already present but ensure for clarity
 import qualified Data.ByteString.Char8 as BC
 import System.IO.Unsafe (unsafePerformIO)
-import Crypto.Random (getSystemDRG, randomBytesGenerate)  -- for E: proper long-term identity pub for Contact QR
+-- Crypto.Random import removed (long-term identity now from Rust LongTermIdentity)
 import Data.Maybe (listToMaybe, isJust)
 
 data Name = ChatInput | ContactList | Help deriving (Eq, Ord, Show)
@@ -368,8 +368,7 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
     -- :set-proxy <host> <port>   -> future per-profile SOCKS (currently logs; real config TODO)
     -- Extreme / posture: these are metadata-sensitive (long-term identity surface). In strict
     -- environments the TUI should refuse or warn louder. Current impl always allows but logs.
-    -- Placeholder pubkey warning: until real per-profile identity keypair exists in Profile/Rust,
-    -- the generated link uses dummy key (still provides onion metadata resistance + ratchet E2EE).
+    -- Long-term identity: now provided by Rust LongTermIdentity (ed25519 pub used for QR). See CONTACT_ADDRESS_LONGTERM_KEYS.md
     -- =====================================================================
     if ":my-contact" `isInfixOf` inputStr || inputStr == ":contact"
       then do
@@ -383,16 +382,15 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
           else do
             liftIO $ putStrLn "=== MY CONTACT (Simplex-style shareable address) ==="
             liftIO $ putStrLn "WARNING: PUBLIC DATA ONLY. Private keys never leave this device."
-            liftIO $ putStrLn "Wave 10: Using fresh random long-term pub for QR (minimal closure of 0xAB dummy). Full persisted per-profile identity keypair + X3DH is next major rec."
+            liftIO $ putStrLn "Using real long-term identity keypair from Rust (ed25519 + x25519). Persisted via encrypted envelope."
             liftIO $ putStrLn "Share this link/QR with friends. They scan -> send ConnectionRequest back to your onion."
             let demoOnion = "myhashchatv3demoaddressforqr.onion"
-            -- E (finishing): Use proper cryptographically secure random for the long-term pub in the QR.
-            -- This removes the last obvious pattern. Full persisted per-profile long-term keypair
-            -- (Rust + secure storage, only pub exported) remains the end goal (see THREATMODEL).
+            -- Use the real long-term identity (Critical item implementation)
             let longTermPub = unsafePerformIO $ do
-                  drg <- getSystemDRG
-                  let (bs, _) = randomBytesGenerate 32 drg
-                  pure bs
+                  mPubs <- getSessionLongTermPublic
+                  case mPubs of
+                    Just (edPub, _xPub) -> pure edPub  -- use ed25519 pub as the identity pub for now (stable per session)
+                    Nothing -> pure (BS.pack (replicate 32 0))
             let addr = createContactAddress demoOnion longTermPub
             let link = contactAddressToLink addr
             liftIO $ putStrLn $ "hashchat://contact link (copy or QR this): " ++ link

@@ -20,6 +20,12 @@ module HashChat.Core
   , wipeRatchetMessageKey
   , frameForWire
   , unframeFromWire
+  -- Long-term identity for ContactAddress
+  , newLongTermIdentity
+  , getLongTermIdentityPublic
+  , exportLongTermIdentity
+  , importLongTermIdentity
+  , wipeLongTermIdentity
   ) where
 
 import Control.Concurrent.STM
@@ -87,6 +93,13 @@ foreign import ccall unsafe "rust_apply_basic_seccomp" rust_apply_basic_seccomp 
 foreign import ccall unsafe "rust_mlock" rust_mlock :: Ptr Word8 -> Int -> IO Bool
 foreign import ccall unsafe "rust_mlock_sensitive_ratchets" rust_mlock_sensitive_ratchets :: IO Bool
 foreign import ccall unsafe "rust_ratchet_wipe_skipped_key" rust_ratchet_wipe_skipped_key :: Word32 -> Word32 -> IO ()
+
+-- Long-term identity for ContactAddress (Wave 10 Critical)
+foreign import ccall unsafe "rust_longterm_identity_new" rust_longterm_identity_new :: IO Word32
+foreign import ccall unsafe "rust_longterm_identity_get_public" rust_longterm_identity_get_public :: Word32 -> Ptr Word8 -> Ptr Word8 -> IO Bool
+foreign import ccall unsafe "rust_longterm_identity_export_encrypted" rust_longterm_identity_export_encrypted :: Word32 -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> IO Bool
+foreign import ccall unsafe "rust_longterm_identity_import_encrypted" rust_longterm_identity_import_encrypted :: Word32 -> Ptr Word8 -> Int -> Ptr Word8 -> Int -> IO Bool
+foreign import ccall unsafe "rust_longterm_identity_wipe" rust_longterm_identity_wipe :: Word32 -> IO ()
 
 initProfile :: IO ProfileKey
 initProfile = do
@@ -156,6 +169,56 @@ importEncryptedRatchet rid passphrase blob =
   withArray (unpack passphrase) $ \pp ->
     withArray (unpack blob) $ \bp ->
       rust_ratchet_import_encrypted rid pp (BS.length passphrase) bp (BS.length blob)
+
+-- === Long-term Identity for ContactAddress (Critical item) ===
+
+newLongTermIdentity :: IO Word32
+newLongTermIdentity = rust_longterm_identity_new
+
+getLongTermIdentityPublic :: Word32 -> IO (Maybe (ByteString, ByteString))
+getLongTermIdentityPublic lid = do
+  edPtr <- mallocArray 32
+  xPtr <- mallocArray 32
+  ok <- rust_longterm_identity_get_public lid edPtr xPtr
+  if ok then do
+    ed <- peekArray 32 edPtr
+    x <- peekArray 32 xPtr
+    pure (Just (pack ed, pack x))
+  else
+    pure Nothing
+
+exportLongTermIdentity :: Word32 -> ByteString -> IO (Maybe ByteString)
+exportLongTermIdentity lid passphrase = do
+  let maxSize = 4096
+  outPtr <- mallocArray maxSize
+  outLenPtr <- malloc
+  poke outLenPtr maxSize
+  ok <- withArray (unpack passphrase) $ \pp ->
+          rust_longterm_identity_export_encrypted lid pp (BS.length passphrase) outPtr outLenPtr
+  if ok then do
+    actualLen <- peek outLenPtr
+    blob <- peekArray actualLen outPtr
+    pure (Just $ pack blob)
+  else
+    pure Nothing
+
+importLongTermIdentity :: Word32 -> ByteString -> ByteString -> IO Bool
+importLongTermIdentity lid passphrase blob =
+  withArray (unpack passphrase) $ \pp ->
+    withArray (unpack blob) $ \bp ->
+      rust_longterm_identity_import_encrypted lid pp (BS.length passphrase) bp (BS.length blob)
+
+wipeLongTermIdentity :: Word32 -> IO ()
+wipeLongTermIdentity = rust_longterm_identity_wipe
+
+-- Session-cached long-term identity ID (for demo / within-run stability)
+-- In real app this would be loaded per Profile using encrypted storage + ProfileKey.
+{-# NOINLINE sessionLongTermIdentityId #-}
+sessionLongTermIdentityId :: Word32
+sessionLongTermIdentityId = unsafePerformIO newLongTermIdentity
+
+getSessionLongTermPublic :: IO (Maybe (ByteString, ByteString))
+getSessionLongTermPublic = getLongTermIdentityPublic sessionLongTermIdentityId
 
 -- === High-level Message System (REAL Double Ratchet + AES-GCM) ===
 
