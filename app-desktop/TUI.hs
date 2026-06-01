@@ -727,8 +727,11 @@ recordVoiceChunkDesktop = do
 -- 4. Visual indicator: "● Recording..." + countdown messages printed.
 -- 5. Clear fallback: explicit messages when no recorder or all fail.
 --
--- Playback (receive side) already does real ffplay + temp wipe + ratchet key cleanup.
--- Full send of recorded voice over ratchet + Tor still needs the TODO in the 'v' handler.
+-- Voice end-to-end on desktop is now complete for recording + sending:
+-- - Real mic capture via pw-record / parecord / arecord (with good fallbacks)
+-- - Local playback + wipe for immediate feedback
+-- - Full ratchet encryption + framing with VOICE magic + send over Tor using per-profile proxy (from D)
+-- This was the main remaining item from previous voice work.
 handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
   drainIncoming
   s <- get
@@ -786,8 +789,10 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
         let framedVoice = frameForWire hint (ratchetStep voiceMsgWithTime) voicePrefixed
 
         let currentProxy = Map.findWithDefault defaultProxyForProfile (currentProfile s) (proxies s)
-        _ <- liftIO $ Tor.sendOverProxy currentProxy targetOnion framedVoice
-        liftIO $ putStrLn $ "[VOICE] Real voice chunk sent over ratchet + Tor to " ++ contact ++ " using per-profile proxy."
+        result <- liftIO $ try (Tor.sendOverProxy currentProxy targetOnion framedVoice)
+        case result of
+          Left err -> liftIO $ putStrLn $ "[VOICE] ERROR sending voice chunk: " ++ show (err :: SomeException)
+          Right _  -> liftIO $ putStrLn $ "[VOICE] ✓ Real voice chunk sent over ratchet + Tor to " ++ contact ++ " using per-profile proxy."
 
 -- Full multi-member group UI + sender keys (Simplex-style) — 'g' key opens menu
 handleEvent (VtyEvent (V.EvKey (V.KChar 'g') [])) = do

@@ -123,6 +123,41 @@ See `THREATMODEL.md` for why this matters.
 
 For maximum security on any of these OSes, combine with the dynamic posture checks and nuclear wipe.
 
+**Detailed per-OS Desktop Notes (Fedora / Ubuntu / Arch / Tails / Qubes)**
+
+**Fedora (40+ recommended)**:
+- PipeWire is default → `pw-record` should just work for voice.
+- Use `dnf install pipewire-utils alsa-utils` if recorders are missing.
+- The `run-tui` script will now clearly show available audio backends at startup.
+- For best reproducibility: prefer the Nix/Flatpak path over native cabal.
+
+**Ubuntu (22.04+ or 24.04+)**:
+- Newer releases default to PipeWire. Older ones may still be PulseAudio-only (`parecord`).
+- Install: `sudo apt install pipewire pipewire-pulse alsa-utils`
+- Run inside a hardened VM or with AppArmor profiles for extra paranoia.
+- The launcher now detects and reports the audio stack.
+
+**Arch Linux**:
+- Rolling release — be careful with ghcup/cabal pins. Prefer Nix for reproducible builds.
+- PipeWire is common: `sudo pacman -S pipewire pipewire-pulse wireplumber alsa-utils`
+- Excellent for desktop experimentation. Use the improved `run-tui` diagnostics.
+
+**Tails**:
+- Strongest amnesia properties.
+- Audio is often limited in the default environment — enable it explicitly if needed.
+- `arecord` is usually the only reliable recorder. `run-tui` will warn accordingly.
+- Never persist anything. Use the Flatpak if possible (copy from another machine).
+- Combine with Tails' built-in bridges for the `:set-proxy` feature.
+
+**Qubes OS (strongly recommended for compartmentalization)**:
+- Run HashChat in its own qube (ideally disposable or with strict firewall).
+- Audio: depends on the template. Fedora templates usually have better PipeWire support.
+- Use `:set-proxy` to route through a dedicated sys-vpn or sys-whonix qube.
+- Build using the `scripts/qubes-build.sh` (it enforces clean + disposable best practices).
+- The launcher will help you see exactly what audio/proxy resources are available inside the qube.
+
+If you are on any of these OSes and hit voice or proxy issues, run `./run-tui` first — it now prints the detected audio backends and basic Tor status. This is the fastest way to debug on your specific setup.
+
 ## Android
 
 Currently in early development. Planned as a paid app (initially ~20 CHF, later cheaper).
