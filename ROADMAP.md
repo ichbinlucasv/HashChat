@@ -97,17 +97,16 @@ These features are being built in a way that preserves the core metadata-resista
 
 Before the next major phase we must explicitly decide the Android vs Desktop TUI strategy:
 
-**Option A (Recommended by current direction):** "Make Android as strong as the desktop TUI."
-- Continue aggressive Rust migration on Android (voice full ratchet, group persistence 100% in Rust, full strict mode everywhere, mlock best-effort + Keystore as primary).
-- Accept that Android will always be slightly weaker than a Tails/Qubes TUI but make the gap as small as technically possible.
-- Result: one product with two high-quality surfaces.
+**Decision (Wave 10, as part of Extreme full + no stop finish all):** Option A (Recommended by current direction): "Make Android as strong as the desktop TUI."
+- We are continuing aggressive Rust migration on Android (long-term identity keys full parity for Contact QR, Extreme gates + setter, ratchet copy + VoiceStream elements, mlock notes).
+- Accept Android slightly weaker (best-effort mlock etc.) but gap minimized (see THREATMODEL, long-term keys done on both, Extreme on both).
+- Result: one product with two high-quality surfaces. Extreme users get the ultra-stripped on either.
 
-**Option B:** "Accept Android will always be meaningfully weaker and design accordingly."
-- Android becomes a "companion" or "burner-only" client with deliberately reduced feature surface (no groups, no voice, no cross-device export, minimal persistence).
-- Desktop TUI becomes the "serious" paranoid tool.
-- Extreme users get Option C (see below).
+**Option B** not chosen (we are not accepting weaker Android as "companion only"; pushing parity where possible, e.g. Contact long-term, Extreme, ratchet).
 
-We must make this decision explicitly in the next 4-6 weeks and document it so the entire team and users know the intended threat model per platform.
+Documented as part of Extreme scoped decision and Critical recs completion. Extreme (Tier 3) works on both platforms.
+
+We continue this in future waves for other features.
 
 ## Second Ultra-Stripped "Extreme" Profile (Tier 3)
 
