@@ -76,6 +76,17 @@ echo "  5. Submit to Flathub (flathub.org/submit) — this gets it into Fedora (
 echo "  See docs/SCREENSHOTS.md + flatpak/ICONS.md for full guidelines + OPSEC (always run ./scripts/clean-security.sh --strict before/after captures)."
 echo ""
 echo "After shots: ./scripts/clean-security.sh --strict ; git add your-screenshots ; git commit -m 'marketplace: add Fedora desktop screenshots' ; git push (as Lucas to Codeberg)."
+echo ""
+echo "For metainfo update snippet (copy to flatpak/org.hashchat.HashChat.metainfo.xml <screenshots>):"
+echo "  Use your uploaded URLs for the 4 desktop + 1 Android (we prepped captions in the file)."
+echo "  Example:"
+echo "  <screenshot type=\"default\">"
+echo "    <caption>Desktop TUI main chat (Fedora) with live Security Posture (MAX PARANOID) in black + #FFD700 gold theme. Demo contacts + explicit Tor v3 / Double Ratchet cues.</caption>"
+echo "    <image>https://your-host/hashchat-tui-main.png</image>"
+echo "  </screenshot>"
+echo "  ... (add the others from the file)"
+echo ""
+echo "Then commit the metainfo update and push as Lucas."
 
 # Optional: auto-run in demo for quick test (user can ctrl-c)
 if [ "${AUTO_RUN:-0}" = "1" ]; then
