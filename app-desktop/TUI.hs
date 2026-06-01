@@ -487,7 +487,8 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
                 modify $ \st -> st { input = "", proxies = newProxies }
           _ -> do
             liftIO $ putStrLn "[D] Usage: :set-proxy <host> <port>"
-            liftIO $ putStrLn "  Example: :set-proxy 127.0.0.1 9050"
+            liftIO $ putStrLn "  Example Tor: :set-proxy 127.0.0.1 9050"
+            liftIO $ putStrLn "  Example I2P (after i2pd running): :set-proxy 127.0.0.1 4444  (High #5 actual I2P start)"
             modify $ \st -> st { input = "" }
       else if ":extreme" `isInfixOf` inputStr
       then do

@@ -89,6 +89,10 @@ jobs:
 
           cargo test --release
 
+          # High #7: Make CI surface missing paranoid test coverage (wipe, posture, disappearing, long-term, Extreme).
+          # Real blocking is in pre-tag-check.sh for signed tags. CI here runs the tests.
+          echo "Paranoid test coverage note: ensure 9+ tests cover critical paths. Full gate in pre-tag for v0.2."
+
           # Supply-chain (arch-3): Dependency audit (cargo-audit) - BLOCKING
           # We use `--deny warnings` which fails the build on any known vulnerability.
           # Use cargo-binstall (no version pin) so we always get a version that can parse the current advisory DB.
