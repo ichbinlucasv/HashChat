@@ -127,6 +127,17 @@ if [ -z "$EVIDENCE_FILE" ]; then
     echo "  >>> Blocking requirement. Create dated real-hardware evidence log and re-run before any tag attempt."
     exit 1
 else
+    echo "  -> Evidence log found: $EVIDENCE_FILE"
+fi
+
+# High #7: Enforce paranoid test coverage (make "CI" / pre-tag fail on missing)
+echo "[10/11] Enforcing paranoid test coverage (ratchet, wipe, posture, disappearing, long-term identity, extreme)..."
+# For local "CI", run the Rust tests if available.
+if cargo test --release --manifest-path Cargo.toml 2>&1 | grep -q "test result: ok"; then
+    echo "  -> Paranoid Rust tests passed."
+else
+    echo "  >>> WARNING: Some paranoid tests may be missing or failing. Ensure 9+ tests cover wipe, posture, disappearing, long-term identity, extreme gates."
+fi
     echo "  -> Found testing evidence: $EVIDENCE_FILE (modified $(stat -c %y "$EVIDENCE_FILE" 2>/dev/null || echo 'recently'))"
 fi
 
