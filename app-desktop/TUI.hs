@@ -266,6 +266,10 @@ drawMain st = vBox
   , borderWithLabel (withAttr (attrName "title") $ str " Message (encrypted on send) ") $ str (T.unpack (input st) ++ "█")
   , withAttr (attrName "highlight") $ str $ "Security Posture: " ++ securityPosture st ++ "  [live - re-evaluated on events]"
   , str " "
+  , let currentProxy = Map.findWithDefault Tor.defaultProxyForProfile (currentProfile st) (proxies st)
+        proxyStr = case currentProxy of Tor.Socks5Proxy h p -> " | Proxy: " ++ h ++ ":" ++ show p; _ -> ""
+    in withAttr (attrName "highlight") $ str $ "Transport: Tor v3" ++ proxyStr ++ "  [per-profile support]"
+  , str " "
   , if "LOW" `isInfixOf` securityPosture st || "DEGRADED" `isInfixOf` securityPosture st
       then withAttr (attrName "danger") $ str "[!! POSTURE DEGRADED — Sensitive actions restricted !!]"
       else if "EXTREME" `isInfixOf` securityPosture st || unsafePerformIO isExtremeMode
