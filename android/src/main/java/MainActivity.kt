@@ -775,13 +775,16 @@ class MainActivity : AppCompatActivity() {
      * refuse to even attempt the insecure path (forces migration or explicit demo).
      */
     private fun getInsecureGroupDemoPassphrase(): ByteArray {
+        if (EXTREME_MODE) {
+            throw IllegalStateException("EXTREME MODE: Group persistence with demo-pass is completely disabled.")
+        }
         if (HashChatNative.isStrictModeEnabled()) {
             // In a clean/paranoid environment we refuse the last demo-pass path.
             // This is progress toward removing it entirely.
             throw IllegalStateException("STRICT MODE: demo-pass group persistence path is refused. Migrate to user-derived + Keystore.")
         }
         // Still allowed only in clearly bad/dev environments (the original intent of the demo).
-        // NEXT STEP (Highest + Tier 2): replace the final call sites with real Keystore-wrapped user passphrase or hard-fail the whole group feature outside demo builds.
+        // Wave 6/7: We are actively removing the last usages. Next step = full user-derived + Keystore roundtrip or complete removal.
         android.util.Log.w("HashChat", "LAST DEMO-PASS USAGE: group persistence path. This string must disappear before v0.2 final.")
         return DEMO_INSECURE_RATCHET_PASSPHRASE.toByteArray()
     }
