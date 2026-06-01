@@ -64,6 +64,26 @@ contactPubHint = pubHint
 contactToAddress :: Contact -> ByteString -> ContactAddress
 contactToAddress contact pubKey = createContactAddress (onionAddress contact) pubKey
 
+-- =====================================================================
+-- Simplex-style Connection Request (Wave 7)
+-- =====================================================================
+-- When someone scans your ContactAddress (QR), they create this and send it to your onion.
+-- It contains their public info so you can reply securely.
+data ConnectionRequest = ConnectionRequest
+  { crOnion  :: String
+  , crPubKey :: ByteString
+  , crVersion :: Int
+  }
+
+createConnectionRequest :: String -> ByteString -> ConnectionRequest
+createConnectionRequest onion pubKey = ConnectionRequest onion pubKey 1
+
+connectionRequestToLink :: ConnectionRequest -> String
+connectionRequestToLink cr =
+  "hashchat://connect/v" ++ show (crVersion cr) ++ "/" ++
+  takeWhile (/= '.') (crOnion cr) ++ "/" ++
+  concatMap (printf "%02x") (BS.unpack (crPubKey cr))
+
 -- In the real app these would be persisted encrypted per profile (like ratchets)
 -- and exchanged via QR / link (X3DH-style) over Tor.
 
