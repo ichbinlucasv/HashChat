@@ -74,6 +74,13 @@ Known Weak Areas (documented):
 - No full SBOM for Haskell side yet
 
 This summary should be reviewed before any signed release tag.
+
+For SBOM diff review (Critical for v0.2):
+- Run this script before each signed tag, saving output to sbom-<tag>/
+- Diff the rust-sbom.json and summary.txt against previous tag's.
+- Look for new high-risk crates, removed deps, or changes in critical paths (ring, zeroize, dalek, argon2).
+- If using cargo-sbom or syft in future, use their diff tools.
+- Record findings in RELEASE_NOTES_v0.2.md under Known Limitations or Supply Chain.
 EOF
 
 echo ""
