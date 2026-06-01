@@ -1047,10 +1047,10 @@ class MainActivity : AppCompatActivity() {
     // Real compartmentalization (separate ratchets, hidden volume, different passphrase) is longer-term.
     // For v0.2 this at least gives a visual + state toggle that is STRICT MODE GATED.
 
-    // Wave 3: Minimal Extreme profile stub (Tier 3 stripped profile)
+    // Wave 3 / Wave 10: Extreme profile (decision: implement scoped - see docs/EXTREME_PROFILE_DECISION.md)
     // When true, many high-surface features (groups, voice, export, decoy) are hard-disabled.
-    // This is the beginning of the ultra-stripped mode for extreme threat models.
-    private val EXTREME_MODE = false   // Set to true only for the most paranoid builds
+    // This is the ultra-stripped mode for extreme threat models. Runtime flag from profile/Core equivalent.
+    private var EXTREME_MODE = false   // Controlled via settings or intent; mirrors TUI isExtremeMode. Gated in onToggle etc.
 
     private var currentProfile: String = "Default"
     private var isDecoyActive: Boolean = false
