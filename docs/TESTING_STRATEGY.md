@@ -53,9 +53,9 @@ Maintain a private (or redacted public) log:
 - Any new issues discovered for THREATMODEL.md or ROADMAP.
 
 ## Next Steps (Before Real v0.2 Ship)
-- [ ] Expand this file with concrete command sequences for Tails + GrapheneOS test sessions.
-- [ ] Add a `make test-real` or `scripts/real-device-test.sh` helper (guarded, never runs in CI).
-- [ ] User (ichbinlucasv) performs at least one full real-device + Tails pass before executing the signed v0.2 tag.
+- [x] Add `scripts/real-device-test.sh` helper (guided evidence log generator).
+- [x] Create dedicated real device testing guide: `docs/REAL_DEVICE_TESTING.md` with Tails + GrapheneOS procedures.
+- [ ] Perform and log at least one full real-device + Tails/Qubes + physical Android test pass before any signed v0.2 tag (Critical requirement).
 
 This plan directly addresses the expert recommendation: "You need a plan for how you will actually test on real hardware regularly (not just emulators)."
 
