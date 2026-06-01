@@ -600,6 +600,11 @@ impl VoiceStream {
         self.step = 0;
     }
 
+    // Full per-stream: explicit end for zeroize on call end (High #2)
+    fn end_stream(&mut self) {
+        self.destroy();
+    }
+
     /// Real HKDF-based advancement for voice chunks (matches the pattern we proved with GroupSenderKey).
     /// Derives a per-chunk message key and advances the chain with domain separation.
     fn process_chunk(&mut self, encrypted: &[u8]) -> Vec<u8> {
@@ -1102,6 +1107,22 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_longtermWipe(
         let lid = id as usize;
         if lid < ANDROID_LONGTERM_STORE.len() {
             ANDROID_LONGTERM_STORE[lid].wipe();
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_voiceStreamEnd(
+    _env: JNIEnv,
+    _class: JClass,
+    stream_id: jint,
+) {
+    unsafe {
+        let sid = stream_id as usize;
+        if sid < VOICE_STREAMS.len() {
+            VOICE_STREAMS[sid].end_stream();
+            // Remove to minimize lifetime
+            VOICE_STREAMS.remove(sid);
         }
     }
 }

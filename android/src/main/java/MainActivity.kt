@@ -67,6 +67,7 @@ object HashChatNative {
     external fun longtermGetPublic(id: Int): ByteArray
     external fun longtermWipe(id: Int)
     external fun setExtremeMode(enabled: Boolean)
+    external fun voiceStreamEnd(streamId: Int)  // for full per-stream zeroize/destroy (High #2 VoiceStream)
 
     // Combined Kotlin + JNI strict mode (authoritative for refusal decisions).
     // Expands the old stub with real root detection, dangerous props via reflection + files,
@@ -605,6 +606,7 @@ class MainActivity : AppCompatActivity() {
                 start()
                 setOnCompletionListener {
                     isPlayingVoice = false
+                    HashChatNative.voiceStreamEnd(0)  // full per-stream destroy + zeroize (High #2)
                     Toast.makeText(this@MainActivity, "Voice complete (ratchet key advanced + wiped after playback)", Toast.LENGTH_SHORT).show()
                     // Frontend OPSEC: explicit wipe feedback for user awareness (matches TUI)
                 }
