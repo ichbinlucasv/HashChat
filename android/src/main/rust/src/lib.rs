@@ -654,6 +654,7 @@ fn process_voice_chunk_internal(encrypted: &[u8]) -> Vec<u8> {
         // ALL RECOMMENDATIONS deep wave: Real per-stream direction
         if VOICE_STREAMS.is_empty() {
             VOICE_STREAMS.push(VoiceStream::new(0));
+            mlock_android_ratchet_store();  // best-effort mlock for voice (High #3 mlock + Extreme full)
         }
 
         // Moving toward full per-stream Double Ratchet (key chain, zeroize on close, skipped keys)
@@ -1074,6 +1075,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_longtermNew(
     unsafe {
         let id = ANDROID_LONGTERM_STORE.len() as jint;
         ANDROID_LONGTERM_STORE.push(longterm_identity::LongTermIdentity::generate());
+        mlock_android_ratchet_store();  // mlock for long-term identity store (High #3)
         id
     }
 }
