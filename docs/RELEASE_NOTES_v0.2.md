@@ -129,7 +129,7 @@ This is a preview release. The following are still weak or incomplete (see exper
 - Kotlin instrumented tests: Mostly structural skeletons (assertTrue placeholders remain in places). Need real-device runs + actual assertions (polish-1).
 - Long-term ContactAddress identity: Core + full Rust LongTermIdentity (ed25519 + x25519 + encrypted envelope) + TUI/Android wiring complete (real stable pub in QR instead of random). X3DH/auto initial ratchet bootstrap + full per-profile persist are the remaining polish (documented in new E2EE Status section).
 - Screenshots: Detailed capture instructions + 4 descriptive slots in metainfo.xml created (docs/SCREENSHOTS.md). Actual images still needed.
-- SBOM process: generate-sbom.sh exists; formal diff review between tags still needed for signed v0.2 (see RELEASE_PROCESS).
+- SBOM process: generate-sbom.sh run in Phase 1 (sbom/ artifacts generated with rust + haskell notes); pre-tag now gates on presence. Formal diff vs prior tag + review still needed before signed v0.2.
 - Extreme mode: Basic TUI support; full cross-platform + tests pending.
 - Not recommended for high-risk operational use without additional review.
 
