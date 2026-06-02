@@ -535,6 +535,8 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
                     createDirectoryIfMissing True (takeDirectory (getProxyPath prof))
                     BS.writeFile (getProxyPath prof) blob
                     liftIO $ putStrLn $ "[D] Proxy for profile '" ++ prof ++ "' set to " ++ show newCfg ++ " (persisted encrypted per-profile)"
+                    -- Phase 1 I2P: if 4444, call launch helper (prints user steps + best-effort future spawn)
+                    when (p == 4444) $ liftIO Tor.launchI2pdIfNeeded
                   Nothing -> liftIO $ putStrLn "[SECURITY] Failed to persist proxy blob"
                 modify $ \st -> st { input = "", proxies = newProxies }
           _ -> do

@@ -10,6 +10,8 @@ module HashChat.Tor
   , ProxyConfig(..)
   , defaultProxyConfig
   , i2pProxyConfig
+  , launchI2pdIfNeeded
+  , sendOverMultiProxy
   ) where
 
 import Network.Socket
@@ -299,16 +301,18 @@ launchTorIfNeeded cfg torrcPath = do
 launchI2pdIfNeeded :: IO ()
 launchI2pdIfNeeded = do
   putStrLn "=== I2P (garlic routing) support (Phase 1 Roadmap) ==="
-  putStrLn "1. Install i2pd (dnf/apt/brew: i2pd or from source)."
-  putStrLn "2. Run: i2pd --daemon (or i2pd in background). Default SOCKS 127.0.0.1:4444."
-  putStrLn "3. In HashChat TUI: :set-proxy 127.0.0.1 4444  (per-profile, encrypted persist)."
-  putStrLn "   Title will show 'Proxy: 127.0.0.1:4444'. sendOverProxy uses it for .onion or .i2p."
-  putStrLn "4. Multi-path (Tor primary + I2P): configure per-contact or profile; future queue rotation"
-  putStrLn "   will send decoys/redundancy across paths (see Queue.hs + Tor multi-path notes)."
-  putStrLn "Garlic vs Tor: different circuit metadata; use for diversity or when Tor is blocked."
-  putStrLn "Extreme mode: will refuse custom proxies (forces Tor-only minimal surface)."
-  putStrLn "See ROADMAP.md (hybrid transport section), THREATMODEL (I2P notes), TUI help."
-  -- Future: actual Process.createProcess for i2pd with our config + readiness poll.
+  putStrLn "1. Install i2pd (Fedora: sudo dnf install -y i2pd ; or apt/brew equivalent)."
+  putStrLn "2. Run in bg: i2pd --daemon --log=stdout (or i2pd &). Wait for 'SOCKS5' ready. Default 127.0.0.1:4444."
+  putStrLn "3. In HashChat: :set-proxy 127.0.0.1 4444   (called auto when you set I2P port; per-profile, encrypted persist in hashchat_data/proxies/)"
+  putStrLn "   Title/status shows 'Proxy: 127.0.0.1:4444'. sendOverProxy (i2pProxyConfig) used for sends (onion or .i2p)."
+  putStrLn "4. Multi-path/hybrid (Tor primary + I2P failover): see sendOverMultiProxy in this module + Queue rotation/decoy for redundancy."
+  putStrLn "   (In TUI send paths: occasional decoy on secondary; full in later Phase1/2.)"
+  putStrLn "Garlic routing (I2P): different metadata profile vs Tor (resilient to some Tor-specific correlation; good when Tor blocked)."
+  putStrLn "Extreme: refuses custom proxy (Tor-only forced for minimal surface)."
+  putStrLn "OPSEC: test on Fedora/Tails; log proxy use; Extreme + posture for high risk."
+  putStrLn "See ROADMAP.md (Sec1 hybrid + I2P), THREATMODEL.md (I2P + queues), scripts/real-device-test.sh (Phase1 I2P tests), TUI help."
+  -- Future (safe, non-breaking): actual createProcess "i2pd" [...] + poll 4444 readiness + handle ph. Currently user-driven for OPSEC control.
+  putStrLn "[launchI2pdIfNeeded] Helper complete. If i2pd binary present in PATH, future version will best-effort spawn."
 
 -- Basic multi-path helper stub (Phase 1 start; used by higher layers for failover).
 -- In real: attempt primary, on failure/timeout try secondary (I2P), log for OPSEC review.
