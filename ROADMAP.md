@@ -44,7 +44,7 @@ This document is now the **master v1+ vision and execution plan**. It preserves 
 
 We execute this roadmap to deliver unmatched endpoint sovereignty, multi-vector resilience (Tor + I2P + mesh + satellite), and comprehensive functionality — objectively surpassing SimpleX across anonymity, threat resistance, feature breadth, and user sovereignty while creating viable revenue. Foundation already superior in paranoid dimensions (nuclear wipe, Extreme, repro, E2EE with long-term bootstrap, Tor mandatory); these targeted additions establish clear leadership.
 
-**Execution Status (live, updated after each push)**: See todos in session + git history (Codeberg main as Lucas). Phase 1 in progress (docs first, then I2P actual + file chunks). "No stop".
+**Execution Status (live, updated after each push)**: See todos in session + git history (Codeberg main as Lucas). Phase 1: docs done, I2P launch+multi, real XFTP files in FileTransfer + TUI, deeper queue rotation in TUI (AppState + runtime rotate on sends for msg/file/voice + QROT announce frames + decoys + receive handling + basic qid persist/load + UI in 'i' + init on add/new + Extreme gates + pre-tag gates + SBOM run + Android note). Multiple pushes as Lucas. "No stop until archive all". Next: more Android parity, SBOM diff, user Fedora photos/evidence.
 
 (Old Wave 10 / polish content archived in git history. All prior recs subsumed into this master plan.)
 
