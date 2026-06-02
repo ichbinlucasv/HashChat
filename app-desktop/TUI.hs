@@ -172,6 +172,31 @@ proxyBaseDir = "hashchat_data/proxies"
 getProxyPath :: ProfileName -> FilePath
 getProxyPath profile = combine proxyBaseDir (profile ++ ".proxy.enc")
 
+-- Phase 1 deeper: basic (non-encrypted for QIDs since public endpoints) queue id persist per contact
+-- (in full would encrypt with sessionPass like ratchets)
+saveContactQueues :: ProfileName -> String -> Q.ContactQueues -> IO ()
+saveContactQueues profile c cq = do
+  let pdir = getProfileDir profile
+  createDirectoryIfMissing True pdir
+  let qpath = combine pdir (c ++ ".qids")
+  let sQ = Q.qId (Q.sendQ cq)
+  let rQ = Q.qId (Q.recvQ cq)
+  BS.writeFile qpath (BS.intercalate (BS.pack [10]) [sQ, rQ])  -- newline sep
+
+loadContactQueues :: ProfileName -> String -> IO (Maybe Q.ContactQueues)
+loadContactQueues profile c = do
+  let pdir = getProfileDir profile
+  let qpath = combine pdir (c ++ ".qids")
+  ex <- doesFileExist qpath
+  if not ex then pure Nothing else do
+    bs <- BS.readFile qpath
+    let parts = BS.split 10 bs
+    if length parts >= 2 then do
+      let sq = Q.SMPQueue (parts !! 0) Q.Send c 0 True
+      let rq = Q.SMPQueue (parts !! 1) Q.Receive c 0 True
+      pure $ Just (Q.ContactQueues sq rq 0)
+    else pure Nothing
+
 -- Prompt for passphrase (simple, echoes for demo; later use haskeline or similar)
 promptPassphrase :: String -> IO BS.ByteString
 promptPassphrase msg = do
@@ -648,6 +673,10 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
         liftIO $ saveEncryptedRatchet prof contact rid pass
         let updatedMsgs = Map.findWithDefault [] contact (messages st) ++ [msgWithTime]
         liftIO $ saveEncryptedMessages "hashchat_data" prof contact pass updatedMsgs
+        -- Phase 1 deeper: also persist queues (qids) for this contact
+        case Map.lookup contact (contactQueues s) of
+          Just cq -> liftIO $ saveContactQueues prof contact cq
+          Nothing -> pure ()
 
         -- Real send over Tor using proper Contact onion + pubHint (no more hardcoded strings)
         let maybeContact = Prelude.lookup contact (map (\c -> (Contact.contactId c, c)) (contacts s))
@@ -1171,6 +1200,10 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'i') [])) = do
   liftIO $ putStrLn "E2EE: Double Ratchet + AES-256-GCM (forward secrecy)"
   liftIO $ putStrLn "Transport: Tor v3 hidden service only"
   liftIO $ putStrLn "Posture at last eval: " ++ securityPosture s
+  -- Phase 1 deeper queue info
+  case Map.lookup contact (contactQueues s) of
+    Just cq -> liftIO $ putStrLn $ "Queues (simplex): sendQ=" ++ show (BS.take 8 $ Q.qId (Q.sendQ cq)) ++ "... recvQ=" ++ show (BS.take 8 $ Q.qId (Q.recvQ cq)) ++ "... lastRot=" ++ show (Q.lastRot cq)
+    Nothing -> liftIO $ putStrLn "Queues: none yet (will init on send)"
   modify $ \st -> st { actionPending = False }
 
 handleEvent (VtyEvent (V.EvKey (V.KChar 't') [])) = do
@@ -1242,6 +1275,14 @@ app = App
           pure (Map.insert c msgs acc)
         ) Map.empty (Map.toList loadedRatchets)
 
+      -- Phase 1 deeper: load persisted queues (qids) for contacts that have them
+      loadedQs <- foldM (\acc (c, _) -> do
+          mq <- liftIO $ loadContactQueues "Default" c
+          case mq of
+            Just q -> pure (Map.insert c q acc)
+            Nothing -> pure acc
+        ) Map.empty (Map.toList loadedRatchets)
+
       realPosture <- liftIO getSecurityPosture
 
       modify $ \s -> s
@@ -1249,7 +1290,7 @@ app = App
         , sessionPass     = finalPass
         , messages        = loadedMessages
         , securityPosture = realPosture
-        , contactQueues   = Map.empty  -- Phase 1: queues in-mem for now (init on first send; full persist later)
+        , contactQueues   = loadedQs
         }
 
       liftIO $ putStrLn $ "[OK] Loaded " ++ show (Map.size loadedRatchets) ++ " ratchet(s) with forward secrecy continuity."
