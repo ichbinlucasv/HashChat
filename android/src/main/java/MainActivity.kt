@@ -272,7 +272,13 @@ class MainActivity : AppCompatActivity() {
                     val fakeIncomingCt = ct // would arrive from network
                     val decrypted = HashChatNative.decryptWithKey(fakeKey, fakeIncomingCt)
                     val incomingText = if (decrypted.isNotEmpty()) String(decrypted) else "Peer message (JNI decrypt path active)"
-                    addMessage("Peer: $incomingText [via hidden service + JNI decrypt]", false)
+                    if (incomingText.startsWith("QROT:")) {
+                        // Phase 1 queue parity receive: apply rotate
+                        HashChatNative.rotateQueueForContact(currentProfile)
+                        addMessage("Peer: [QROT announce received + queue rotated for parity]", false)
+                    } else {
+                        addMessage("Peer: $incomingText [via hidden service + JNI decrypt]", false)
+                    }
                 }, 900)
             }
         }
