@@ -267,18 +267,12 @@ class MainActivity : AppCompatActivity() {
                 addMessage("You: $text [E2EE + JNI + Tor + queue $via]", true)
                 input.text.clear()
 
-                // Simulate incoming framed blob over bidirectional Tor + real JNI decrypt
+                // Simulate incoming: put to general receive processor (full QROT handling centralized)
                 messageList.postDelayed({
                     val fakeIncomingCt = ct // would arrive from network
-                    val decrypted = HashChatNative.decryptWithKey(fakeKey, fakeIncomingCt)
-                    val incomingText = if (decrypted.isNotEmpty()) String(decrypted) else "Peer message (JNI decrypt path active)"
-                    if (incomingText.startsWith("QROT:")) {
-                        // Phase 1 queue parity receive: apply rotate
-                        HashChatNative.rotateQueueForContact(currentProfile)
-                        addMessage("Peer: [QROT announce received + queue rotated for parity]", false)
-                    } else {
-                        addMessage("Peer: $incomingText [via hidden service + JNI decrypt]", false)
-                    }
+                    generalMessageQueue.put(fakeIncomingCt)
+                    // Also feed Rust
+                    HashChatNative.feedReceivedData(fakeIncomingCt)
                 }, 900)
             }
         }
@@ -290,6 +284,8 @@ class MainActivity : AppCompatActivity() {
         // The thread now starts the real Rust Tor receiver and feeds it data.
         // Voice chunks go through: Rust receiver → feedReceivedData → Kotlin queue → JNI decrypt + ratchet + SeekBar
         private val voiceChunkQueue = java.util.concurrent.LinkedBlockingQueue<ByteArray>()
+        // Phase 1 full: general message queue for text, QROT control msgs, file chunks etc. (receive processor parity with TUI drainIncoming)
+        private val generalMessageQueue = java.util.concurrent.LinkedBlockingQueue<ByteArray>()
 
         Thread {
             try {
@@ -316,6 +312,32 @@ class MainActivity : AppCompatActivity() {
                     }
                 }.apply { isDaemon = true }.start()
 
+                // Full general receive processor for QROT, text, file etc. (deep parity)
+                Thread {
+                    while (true) {
+                        val frame = generalMessageQueue.take()
+                        try {
+                            // Demo decrypt (real: unframe + lookup rid by hint + decryptWithKey or FFI)
+                            val fakeKey = ByteArray(32) { (it + 7).toByte() }
+                            val decrypted = HashChatNative.decryptWithKey(fakeKey, frame)
+                            val text = if (decrypted.isNotEmpty()) String(decrypted) else "Peer (general)"
+                            runOnUiThread {
+                                if (text.startsWith("QROT:")) {
+                                    val contactKey = currentProfile
+                                    HashChatNative.rotateQueueForContact(contactKey)
+                                    // Update local recvQid from announced (peer rotated their sendQ = our recvQ)
+                                    val announced = text.substring(5).toByteArray(Charsets.UTF_8).copyOf(32)
+                                    val curr = contactQueues[contactKey] ?: Pair(ByteArray(32), ByteArray(32))
+                                    contactQueues[contactKey] = curr.first to announced
+                                    addMessage("Peer: [QROT announce received + queues rotated (full simplex in receive processor)]", false)
+                                } else {
+                                    addMessage("Peer (general): $text [JNI + full queue parity]", false)
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }.apply { isDaemon = true }.start()
+
                 while (true) {
                     Thread.sleep(1800)
                     runOnUiThread {
@@ -331,11 +353,11 @@ class MainActivity : AppCompatActivity() {
                             HashChatNative.pushReceivedVoiceChunk(frame)
                             voiceChunkQueue.put(frame)
                         } else {
-                            val fakeKey = ByteArray(32) { (it + 7).toByte() }
+                            // Non-voice: put to general receive processor for QROT/text/file handling
                             val fakeCt = "background-received".toByteArray()
-                            val dec = HashChatNative.decryptWithKey(fakeKey, fakeCt)
-                            val text = if (dec.isNotEmpty()) String(dec) else "Peer (bg Tor)"
-                            addMessage("Peer (bg Tor): $text [JNI]", false)
+                            generalMessageQueue.put(fakeCt)
+                            // Also feed for Rust layer
+                            HashChatNative.feedReceivedData(fakeCt)
                         }
                     }
                 }
@@ -503,9 +525,10 @@ class MainActivity : AppCompatActivity() {
         val proxy = profileProxies[currentProfile]
         val proxyNote = if (proxy != null) "via ${proxy.first}:${proxy.second}" else "via default Tor"
         Toast.makeText(this, "Sent ${framedChunks.size} ratchet-encrypted file chunks $proxyNote (FFI parity with TUI FileTransfer). In real: transmit framed over SOCKS, handle QROT/queues on send.", Toast.LENGTH_LONG).show()
-        // Simulate receive for demo (feed one chunk back)
+        // Simulate receive for demo (feed + put to general receive processor for QROT/file parity)
         if (framedChunks.isNotEmpty()) {
             HashChatNative.feedReceivedData(framedChunks[0])
+            generalMessageQueue.put(framedChunks[0])
         }
     }
 
