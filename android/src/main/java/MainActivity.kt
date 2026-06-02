@@ -242,7 +242,7 @@ class MainActivity : AppCompatActivity() {
                 // 1. Create/get ratchet via JNI
                 // 2. Encrypt plaintext with ratchet key via JNI (AES-256-GCM)
                 // 3. Frame with sender hint (see Core.hs frameForWire)
-                // 4. Hand to Tor hidden service (future full SOCKS5 client in Kotlin or Rust)
+                // 4. Hand to Tor hidden service (Phase 1 Roadmap: full SOCKS5 / ProxyConfig in Kotlin or via Rust FFI for I2P + file chunked XFTP parity with desktop). See Tor.hs / FileTransfer for model.
                 val rid = HashChatNative.ratchetNew()
                 val pt = text.toByteArray(Charsets.UTF_8)
                 // In a full implementation we would derive the per-message key from the ratchet first
