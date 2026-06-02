@@ -38,6 +38,7 @@ import HashChat.Core
 import qualified HashChat.Contact as Contact
 import HashChat.Contact (Contact(..), defaultContact, ContactAddress(..), createContactAddress, contactAddressToLink, parseContactAddress, contactToAddress)
 import qualified HashChat.FileTransfer as FileTransfer  -- Phase 1 Roadmap XFTP ratchet-chunked (reuses E2EE/transport)
+import qualified HashChat.Queue as Q  -- Phase 1: deeper unidirectional simplex queue rotation, decoys, announcements for metadata resistance
 import MessageUI
 import qualified HashChat.Tor as Tor  -- Real Tor hidden service transport scaffolding started (SOCKS5/ProxyConfig foundation for I2P + bridges)
 import Control.Monad (when, void, foldM)
@@ -62,6 +63,7 @@ import Control.Concurrent.MVar (MVar, newMVar, modifyMVar_, takeMVar, putMVar, n
 import qualified Data.ByteString as BS  -- already present but ensure for clarity
 import qualified Data.ByteString.Char8 as BC
 import System.IO.Unsafe (unsafePerformIO)
+import System.Random (randomRIO)  -- Phase 1: queue decoy size + rotation randomness
 -- Crypto.Random import removed (long-term identity now from Rust LongTermIdentity)
 import Data.Maybe (listToMaybe, isJust)
 
@@ -91,6 +93,7 @@ data AppState = AppState
   , currentGroup    :: Maybe String                         -- active group for multi-member chat
   -- D: Per-profile proxy store (Wave 9 skeleton now being wired)
   , proxies         :: ProfileProxyStore                    -- profile -> SOCKS5/I2P/VPN config
+  , contactQueues   :: Map String Q.ContactQueues           -- Phase 1 Roadmap: per-contact unidirectional send/recv queues for simplex-style rotation/decoy
   }
 
 initialState :: AppState
@@ -142,6 +145,13 @@ initialState =
   , groups          = demoGroups
   , currentGroup    = demoCurrentGroup
   , proxies         = if isDemo then Map.singleton "Default" (Tor.Socks5Proxy "127.0.0.1" 9050) else Map.empty   -- D: demo proxy for marketplace shots showing custom transport
+  , contactQueues   = if isDemo 
+                      then unsafePerformIO $ do
+                        aq <- Q.newContactQueues "Alice"
+                        bq <- Q.newContactQueues "Bob"
+                        sq <- Q.newContactQueues "Support"
+                        pure $ Map.fromList [("Alice", aq), ("Bob", bq), ("Support", sq)]
+                      else Map.empty
   }
 
 -- === Real Encrypted Ratchet Persistence (Argon2id + AES-GCM) ===
@@ -382,14 +392,27 @@ drainIncoming = do
                   let contact = if Map.member hintStr (ratchets st) then hintStr else currentContact st
                   let updated = Map.insertWith (++) contact [msg] (messages st)
                   saveEncryptedMessages "hashchat_data" (currentProfile st) contact (sessionPass st) (updated Map.! contact)
-                  putStrLn $ "[TOR] Successfully received & decrypted message for " ++ contact ++ " via framed header (real bidirectional!)"
-                  -- Voice chunk special path from the actual Tor receiver: if this is a framed voice chunk,
-                  -- trigger real playback with progress + ratchet key wipe after.
-                  when (BS.isPrefixOf (BS.pack [0x56,0x4F,0x49,0x43,0x45]) rawCt) $ do
-                      liftIO $ playVoiceChunk rawCt
-                      -- Extra: wipe the specific message key used for this voice chunk
-                      liftIO $ wipeRatchetMessageKey rid 0  -- real: use actual step from frame
-                  pure $ st { messages = updated }
+                  -- Phase 1 deeper: handle incoming queue rotation announcement (QROT: prefix in decrypted content)
+                  if BS.isPrefixOf (BS.pack $ map (fromIntegral . fromEnum) "QROT:") (content msg) then do
+                    let newQid = BS.drop 5 (content msg)
+                    liftIO $ putStrLn $ "[QUEUE] Peer announced rotation of their sendQ (our recvQ) for " ++ contact ++ " -- simplex metadata resistance active"
+                    let mqs = Map.lookup contact (contactQueues st)
+                    cq <- case mqs of
+                            Just q -> pure q
+                            Nothing -> liftIO $ Q.newContactQueues contact
+                    newR <- liftIO $ Q.rotateQueue (Q.recvQ cq)
+                    let updatedQ = newR { Q.qId = newQid, Q.lastRot = fromIntegral (ratchetStep msg) }
+                    let newCq = cq { Q.recvQ = updatedQ }
+                    pure $ st { messages = updated, contactQueues = Map.insert contact newCq (contactQueues st) }
+                  else do
+                    putStrLn $ "[TOR] Successfully received & decrypted message for " ++ contact ++ " via framed header (real bidirectional!)"
+                    -- Voice chunk special path from the actual Tor receiver: if this is a framed voice chunk,
+                    -- trigger real playback with progress + ratchet key wipe after.
+                    when (BS.isPrefixOf (BS.pack [0x56,0x4F,0x49,0x43,0x45]) rawCt) $ do
+                        liftIO $ playVoiceChunk rawCt
+                        -- Extra: wipe the specific message key used for this voice chunk
+                        liftIO $ wipeRatchetMessageKey rid 0  -- real: use actual step from frame
+                    pure $ st { messages = updated }
                 Nothing -> do
                   putStrLn "[TOR] Frame parsed but decryption failed (wrong ratchet or corruption)."
                   pure st
@@ -459,6 +482,9 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
               , inputHistory = inputHistory st ++ [txt]
               }
             liftIO $ putStrLn "[CONTACT] Contact added from QR/link. You can now send (ratchet will be created on first message)."
+            -- Phase 1: init queues for new contact (unidirectional simplex)
+            newQ <- liftIO $ Q.newContactQueues (take 8 (caOnion ca))
+            modify $ \st -> st { contactQueues = Map.insert (take 8 (caOnion ca)) newQ (contactQueues st) }
           Nothing -> do
             liftIO $ putStrLn "[CONTACT] Invalid or malformed contact link. Must be hashchat://contact/v1/<onion>/<len:hexpub>"
             modify $ \st -> st { input = "" }
@@ -517,6 +543,7 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
           then liftIO $ putStrLn "[FILE] Usage: :file /path/to/file  (or :sendfile /path). Sends ratchet-chunked E2EE (Phase 1 XFTP-style, resumable, FS per chunk like voice)."
           else do
             currentP <- liftIO getSecurityPosture
+            let extremeOn = unsafePerformIO isExtremeMode
             if not (isActionAllowedInPosture currentP "file")
               then do
                 liftIO $ putStrLn "[SECURITY] POSTURE REFUSAL: File transfer blocked in current posture/Extreme."
@@ -541,6 +568,27 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
                 let hint = case maybeContact of
                       Just c  -> Contact.contactPubHint c
                       Nothing -> BS.pack (map (fromIntegral . fromEnum) contact)
+                -- Phase 1: deeper queue rotation also for file transfers (announce + occasional decoy)
+                when (not extremeOn && isActionAllowedInPosture currentP "file") $ do
+                  let mqs = Map.lookup contact (contactQueues s)
+                  cq <- case mqs of
+                          Just q -> pure q
+                          Nothing -> liftIO $ Q.newContactQueues contact
+                  if Q.shouldRotate cq 0
+                    then do
+                      newSq <- liftIO $ Q.rotateQueue (Q.sendQ cq)
+                      let newCq = cq { Q.sendQ = newSq, Q.lastRot = 1 }
+                      let rotAnnounce = "QROT:" <> Q.qId newSq
+                      let annFrame = frameForWire hint 0 (BS.pack $ map (fromIntegral . fromEnum) rotAnnounce)
+                      _ <- liftIO $ Tor.sendOverProxy currentProxy targetOnion annFrame
+                      liftIO $ putStrLn "[QUEUE] File: rotated sendQ + announced (simplex)"
+                      modify $ \st -> st { contactQueues = Map.insert contact newCq (contactQueues st) }
+                    else pure ()
+                  when (True) $ do  -- occasional for file too
+                    decoy <- liftIO $ Q.generateDecoy 1024
+                    let dframe = frameForWire hint 1 decoy
+                    _ <- liftIO $ try (Tor.sendOverProxy currentProxy targetOnion dframe) :: IO (Either SomeException ())
+                    liftIO $ putStrLn "[QUEUE] File: sent decoy padding"
                 liftIO $ putStrLn $ "[FILE] Starting real ratchet-chunked transfer of " ++ path ++ " to " ++ targetOnion ++ " (proxy: " ++ show currentProxy ++ ")"
                 liftIO $ FileTransfer.fileSend rid hint path currentProxy targetOnion Tor.sendOverProxy $ \pct ->
                   liftIO $ putStrLn $ "  Progress: " ++ show pct ++ "% (ratchet advanced per chunk, wipe on complete/expire)"
@@ -608,8 +656,42 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
               Nothing -> (BS.pack (map (fromIntegral . fromEnum) contact), "unknown.onion")
         let framed = frameForWire hint (ratchetStep msgWithTime) (ciphertext msgWithTime)
         liftIO $ putStrLn $ "[TOR] Sending framed ciphertext to " ++ targetOnion ++ " (real contact mapping + header)"
-        -- D finished: Use per-profile proxy if set for current burner, else default (local Tor)
+
+        -- fetch proxy early for queue announce/decoy use
         let currentProxy = Map.findWithDefault defaultProxyForProfile (currentProfile s) (proxies s)
+
+        -- === Phase 1 deeper queue rotation / decoy in TUI (simplex-style unidirectional queues) ===
+        -- Check/rotate per-contact queues, announce via special QROT: control frame (peer parses in drain),
+        -- send occasional decoy traffic on same path for padding/correlation resistance.
+        -- Layered on existing framing/ratchet (no change to ratchet IDs). Extreme disables.
+        currentP <- liftIO getSecurityPosture
+        let extremeOn = unsafePerformIO isExtremeMode
+        when (not extremeOn && isActionAllowedInPosture currentP "send") $ do
+          let mqs = Map.lookup contact (contactQueues s)
+          cq <- case mqs of
+                  Just q -> pure q
+                  Nothing -> liftIO $ Q.newContactQueues contact
+          if Q.shouldRotate cq (fromIntegral $ ratchetStep msgWithTime)
+            then do
+              newSq <- liftIO $ Q.rotateQueue (Q.sendQ cq)
+              newRq <- liftIO $ Q.rotateQueue (Q.recvQ cq)
+              let newCq = cq { Q.sendQ = newSq, Q.recvQ = newRq, Q.lastRot = fromIntegral $ ratchetStep msgWithTime }
+              -- Announce new queue id to peer (first frame or control). Peer updates its view of our sendQ.
+              let rotAnnounce = "QROT:" <> Q.qId newSq
+              let annFrame = frameForWire hint (ratchetStep msgWithTime) (BS.pack $ map (fromIntegral . fromEnum) rotAnnounce)
+              _ <- liftIO $ Tor.sendOverProxy currentProxy targetOnion annFrame
+              liftIO $ putStrLn $ "[QUEUE] Rotated unidirectional sendQ for " ++ contact ++ " (new QID announced for simplex metadata resistance)"
+              modify $ \st -> st { contactQueues = Map.insert contact newCq (contactQueues st) }
+            else pure ()
+          -- Occasional decoy (every ~5 msgs) using generateDecoy for padding (sent as extra framed blob)
+          when (ratchetStep msgWithTime `mod` 5 == 0) $ do
+            decoySz <- liftIO $ randomRIO (BS.length framed - 20, BS.length framed + 50)
+            decoy <- liftIO $ Q.generateDecoy decoySz
+            let decoyFrame = frameForWire hint (ratchetStep msgWithTime + 999) decoy  -- offset step to not collide
+            _ <- liftIO $ try (Tor.sendOverProxy currentProxy targetOnion decoyFrame) :: IO (Either SomeException ())
+            liftIO $ putStrLn "[QUEUE] Sent decoy blob (size padding + correlation resistance on secondary path)"
+
+        -- D finished: Use per-profile proxy (already fetched for queue logic)
         _ <- liftIO $ Tor.sendOverProxy currentProxy targetOnion framed
         liftIO $ putStrLn $ "[TOR] Framed blob sent using per-profile proxy for " ++ currentProfile s ++ " (or default)."
 
@@ -674,6 +756,7 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'w') [])) = do
     , sessionPass    = BS.pack (replicate 64 0x00)  -- overwrite passphrase
     , profiles       = Map.empty
     , historyIndex   = -1
+    , contactQueues  = Map.empty  -- Phase 1 queues cleared on nuclear wipe
     }
 
   -- 2b. Ultra kernel-level: Lock memory + advise kernel to drop pages (stronger anti-forensics)
@@ -753,7 +836,7 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'p') [])) = do
   let updatedPxs = case mLoadedP of
         Just cfg -> setProfileProxy next cfg (proxies s)
         Nothing -> proxies s
-  modify $ \st -> st { currentProfile = next, historyIndex = -1, securityPosture = newP, proxies = updatedPxs }
+  modify $ \st -> st { currentProfile = next, historyIndex = -1, securityPosture = newP, proxies = updatedPxs, contactQueues = Map.empty }  -- Phase 1: reset queues on profile switch (load real ones in full)
 
 handleEvent (VtyEvent (V.EvKey (V.KChar 'n') [])) = do
   s <- get
@@ -771,6 +854,7 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'n') [])) = do
         , profiles = Map.insert newName Map.empty (profiles st)
         , historyIndex = -1
         , securityPosture = currentP
+        , contactQueues = Map.empty  -- Phase 1 fresh queues for new burner
         }
 
 -- Plausible deniability entry point: "Decoy" profile.
@@ -792,12 +876,13 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'D') [])) = do
       if isDecoy
         then do
           liftIO $ putStrLn "[DENIABILITY] Leaving decoy profile. Switch back with 'p'."
-          modify $ \st -> st { currentProfile = "Default", historyIndex = -1 }
+          modify $ \st -> st { currentProfile = "Default", historyIndex = -1, contactQueues = Map.empty }
         else do
           liftIO $ putStrLn "[DENIABILITY] Entering decoy profile. This can be shown to an adversary."
           liftIO $ putStrLn "[DENIABILITY] Real keys and history remain in other compartments."
           modify $ \st -> st 
             { currentProfile = "Decoy"
+            , contactQueues = Map.empty  -- Phase 1 queues reset on decoy switch (compartmented)
             , profiles = Map.insert "Decoy" Map.empty (profiles st)
             , historyIndex = -1
             }
@@ -1164,6 +1249,7 @@ app = App
         , sessionPass     = finalPass
         , messages        = loadedMessages
         , securityPosture = realPosture
+        , contactQueues   = Map.empty  -- Phase 1: queues in-mem for now (init on first send; full persist later)
         }
 
       liftIO $ putStrLn $ "[OK] Loaded " ++ show (Map.size loadedRatchets) ++ " ratchet(s) with forward secrecy continuity."
