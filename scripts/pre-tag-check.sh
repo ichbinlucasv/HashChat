@@ -174,7 +174,6 @@ fi
 # Additional: check for key gates
 if grep -q "EXTREME.*Group\|EXTREME.*voice\|EXTREME.*export\|EXTREME.*decoy" app-desktop/TUI.hs android/src/main/java/MainActivity.kt ; then
     echo "  -> Key feature gates (groups/voice/export/decoy) present."
-fi
     echo "  -> Found testing evidence: $EVIDENCE_FILE (modified $(stat -c %y "$EVIDENCE_FILE" 2>/dev/null || echo 'recently'))"
 fi
 
