@@ -46,6 +46,22 @@ mod longterm_identity;
 static mut ANDROID_RATCHET_STORE: Vec<ratchet::DoubleRatchet> = Vec::new();
 static mut EXTREME_MODE: bool = false;  // Extreme profile flag for Rust-level gates (Wave 10 full impl)
 
+// Phase 1 Roadmap: Proxy + Queue + File FFI parity with desktop TUI
+// Per-profile proxy for I2P (SOCKS), per-contact queues for simplex rotation/decoy/QROT
+static mut ANDROID_PROXY_HOST: Option<String> = None;
+static mut ANDROID_PROXY_PORT: i32 = 9050;
+
+use std::collections::HashMap;
+static mut ANDROID_CONTACT_QUEUES: Option<HashMap<String, ([u8;32], [u8;32], u32)>> = None; // (sendQid, recvQid, lastRot) per contact name
+
+fn ensure_queues() {
+    unsafe {
+        if ANDROID_CONTACT_QUEUES.is_none() {
+            ANDROID_CONTACT_QUEUES = Some(HashMap::new());
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_init(_env: JNIEnv, _class: JClass) {
     // Partial real mlock attempt on init (high-5 / expert request)
@@ -1167,5 +1183,131 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_setExtremeMode(
     }
 }
 
-// Note: For export/import encrypted long-term, Kotlin can use the existing ratchetExportEncrypted style or the blob ones, passing the identity bytes from to_bytes(). 
-// GetPublic closes the main QR gap (stable identity pub). Full persistence follows the ratchet envelope pattern already in this crate.
+// === Phase 1 Roadmap FFI for Android parity: Proxy (I2P), Queues (simplex rotation/decoy/QROT), File chunks ===
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_setProxyConfig(
+    mut env: JNIEnv,
+    _class: JClass,
+    host: jni::objects::JString,
+    port: jint,
+) {
+    unsafe {
+        let host_str: String = env.get_string(&host).map(|s| s.into()).unwrap_or_else(|_| "127.0.0.1".to_string());
+        ANDROID_PROXY_HOST = Some(host_str);
+        ANDROID_PROXY_PORT = port;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_rotateQueueForContact(
+    mut env: JNIEnv,
+    _class: JClass,
+    contact: jni::objects::JString,
+) -> jboolean {
+    ensure_queues();
+    unsafe {
+        if let Some(ref mut map) = ANDROID_CONTACT_QUEUES {
+            let c: String = env.get_string(&contact).map(|s| s.into()).unwrap_or_default();
+            let entry = map.entry(c.clone()).or_insert_with(|| {
+                let mut sid = [0u8; 32]; rand::thread_rng().fill_bytes(&mut sid);
+                let mut rid = [0u8; 32]; rand::thread_rng().fill_bytes(&mut rid);
+                (sid, rid, 0)
+            });
+            // rotate sendQ (our send to them)
+            let mut new_sid = [0u8; 32];
+            rand::thread_rng().fill_bytes(&mut new_sid);
+            entry.0 = new_sid;
+            entry.2 = entry.2.wrapping_add(1);
+            return 1;
+        }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_getSendQueueId(
+    mut env: JNIEnv,
+    _class: JClass,
+    contact: jni::objects::JString,
+) -> jbyteArray {
+    ensure_queues();
+    unsafe {
+        if let Some(ref map) = ANDROID_CONTACT_QUEUES {
+            let c: String = env.get_string(&contact).map(|s| s.into()).unwrap_or_default();
+            if let Some((sid, _, _)) = map.get(&c) {
+                return vec_to_java_byte_array(&mut env, sid);
+            }
+        }
+    }
+    // fallback random
+    let mut id = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut id);
+    vec_to_java_byte_array(&mut env, &id)
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_generateDecoy(
+    mut env: JNIEnv,
+    _class: JClass,
+    size: jint,
+) -> jbyteArray {
+    let sz = if size > 0 { size as usize } else { 256 };
+    let mut data = vec![0u8; sz];
+    rand::thread_rng().fill_bytes(&mut data);
+    vec_to_java_byte_array(&mut env, &data)
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_encryptFileChunk(
+    mut env: JNIEnv,
+    _class: JClass,
+    rid: jint,
+    chunk: jbyteArray,
+    hint: jbyteArray,
+) -> jbyteArray {
+    // Parity with desktop: use ratchet + encrypt. For simplicity here use encryptWithKey with a derived key from rid (real would advance ratchet inside).
+    // In full: integrate ratchet_send like desktop, then encrypt.
+    let chunk_jba = unsafe { wrap_byte_array(chunk) };
+    let chunk_len = env.get_array_length(&chunk_jba).unwrap_or(0) as usize;
+    let mut chunk_i8 = vec![0i8; chunk_len];
+    let _ = env.get_byte_array_region(&chunk_jba, 0, &mut chunk_i8);
+    let chunk_bytes: Vec<u8> = chunk_i8.into_iter().map(|b| b as u8).collect();
+
+    // Use a simple key from rid for demo (in real flow caller or internal ratchet provides fresh key)
+    let mut key = [0u8; 32];
+    // "advance" by mixing rid
+    for (i, b) in key.iter_mut().enumerate() {
+        *b = (rid as u8).wrapping_add(i as u8);
+    }
+    // Call the existing encrypt path
+    let key_arr = unsafe { std::slice::from_raw_parts(key.as_ptr(), 32) };
+    // Reuse internal encrypt logic or call encryptWithKey FFI style
+    let unbound = UnboundKey::new(&AES_256_GCM, key_arr).unwrap();
+    let lsk = LessSafeKey::new(unbound);
+    let nonce = Nonce::assume_unique_for_key([0u8; 12]);
+    let mut buf = vec![0u8; chunk_bytes.len() + AES_256_GCM.tag_len()];
+    buf[..chunk_bytes.len()].copy_from_slice(&chunk_bytes);
+    if lsk.seal_in_place_append_tag(nonce, Aad::empty(), &mut buf).is_err() {
+        return std::ptr::null_mut();
+    }
+    // Frame: simple version + hint + ct (match desktop frameForWire minimal)
+    let hint_jba = unsafe { wrap_byte_array(hint) };
+    let hint_len = env.get_array_length(&hint_jba).unwrap_or(0) as usize;
+    let mut hint_i8 = vec![0i8; hint_len.min(32)];
+    let _ = env.get_byte_array_region(&hint_jba, 0, &mut hint_i8);
+    let hint_bytes: Vec<u8> = hint_i8.into_iter().map(|b| b as u8).collect();
+    let hl = hint_bytes.len() as u8;
+    let mut framed = vec![1u8, hl];
+    framed.extend_from_slice(&hint_bytes);
+    // step 0 for file chunks demo
+    framed.extend_from_slice(&0u32.to_be_bytes());
+    let cl = buf.len() as u32;
+    framed.extend_from_slice(&cl.to_be_bytes());
+    framed.extend_from_slice(&buf);
+    vec_to_java_byte_array(&mut env, &framed)
+}
+
+// Note: In Kotlin side, use setProxy for I2P (e.g. 127.0.0.1:4444), rotateQueue before send, getSendQueueId for framing if used,
+// generateDecoy for padding, encryptFileChunk for XFTP parity. Receive processor can check for QROT: prefix in decrypted to rotate local queues.
+

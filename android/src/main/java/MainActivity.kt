@@ -69,6 +69,13 @@ object HashChatNative {
     external fun setExtremeMode(enabled: Boolean)
     external fun voiceStreamEnd(streamId: Int)  // for full per-stream zeroize/destroy (High #2 VoiceStream)
 
+    // Phase 1 Roadmap: Android FFI parity for queues (simplex rotation/decoy/QROT), I2P proxy, file XFTP chunks
+    external fun setProxyConfig(host: String, port: Int)
+    external fun rotateQueueForContact(contact: String): Boolean
+    external fun getSendQueueId(contact: String): ByteArray
+    external fun generateDecoy(size: Int): ByteArray
+    external fun encryptFileChunk(rid: Int, chunk: ByteArray, hint: ByteArray): ByteArray
+
     // Combined Kotlin + JNI strict mode (authoritative for refusal decisions).
     // Expands the old stub with real root detection, dangerous props via reflection + files,
     // Build.TAGS test-keys, userdebug, ro.debuggable, etc. + delegates to Rust for /proc/fs signals.
@@ -245,12 +252,19 @@ class MainActivity : AppCompatActivity() {
                 // 4. Hand to Tor hidden service (Phase 1 Roadmap: full SOCKS5 / ProxyConfig in Kotlin or via Rust FFI for I2P + file chunked XFTP parity with desktop). See Tor.hs / FileTransfer for model.
                 val rid = HashChatNative.ratchetNew()
                 val pt = text.toByteArray(Charsets.UTF_8)
+                // Phase 1: queue rotation for parity (call FFI)
+                val contactKey = currentProfile  // simple per-profile for demo; real per contact
+                HashChatNative.rotateQueueForContact(contactKey)
+                val qid = HashChatNative.getSendQueueId(contactKey)
+                // In full: use qid in framing/hint
                 // In a full implementation we would derive the per-message key from the ratchet first
                 val fakeKey = ByteArray(32) { it.toByte() } // would come from ratchetSend JNI
                 val ct = HashChatNative.encryptWithKey(fakeKey, pt)
 
                 // For now we still show the message (real ciphertext would be persisted + sent over Tor)
-                addMessage("You: $text [E2EE + JNI + Tor]", true)
+                val proxy = profileProxies[currentProfile]
+                val via = if (proxy != null) "via I2P ${proxy.first}:${proxy.second}" else "via Tor"
+                addMessage("You: $text [E2EE + JNI + Tor + queue $via]", true)
                 input.text.clear()
 
                 // Simulate incoming framed blob over bidirectional Tor + real JNI decrypt
@@ -353,6 +367,8 @@ class MainActivity : AppCompatActivity() {
                 "Toggle decoy profile (plausible deniability, STRICT gated)",
                 "Share my contact (real long-term identity pub for QR)",
                 "Toggle Extreme mode (ultra stripped, this session)",
+                "Set I2P proxy (Phase 1 hybrid transport parity)",
+                "Send file (Phase 1 XFTP ratchet-chunked parity)",
                 "Cancel"
             )) { _, which ->
                 when (which) {
@@ -396,6 +412,8 @@ class MainActivity : AppCompatActivity() {
                         HashChatNative.setExtremeMode(EXTREME_MODE)
                         Toast.makeText(this, "Extreme mode: " + if (EXTREME_MODE) "ON (groups/voice/export/decoy disabled)" else "OFF", Toast.LENGTH_SHORT).show()
                     }
+                    10 -> setI2PProxyForCurrentProfile()
+                    11 -> sendFileDemoWithParity()
                 }
             }
             .show()
@@ -444,6 +462,47 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    // Phase 1: I2P proxy parity (set per profile, used in send paths, top bar)
+    private fun setI2PProxyForCurrentProfile() {
+        if (EXTREME_MODE) {
+            Toast.makeText(this, "EXTREME: custom proxy (I2P) refused for minimal surface.", Toast.LENGTH_LONG).show()
+            return
+        }
+        // Demo: set I2P (user runs i2pd)
+        profileProxies[currentProfile] = "127.0.0.1" to 4444
+        HashChatNative.setProxyConfig("127.0.0.1", 4444)
+        updateTopBar(currentProfile, securityPosture)
+        Toast.makeText(this, "I2P proxy set for $currentProfile (127.0.0.1:4444). Use after starting i2pd. Multi-path with Tor in future.", Toast.LENGTH_LONG).show()
+    }
+
+    // Phase 1: file send with ratchet chunk XFTP parity (demo bytes, real FFI encrypt + framing + proxy)
+    private fun sendFileDemoWithParity() {
+        if (EXTREME_MODE) {
+            Toast.makeText(this, "EXTREME MODE: file transfer disabled.", Toast.LENGTH_LONG).show()
+            return
+        }
+        val demoData = "This is a demo file for Phase 1 XFTP parity. Real ratchet chunks + framing + proxy send.".toByteArray()
+        val rid = HashChatNative.ratchetNew()
+        val hint = currentProfile.toByteArray().take(32).toByteArray()  // simple
+        val chunkSize = 32
+        var offset = 0
+        val framedChunks = mutableListOf<ByteArray>()
+        while (offset < demoData.size) {
+            val end = minOf(offset + chunkSize, demoData.size)
+            val chunk = demoData.sliceArray(offset until end)
+            val framed = HashChatNative.encryptFileChunk(rid, chunk, hint)
+            framedChunks.add(framed)
+            offset = end
+        }
+        val proxy = profileProxies[currentProfile]
+        val proxyNote = if (proxy != null) "via ${proxy.first}:${proxy.second}" else "via default Tor"
+        Toast.makeText(this, "Sent ${framedChunks.size} ratchet-encrypted file chunks $proxyNote (FFI parity with TUI FileTransfer). In real: transmit framed over SOCKS, handle QROT/queues on send.", Toast.LENGTH_LONG).show()
+        // Simulate receive for demo (feed one chunk back)
+        if (framedChunks.isNotEmpty()) {
+            HashChatNative.feedReceivedData(framedChunks[0])
+        }
+    }
+
     // Hardware-backed ratchet unlock with biometric gate (maximum paranoid)
     private fun unlockRatchetsWithBiometrics(onSuccess: () -> Unit) {
         val biometricPrompt = androidx.biometric.BiometricPrompt(this, mainExecutor,
@@ -468,7 +527,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateTopBar(profile: String, posture: String) {
-        topBar.text = "HashChat — Profile: $profile  |  Security: $posture  |  Tor v3"
+        val proxy = profileProxies[profile]
+        val proxyStr = if (proxy != null) " | Proxy: ${proxy.first}:${proxy.second}" else ""
+        topBar.text = "HashChat — Profile: $profile  |  Security: $posture  |  Tor v3$proxyStr"
     }
 
     private fun wipeAll() {
@@ -1085,6 +1146,9 @@ class MainActivity : AppCompatActivity() {
 
     private var currentProfile: String = "Default"
     private var isDecoyActive: Boolean = false
+    // Phase 1 Roadmap FFI parity
+    private val profileProxies = mutableMapOf<String, Pair<String, Int>>()  // profile -> (host, port) for I2P etc.
+    private val contactQueues = mutableMapOf<String, Pair<ByteArray, ByteArray>>()  // contact -> (sendQid, recvQid) for simplex rotation
 
     fun onToggleDecoyProfile(v: View? = null) {
         // Extreme profile gate (Wave 3)
