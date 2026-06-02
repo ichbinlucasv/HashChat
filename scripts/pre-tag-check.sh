@@ -147,6 +147,10 @@ else
   echo "  -> Could not perform full diff (no prior sbom dir). Manual review of sbom/ + generate required before tag."
 fi
 echo "  -> SBOM formal diff step complete. REQUIRE: semantic-clean (or documented+approved) + record findings in RELEASE_NOTES_v0.2.md + THREATMODEL.md before signed tag. See also: SBOM section in THREATMODEL.md (updated for SBOM formal)."
+  # Polish: if sbom-v0.2-preview/ exists (from ./generate-sbom.sh v0.2-preview), note it for review before real tag
+  if [ -d "sbom-v0.2-preview" ]; then
+    echo "  -> sbom-v0.2-preview/ present (formal example dir). Review its rust-sbom.json + diff against main sbom/ or prior before v0.2 signed."
+  fi
 
 # Phase 1 Roadmap additions (hybrid transport, XFTP files, queues, I2P)
 echo "[Phase 1] Checking I2P launch helper + multi-path / simplex queue presence (new in roadmap)..."

@@ -113,6 +113,23 @@ cat > "$LOG_FILE" << EOF
 - [ ] OPSEC: clean-security before/after
 - Observations / photos taken:
 
+### 12. Phase 1 Simplex Queues + Rotation (TUI + Android - Critical for metadata win)
+- [ ] In TUI: send ~55-70 messages; observe [QUEUE] rotate logs + QROT: announce frames
+- [ ] Press 'i' (security info): verify sendQ=... recvQ=... lastRot=... visible and advancing
+- [ ] Decoys injected (padding correlation resistance)
+- [ ] On receive: "Peer rotated queues (simplex announce)" or QROT processed
+- [ ] Android: send multiple, check logs for rotateQueueForContact + QROT in general processor
+- [ ] Extreme: queues still gated/refused when on
+- Observations:
+
+### 13. Phase 1 XFTP File Transfer (ratchet-chunked resumable E2EE >1GB path)
+- [ ] TUI: :file /tmp/test.bin (or large); observe per-chunk ratchet encrypt + frame + progress + send
+- [ ] Receive side: chunks reassembled, decrypt, final wipe notes
+- [ ] Android: actions file send demo; verify encryptFileChunk FFI calls + framed + proxyNote
+- [ ] Proxy/I2P: file send uses current proxy (if set)
+- [ ] Extreme gate: file refused or noted when Extreme on
+- Observations / sizes tested:
+
 ---
 
 ## Overall Result
