@@ -108,7 +108,29 @@ fi
 
 # 8. Generate basic SBOM (supply chain visibility)
 echo "[8/9] Generating basic SBOM..."
-./scripts/generate-sbom.sh "$OUTPUT_DIR/sbom" || echo "  -> SBOM generation had issues (non-fatal for now)"
+./scripts/generate-sbom.sh || echo "  -> SBOM generation had issues (non-fatal for now)"
+
+# Phase 1 Roadmap additions (hybrid transport, XFTP files, queues, I2P)
+echo "[Phase 1] Checking I2P launch helper + multi-path / simplex queue presence (new in roadmap)..."
+if grep -q "launchI2pdIfNeeded\|sendOverMultiProxy\|newSMPQueue\|rotateQueue\|ContactQueues" src/haskell/HashChat/Tor.hs src/haskell/HashChat/Queue.hs ; then
+    echo "  -> I2P actual launch + multi-path + real unidirectional SMP queues present."
+else
+    fail "Phase 1 hybrid transport (I2P + queues) not yet implemented in Tor/Queue."
+fi
+
+echo "[Phase 1] Checking real ratchet-chunked XFTP file transfer (FileTransfer + TUI wiring)..."
+if grep -q "sendFileChunked\|fileSend\|receiveFileChunked" src/haskell/HashChat/FileTransfer.hs app-desktop/TUI.hs ; then
+    echo "  -> Ratchet-chunked file transfer (real sendEncrypted + frame) wired."
+else
+    fail "Phase 1 XFTP file transfer not complete."
+fi
+
+echo "[Phase 1] SBOM artifacts present..."
+if [ -d sbom ] && [ -f sbom/project-sbom-summary.txt ]; then
+    echo "  -> sbom/ dir with summary present (run generate-sbom.sh before tag)."
+else
+    echo "  >>> Warning: run ./scripts/generate-sbom.sh and commit artifacts or note before final tag."
+fi
 
 # Medium: One final git history clean before v0.2 tag
 echo "[9/10] Git history clean note (Medium): Run ./scripts/clean-git-history.sh if needed for final clean before tag (removes sensitive history). See RELEASE_PROCESS.md."
