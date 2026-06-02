@@ -563,7 +563,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun wipeAll() {
         // TODO: call JNI rust_wipe + Haskell wipeAll + clear Android Keystore blobs
-        Toast.makeText(this, "PANIC WIPE executed (all material destroyed)", Toast.LENGTH_LONG).show()
+        profileProxies.clear()
+        contactQueues.clear()
+        generalMessageQueue.clear()
+        voiceChunkQueue.clear()
+        Toast.makeText(this, "PANIC WIPE executed (all material destroyed, queues cleared)", Toast.LENGTH_LONG).show()
         finish()
     }
 
