@@ -130,7 +130,13 @@ This is a preview release. The following are still weak or incomplete (see exper
 - Kotlin instrumented tests: Mostly structural skeletons (assertTrue placeholders remain in places). Need real-device runs + actual assertions (polish-1).
 - Long-term ContactAddress identity: Core + full Rust LongTermIdentity (ed25519 + x25519 + encrypted envelope) + TUI/Android wiring complete (real stable pub in QR instead of random). X3DH/auto initial ratchet bootstrap + full per-profile persist are the remaining polish (documented in new E2EE Status section).
 - Screenshots: Detailed capture instructions + 4 descriptive slots in metainfo.xml created (docs/SCREENSHOTS.md). Actual images still needed.
-- SBOM process: generate-sbom.sh run in Phase 1 (sbom/ artifacts generated with rust + haskell notes); pre-tag now gates on presence. Formal diff vs prior tag + review still needed before signed v0.2.
+- SBOM process: generate-sbom.sh run in Phase 1 (sbom/ artifacts + diffs/); pre-tag now gates on presence + marker. Actual diff vs prior commit 80abc0b (as no signed tag yet): 
+  - rust-sbom.json: 57 packages (same count); diff ~2000 lines but purely non-semantic (SPDX doc namespace, creation timestamp, package array re-ordering in list; no added/removed/changed package contents).
+  - Critical security crates stable (no new high-risk deps like unvetted net/crypto): ring@0.17.14 (Apache-2.0 AND ISC), zeroize@1.8.2 + zeroize_derive@1.4.3 (Apache-2.0 OR MIT), ed25519-dalek@2.2.0 (BSD-3-Clause), x25519-dalek@2.0.1 (BSD-3-Clause), argon2@0.5.3 (MIT OR Apache-2.0), hkdf@0.12.4 (MIT OR Apache-2.0), subtle@2.6.1 (BSD-3-Clause).
+  - No changes in core paths (ratchet, envelopes, longterm, etc.).
+  - haskell-deps.txt and project-sbom-summary.txt: metadata only.
+  - Diffs saved to sbom/diffs/rust-sbom-diff-vs-80abc0b.txt for audit.
+  - Recommendation per script: use before signed tags; review for new crates in ring/zeroize/dalek/argon2 etc. Supply chain stable since last SBOM run. (See also pre-tag-check.sh, generate-sbom.sh, ROADMAP.md)
 - Extreme mode: Basic TUI support; full cross-platform + tests pending.
 - Not recommended for high-risk operational use without additional review.
 
