@@ -324,7 +324,7 @@ drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll
   , str "1. Run ./run-tui  → it shows your audio backends and Tor status"
   , str "2. Press 'n' to create a burner profile"
   , str "3. Press 'v' to test voice (real mic if pw-record/parecord/arecord available)"
-  , str "4. Use :set-proxy 127.0.0.1 9050 (Tor) or 4444 (I2P after i2pd) for per-profile transport (High #5 / Phase 1 Roadmap hybrid). Run launchI2pdIfNeeded or see Tor.hs for garlic/multi-path notes. :discover for decentralized (Medium). :screenshot for marketplace photo instructions. :file for streaming file stub (Long-term). :export for cross-device ratchet export stub (Long-term)."
+  , str "4. Use :set-proxy 127.0.0.1 9050 (Tor) or 4444 (I2P after i2pd) for per-profile transport (High #5 / Phase 1 Roadmap hybrid). Run launchI2pdIfNeeded or see Tor.hs for garlic/multi-path + simplex queues. :file now does real ratchet-chunked XFTP E2EE (Phase 1). :discover for decentralized (Medium). :screenshot for marketplace. :export stub."
   , str "5. '?' toggles this help. 'w' is the nuclear wipe (use it!)"
   , str ""
   , str "Enter          → Send encrypted message (real ratchet + AES-GCM)"
@@ -511,10 +511,40 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
         modify $ \st -> st { input = "" }
       else if ":file" `isInfixOf` inputStr || inputStr == ":sendfile"
       then do
-        liftIO $ putStrLn "[FILE] Phase 1 Roadmap XFTP-style (ratchet-chunked E2EE resumable, reuses voice + framing + transport)."
-        liftIO $ putStrLn "  Usage: :file /path/to/large.file  (or :sendfile). Progress + wipe like voice. Extreme may limit."
-        -- Basic integration (real ratchetId/proxy from state in full wiring).
-        liftIO $ HashChat.FileTransfer.fileSendStub "/tmp/example.bin"  -- demo; real: parse path from input, use current ratchet + proxy + contact onion
+        let rest = drop (length ":file ") inputStr
+        let path = if null rest then drop (length ":sendfile ") inputStr else rest
+        if null path
+          then liftIO $ putStrLn "[FILE] Usage: :file /path/to/file  (or :sendfile /path). Sends ratchet-chunked E2EE (Phase 1 XFTP-style, resumable, FS per chunk like voice)."
+          else do
+            currentP <- liftIO getSecurityPosture
+            if not (isActionAllowedInPosture currentP "file")
+              then do
+                liftIO $ putStrLn "[SECURITY] POSTURE REFUSAL: File transfer blocked in current posture/Extreme."
+                liftIO $ putStrLn "  (Use MAX PARANOID or trusted env; Extreme disables high-surface actions.)"
+              else do
+                let prof = currentProfile s
+                let pass = passForSession s
+                let contact = currentContact s
+                rid <- case Map.lookup contact (ratchets s) of
+                         Just r  -> pure r
+                         Nothing -> do
+                           r <- liftIO newRatchet
+                           _ <- liftIO mlockSensitiveRatchets
+                           liftIO $ saveEncryptedRatchet prof contact r pass
+                           modify $ \st -> st { ratchets = Map.insert contact r (ratchets s) }
+                           pure r
+                let currentProxy = Map.findWithDefault defaultProxyForProfile prof (proxies s)
+                let maybeContact = Prelude.lookup contact (map (\c -> (Contact.contactId c, c)) (contacts s))
+                let targetOnion = case maybeContact of
+                      Just c  -> Contact.onionAddress c
+                      Nothing -> "unknown.onion"
+                let hint = case maybeContact of
+                      Just c  -> Contact.contactPubHint c
+                      Nothing -> BS.pack (map (fromIntegral . fromEnum) contact)
+                liftIO $ putStrLn $ "[FILE] Starting real ratchet-chunked transfer of " ++ path ++ " to " ++ targetOnion ++ " (proxy: " ++ show currentProxy ++ ")"
+                liftIO $ FileTransfer.fileSend rid hint path currentProxy targetOnion Tor.sendOverProxy $ \pct ->
+                  liftIO $ putStrLn $ "  Progress: " ++ show pct ++ "% (ratchet advanced per chunk, wipe on complete/expire)"
+                liftIO $ putStrLn "[FILE] Transfer complete. In prod: send manifest as control msg or store encrypted; wipe local source file."
         modify $ \st -> st { input = "" }
       else if ":export" `isInfixOf` inputStr
       then do
