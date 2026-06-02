@@ -1047,6 +1047,10 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
         let voiceMsgWithTime = voiceMsg { timestamp = fromIntegral (utcToSeconds now) }
 
         liftIO $ saveEncryptedRatchet prof contact rid pass
+        -- Phase 1 queue persist for voice too
+        case Map.lookup contact (contactQueues s) of
+          Just cq -> liftIO $ saveContactQueues prof contact cq
+          Nothing -> pure ()
 
         -- Frame and send with VOICE indicator (reuse existing framing)
         let maybeContact = Prelude.lookup contact (map (\c -> (Contact.contactId c, c)) (contacts s))
@@ -1059,6 +1063,29 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
         let framedVoice = frameForWire hint (ratchetStep voiceMsgWithTime) voicePrefixed
 
         let currentProxy = Map.findWithDefault defaultProxyForProfile (currentProfile s) (proxies s)
+        -- Phase 1: queue rotation/decoy also for voice (deeper TUI integration)
+        currentP2 <- liftIO getSecurityPosture
+        let extremeOn2 = unsafePerformIO isExtremeMode
+        when (not extremeOn2 && isActionAllowedInPosture currentP2 "voice") $ do
+          let mqs = Map.lookup contact (contactQueues s)
+          cq <- case mqs of
+                  Just q -> pure q
+                  Nothing -> liftIO $ Q.newContactQueues contact
+          if Q.shouldRotate cq (fromIntegral $ ratchetStep voiceMsgWithTime)
+            then do
+              newSq <- liftIO $ Q.rotateQueue (Q.sendQ cq)
+              let newCq = cq { Q.sendQ = newSq, Q.lastRot = fromIntegral $ ratchetStep voiceMsgWithTime }
+              let rotAnn = "QROT:" <> Q.qId newSq
+              let annF = frameForWire hint (ratchetStep voiceMsgWithTime) (BS.pack $ map (fromIntegral . fromEnum) rotAnn)
+              _ <- liftIO $ Tor.sendOverProxy currentProxy targetOnion annF
+              liftIO $ putStrLn "[QUEUE] Voice: rotated + announced"
+              modify $ \st -> st { contactQueues = Map.insert contact newCq (contactQueues st) }
+            else pure ()
+          when (ratchetStep voiceMsgWithTime `mod` 3 == 0) $ do
+            dec <- liftIO $ Q.generateDecoy 512
+            let df = frameForWire hint (ratchetStep voiceMsgWithTime + 10) dec
+            _ <- liftIO $ try (Tor.sendOverProxy currentProxy targetOnion df) :: IO (Either SomeException ())
+            liftIO $ putStrLn "[QUEUE] Voice: decoy sent"
         result <- liftIO $ try (Tor.sendOverProxy currentProxy targetOnion framedVoice)
         case result of
           Left err -> liftIO $ putStrLn $ "[VOICE] ERROR sending voice to " ++ contact ++ ": " ++ show (err :: SomeException)
