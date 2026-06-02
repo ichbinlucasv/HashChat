@@ -276,7 +276,7 @@ drawMain st = vBox
   , str " "
   , let currentProxy = Map.findWithDefault Tor.defaultProxyForProfile (currentProfile st) (proxies st)
         proxyStr = case currentProxy of Tor.Socks5Proxy h p -> " | Proxy: " ++ h ++ ":" ++ show p; _ -> ""
-    in withAttr (attrName "highlight") $ str $ "Transport: Tor v3" ++ proxyStr ++ "  [per-profile support]"
+    in withAttr (attrName "highlight") $ str $ "Transport: Tor v3" ++ proxyStr ++ "  [per-profile + Phase 1 hybrid queues/I2P support]"
   , str " "
   , if "LOW" `isInfixOf` securityPosture st || "DEGRADED" `isInfixOf` securityPosture st
       then withAttr (attrName "danger") $ str "[!! POSTURE DEGRADED — Sensitive actions restricted !!]"
