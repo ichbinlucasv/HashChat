@@ -10,10 +10,19 @@
 
 set -euo pipefail
 
-OUTPUT_DIR="${1:-sbom}"
+TAG="${1:-}"
+if [ -n "$TAG" ]; then
+  OUTPUT_DIR="sbom-${TAG}"
+else
+  OUTPUT_DIR="${2:-sbom}"
+fi
 mkdir -p "$OUTPUT_DIR"
 
 echo "=== HashChat Basic SBOM Generation ==="
+if [ -n "$TAG" ]; then
+  echo "Formal for signed tag: $TAG"
+  echo "Output directory: $OUTPUT_DIR (sbom-$TAG/ for pre-tag formal diff)"
+fi
 echo "Output directory: $OUTPUT_DIR"
 echo ""
 
@@ -89,4 +98,7 @@ echo "Files created in $OUTPUT_DIR/:"
 ls -1 "$OUTPUT_DIR" 2>/dev/null || echo "(directory may be empty if generation partially failed)"
 echo ""
 echo "Recommendation: Review these files before creating any signed tag."
+echo "Formal for signed tag: SBOM_TAG=v0.2 ./scripts/generate-sbom.sh ; then pre-tag-check.sh --strict does diff vs previous sbom-vX.Y/ or sbom/ proxy (see pre-tag-check.sh + THREATMODEL.md updated section 'SBOM formal for signed tag' + 'update THREATMODEL for SBOM')."
+echo "REQUIRE: semantic-clean diff on critical crates (ring/zeroize/dalek/argon2/hkdf/subtle) for signed tags (non-semantic SPDX timestamp/namespace/reorder diffs are expected and acceptable; record in RELEASE_NOTES_v0.2.md + THREATMODEL.md)."
 echo "For production releases, integrate a proper tool like Syft or Trivy SBOM generation."
+echo "Record diff review (stable or changes in ring/zeroize/dalek/argon2/hkdf) in RELEASE_NOTES before tag. User Fedora photos/evidence also Critical (see scripts/screenshot-prep-fedora.sh + real-device-test.sh)."

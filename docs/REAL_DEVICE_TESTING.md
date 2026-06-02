@@ -22,15 +22,55 @@ Emulators and developer machines are insufficient for a maximum-paranoid messeng
 3. **Physical Android device** (GrapheneOS or CalyxOS preferred, no Google services)
 4. Optional but recommended: One airgapped/offline machine for wipe + ratchet export tests
 
-## How to Generate Required Evidence
+## How to Generate Required Evidence (Fedora photos / marketplace + Phase 1)
 
-Use the helper:
+**Verbatim exact commands for "user Fedora photos/evidence via scripts" (Critical for v0.2 signed tag + Flathub/Fedora Apps marketplace)**:
+
+```bash
+# 1. Prep + icons (black+gold SVG raster for all sizes)
+sudo dnf install -y grim slurp gnome-screenshot librsvg2-tools optipng tor
+./scripts/clean-security.sh --strict
+HASHCHAT_DEMO=main ./scripts/screenshot-prep-fedora.sh   # or direct build/run
+
+# 2. Capture 5+ exact demo states (resize terminal ~120x40+ for repro; black bg + gold accents + live posture/proxy/Extreme/queue visible)
+HASHCHAT_DEMO=main ./run-tui     # main chat: posture 'MAX PARANOID', Proxy: if set, gold bubbles, Tor/Double Ratchet cues
+# in TUI: 'i' for security info -> observe "sendQ=... recvQ=... lastRot=..." (Phase1 simplex queue rotation)
+grim -g "$(slurp -o)" hashchat-tui-main-fedora.png
+
+HASHCHAT_DEMO=refusal ./run-tui  # posture refusal banner for 'v'/'g' (LOW or forced)
+grim -g "$(slurp -o)" hashchat-tui-refusal-fedora.png
+
+HASHCHAT_DEMO=voice ./run-tui    # 'v' record (demo), playback, wipe feedback visible
+grim -g "$(slurp -o)" hashchat-tui-voice-wipe-fedora.png
+
+HASHCHAT_DEMO=groups ./run-tui   # 'g' groups + QR long-term ed25519 (from :my-contact real LongTerm)
+grim -g "$(slurp -o)" hashchat-tui-groups-qr-fedora.png
+
+HASHCHAT_DEMO=actions ./run-tui  # 'a' or extreme: actions + [EXTREME] title + refusals visible
+# or inside: :extreme on ; :set-proxy 127.0.0.1 4444 (I2P Phase1); :file /tmp/test.bin (XFTP chunks)
+grim -g "$(slurp -o)" hashchat-tui-actions-extreme-i2p-file-fedora.png
+
+# 3. Real evidence log (Phase1 coverage: I2P, queue rot, file, Extreme, QR, voice, wipe, posture on Fedora/Tails + Android)
+./scripts/real-device-test.sh | tee "docs/evidence/real-fedora-$(date +%Y-%m-%d)-$(git rev-parse --short HEAD).log"
+# Inside guided: test :set-proxy for I2P, send ~60 msgs to rotate (see QROT + 'i' queues), :file XFTP, :extreme on + refusals, voice, :my-contact QR (longterm), 'w' wipe, posture, on physical + Tails/Qubes. Power clean.
+
+# 4. Icons (for Flathub/Fedora marketplace)
+mkdir -p flatpak/icons/hicolor/{64x64,128x128,256x256,512x512}/apps
+for s in 64 128 256 512; do
+  rsvg-convert -w $s -h $s flatpak/icons/hicolor/scalable/apps/org.hashchat.HashChat.svg > flatpak/icons/hicolor/${s}x${s}/apps/org.hashchat.HashChat.png
+done
+
+# 5. Post-capture (user): upload PNGs (Codeberg releases / your host), edit flatpak/org.hashchat.HashChat.metainfo.xml (replace example.com + use captions), test Flatpak, submit Flathub (for Fedora Apps + other distros)
+# Then: git add docs/evidence/ *.png flatpak/...metainfo.xml flatpak/icons/... ; ./scripts/clean-security.sh --strict ; git config user.name "Lucas"; git config user.email "ichbinlucasv@noreply.codeberg.org"; git commit -m 'marketplace: Fedora photos + evidence logs via scripts (Phase1 I2P/file/queues/Extreme)'; git push origin main
+```
+
+Use the helper script for guided log:
 
 ```bash
 ./scripts/real-device-test.sh
 ```
 
-This creates a dated evidence log in `docs/evidence/`.
+This creates a dated evidence log in `docs/evidence/`. (Now includes Phase1 I2P/queue/file/Extreme steps in the REAL doc + script guidance.)
 
 **Every real test run must produce one of these logs** with:
 - Exact date + commit hash
@@ -77,6 +117,15 @@ These logs are part of the pre-tag audit trail.
 **Verification commands**:
 ```bash
 adb logcat | grep -i hashchat
+
+### Phase 1 Additions: I2P / Queues / File / Extreme (Fedora/Tails + Android)
+- I2P: On Fedora (after i2pd), :set-proxy 127.0.0.1 4444 ; send message; verify "Proxy: ...4444" in title + garlic routing (no Tor leak if configured). Log proxy use.
+- Queues (simplex): In TUI, send ~60 msgs to trigger rotate (see [QUEUE] logs + QROT frames in receive); check 'i' for queue ids + lastRot; verify decoys + announcements in logs without breaking ratchet.
+- File (XFTP): :file /tmp/test.bin (large demo); verify ratchet-chunked send (per-chunk logs, framed cts), progress, receive side reassemble + wipe. On Android: use file send demo, check FFI chunks + proxy if set.
+- Extreme: :extreme on ; verify [EXTREME] title, refusals for groups/voice/export/decoy/QR, cleared state, Tor-only. Test on Tails (strict posture).
+- Cross: On real device, test I2P proxy set + file send + queue rotate (if visible in logs) + Extreme toggle. Use real-device-test.sh sequences.
+
+Update your dated log with these (template in docs/evidence/). Power off clean. Run clean-security.sh --strict before/after.
 adb shell pm clear <package>
 adb shell ls /data/data/<package>/files/   # check what survives wipe
 ```

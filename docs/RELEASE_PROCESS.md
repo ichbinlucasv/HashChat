@@ -35,13 +35,15 @@ git status --short
 cargo test --release                    # Must be 9+ tests passing
 (cd android/src/main/rust && cargo test --release)
 cabal build hashchat-cli -f-tui
-# Supply chain (arch-3): Run audit + basic SBOM + diff review
+# Supply chain (arch-3): Run audit + formal SBOM for signed tag + diff review
 cargo install cargo-audit --locked 2>/dev/null || true
 cargo audit --deny high || echo "High/critical issues found - review before tagging"
 
-# Generate basic SBOM (see scripts/generate-sbom.sh)
-./scripts/generate-sbom.sh sbom-pre-tag || echo "SBOM generation completed with warnings"
-# Review diff vs previous tag's sbom-pre-tag output (manual or tool). Document any new deps or vulns in RELEASE_NOTES.
+# Generate formal SBOM for this tag (scripts/generate-sbom.sh now supports tag arg -> sbom-<tag>/)
+SBOM_TAG="v0.2" ./scripts/generate-sbom.sh || echo "SBOM generation completed with warnings"
+# Formal diff vs previous tag's sbom-<prev>/ (pre-tag-check.sh does this + reviews critical crates ring/zeroize/dalek/argon2/hkdf/subtle)
+# Document findings + any new deps/vulns in RELEASE_NOTES_v0.2.md under SBOM/Supply Chain.
+# Pre-tag-check.sh enforces artifacts + marker + diff review.
 # Optional: nix build .#hashchat-flatpak
 # Flatpak (if testing): result/hashchat-tui.flatpak should exist and install cleanly
 

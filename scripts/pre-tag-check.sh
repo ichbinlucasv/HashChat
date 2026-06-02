@@ -106,9 +106,47 @@ else
     echo "  -> No obvious sensitive files tracked."
 fi
 
-# 8. Generate basic SBOM (supply chain visibility)
-echo "[8/9] Generating basic SBOM..."
-./scripts/generate-sbom.sh || echo "  -> SBOM generation had issues (non-fatal for now)"
+# 8. Generate basic SBOM (supply chain visibility) + formal diff for signed tag
+echo "[8/9] Generating basic SBOM (formal for signed tag)..."
+# Use tag if provided as arg, else current for pre-tag
+SBOM_TAG="${SBOM_TAG:-pre-tag}"
+./scripts/generate-sbom.sh "$SBOM_TAG" || echo "  -> SBOM generation had issues (non-fatal for now)"
+echo "  -> SBOM for $SBOM_TAG in sbom-$SBOM_TAG/"
+
+# Formal SBOM diff vs prior tag (Critical for signed v0.2 - "SBOM formal for signed tag")
+echo "[8b/9] Formal SBOM diff review vs prior tag (if previous sbom-* exists or git tag)..."
+PRIOR_SBOM_DIR=""
+if git describe --tags --abbrev=0 2>/dev/null | grep -q .; then
+  PRIOR_TAG=$(git describe --tags --abbrev=0)
+  if [ -d "sbom-${PRIOR_TAG}" ]; then
+    PRIOR_SBOM_DIR="sbom-${PRIOR_TAG}"
+  fi
+fi
+if [ -z "$PRIOR_SBOM_DIR" ]; then
+  # Fallback to last SBOM commit's artifacts or manual
+  echo "  -> No prior sbom-<tag>/ dir found. Using latest committed sbom/ as proxy for diff (run before tag with full history)."
+  PRIOR_SBOM_DIR="sbom"
+fi
+if [ -f "$PRIOR_SBOM_DIR/rust-sbom.json" ] && [ -f "sbom-${SBOM_TAG}/rust-sbom.json" ]; then
+  diff -u "$PRIOR_SBOM_DIR/rust-sbom.json" "sbom-${SBOM_TAG}/rust-sbom.json" > "sbom-${SBOM_TAG}/diff-vs-prior.txt" || true
+  echo "  -> Diff saved to sbom-${SBOM_TAG}/diff-vs-prior.txt (and sbom/diffs/ for baseline)"
+  # Check for changes in critical crates -- semantic changes are now hard for signed tags
+  CRIT_DIFF=$(grep -E "(ring|zeroize|ed25519-dalek|x25519-dalek|argon2|hkdf|subtle)" "sbom-${SBOM_TAG}/diff-vs-prior.txt" | grep -E "^[\+\-]" | grep -v "license" || true)
+  if [ -n "$CRIT_DIFF" ]; then
+    echo "  >>> WARNING / POTENTIAL BLOCK: Changes detected in critical crypto crates (ring/zeroize/dalek/argon2/hkdf/subtle):"
+    echo "$CRIT_DIFF"
+    echo "  >>> For signed tags: only non-semantic diffs (SPDX timestamps/namespace/reorder) are acceptable. Semantic changes require investigation + explicit RELEASE/THREATMODEL note before proceeding."
+    if [ "$STRICT" = true ]; then
+      echo "  >>> In --strict: failing on critical crate diff for formal signed tag safety."
+      exit 1
+    fi
+  else
+    echo "  -> No material changes in critical crates (stable supply chain; non-semantic only expected/OK)."
+  fi
+else
+  echo "  -> Could not perform full diff (no prior sbom dir). Manual review of sbom/ + generate required before tag."
+fi
+echo "  -> SBOM formal diff step complete. REQUIRE: semantic-clean (or documented+approved) + record findings in RELEASE_NOTES_v0.2.md + THREATMODEL.md before signed tag. See also: SBOM section in THREATMODEL.md (updated for SBOM formal)."
 
 # Phase 1 Roadmap additions (hybrid transport, XFTP files, queues, I2P)
 echo "[Phase 1] Checking I2P launch helper + multi-path / simplex queue presence (new in roadmap)..."
@@ -188,9 +226,10 @@ else
     echo "  -> Local pre-tag evidence marker found for this commit."
 fi
 
-# SBOM diff stub (T3 CI paranoia)
-echo "  [SBOM] For future tags: compare $OUTPUT_DIR/sbom against previous tag SBOM (manual step for v0.2-preview)."
-echo "  Example: ./scripts/generate-sbom.sh /tmp/sbom-prev && diff -u /tmp/sbom-prev/sbom.json $OUTPUT_DIR/sbom/sbom.json || echo 'SBOM diff review required'"
+# SBOM diff stub (T3 CI paranoia) + formal signed tag note
+echo "  [SBOM] Formal for signed tags: run SBOM_TAG=vX.Y ./scripts/generate-sbom.sh before tag; pre-tag does diff vs prior sbom-<tag>/ or sbom/ proxy + critical crate check (ring/zeroize/dalek/argon2/hkdf/subtle)."
+echo "  REQUIRE semantic-clean (non-semantic SPDX meta/reorder only OK) or documented review in RELEASE/THREATMODEL. Marker at exact HEAD required. See THREATMODEL.md 'SBOM formal for signed tag' + 'update THREATMODEL for SBOM'."
+echo "  Example: SBOM_TAG=v0.2 ./scripts/generate-sbom.sh ; ./scripts/pre-tag-check.sh --strict"
 
 # 10. Final summary
 echo "[10/10] All automated checks completed."

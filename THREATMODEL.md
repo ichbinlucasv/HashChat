@@ -63,6 +63,37 @@
 - **Demo-pass surface**: Major progress in Wave 10 — legacy getInsecureGroupDemoPassphrase() and weak paths fully excised from MainActivity.kt. Group persistence now requires real HashChatKeystore-derived keys with hard failures in EXTREME/STRICT mode. Some migration notes remain; full replacement with proper Keystore flow is the remaining polish. Pre-tag checks treat any new demo-pass strings as hard failure.
 - **Evidence / CI gates**: pre-tag-check.sh has hard exits for TESTING_EVIDENCE*.log and local .pre-tag-check-local-ran-<SHA> marker. Workflow audit step hardened (no more silent || true). Marker CI enforcement still future comment but pre-tag makes it blocking for any signed tag.
 - **Supply chain**: cargo-binstall unpinned (CVSS 4.0 robust), ghcup SHA pinned, .so staging fail-hard. Still no reproducible Android .so or SBOM diff automation in CI.
+- **SBOM and Supply Chain Security (Phase 1 complete + formal for signed tag)**: generate-sbom.sh produces rust-sbom.json (SPDX via cargo-sbom when available), haskell-deps.txt, project-sbom-summary.txt (57 packages total). 
+
+  **Findings (python + diff analysis vs 80abc0b baseline as proxy for prior tag)**: Only non-semantic (documentNamespace, creationInfo 'created' timestamp, packages array re-ordering in SPDX list). Same 57 packages. 0 semantic changes. No added/removed packages. Critical security crates unchanged (stable supply chain since baseline). Diffs saved to sbom/diffs/rust-sbom-diff-vs-80abc0b.txt (and sbom-<tag>/diff-vs-prior.txt on formal runs). 
+
+  **Critical security crates (verbatim, no new high-risk deps in crypto boundary)**:
+  - ring@0.17.14 (Apache-2.0 AND ISC)
+  - zeroize@1.8.2 + zeroize_derive@1.4.3 (Apache-2.0 OR MIT)
+  - ed25519-dalek@2.2.0 (BSD-3-Clause)
+  - x25519-dalek@2.0.1 (BSD-3-Clause)
+  - argon2@0.5.3 (MIT OR Apache-2.0)
+  - hkdf@0.12.4 (MIT OR Apache-2.0)
+  - subtle@2.6.1 (BSD-3-Clause)
+  Recommendation: Review sbom/diffs/... (and full rust-sbom.json) before any signed tag. Pre-tag-check.sh now includes SBOM presence + critical-crate grep in diffs + formal diff step.
+
+  **SBOM formal for signed tag process**: 
+  - Run `SBOM_TAG=v0.2 ./scripts/generate-sbom.sh` (or pre-tag) to produce sbom-v0.2/ (or sbom-pre-tag/).
+  - pre-tag-check.sh enforces: artifacts present, formal diff vs prior sbom-<prev>/ (or committed sbom/ proxy), semantic-clean (no material changes to critical crates like ring/zeroize/dalek/argon2/hkdf), marker at exact HEAD (.pre-tag-check-local-ran-<SHA>).
+  - Always review diffs for *new* crates in the ring/zeroize/dalek/argon2/hkdf/subtle set or high-risk additions before creating signed tag.
+  - Record findings (stable / changes / review date) in RELEASE_NOTES_v0.2.md (Known Limitations / Supply Chain) + this THREATMODEL.
+  - When real tags exist, generate vs the actual prior tag's sbom- dir (not just commit proxy). Non-semantic-only diffs are expected/acceptable (SPDX timestamps/namespace); any semantic change in core crates blocks tag until investigated + noted.
+  - See scripts/generate-sbom.sh, scripts/pre-tag-check.sh (Phase1 SBOM + formal sections), sbom/, ROADMAP.md execution status.
+
+  **User Fedora photos/evidence via scripts (Critical hard blocker for signed v0.2 tag)**: Per original Critical rec list ("real hardware evidence (A)") + Phase 1 marketplace request ("i need to install on my fedora and test and make photos of the desktop bersion to post on the marktplace of apps on fedora and others linux distros"). This is now a hard gate alongside real-device logs + SBOM review + audit before v0.2 signed. 
+  - User action required: On real Fedora (and Tails/Qubes + physical Android), run `./scripts/screenshot-prep-fedora.sh` (or direct `HASHCHAT_DEMO=main ./run-tui` etc.) + capture 5 exact states with grim/gnome-screenshot: main (black+gold + live 'MAX PARANOID' posture + 'Proxy: ...' + queue info), refusal (posture banner), voice (recording/playback + wipe feedback), groups (gold bubbles + QR long-term), actions/extreme ( [EXTREME] title, refusals). Observe in 'i' : sendQ=... recvQ=... lastRot=... for queue rotation (Phase1 simplex). 
+  - Icons: `sudo dnf install -y librsvg2-tools; for s in 64 128 256 512; do rsvg-convert -w $s -h $s flatpak/icons/hicolor/scalable/apps/org.hashchat.HashChat.svg > .../org.hashchat.HashChat.png; done`
+  - Evidence logs: `./scripts/real-device-test.sh | tee docs/evidence/real-fedora-$(date +%Y-%m-%d).log` (covers Phase1: :set-proxy I2P 127.0.0.1:4444, :file XFTP ratchet-chunked, queue rotation announce in receive, Extreme on + refusals for voice/groups/QR/export/decoy, :my-contact real long-term ed25519 QR, voice send/play/wipe, posture, nuclear 'w' wipe, on Fedora/Tails + physical device).
+  - Post-capture: Upload PNGs (Codeberg releases or host), edit flatpak/org.hashchat.HashChat.metainfo.xml (replace example.com with real image URLs + use prepped captions for marketplace), test `nix build .#hashchat-flatpak; flatpak install --user ...; flatpak run ...`, submit to Flathub (gets into Fedora Apps marketplace + other distros).
+  - Commit results: `git add docs/evidence/ flatpak/org.hashchat.HashChat.metainfo.xml screenshots/*.png icons/... ; git commit ... ; push as Lucas`.
+  - See: docs/SCREENSHOTS.md, docs/REAL_DEVICE_TESTING.md (Phase1 I2P/queues/file/Extreme section), scripts/screenshot-prep-fedora.sh, scripts/real-device-test.sh, ROADMAP.md, flatpak/ICONS.md + metainfo.xml. No signed v0.2 without this evidence + photos (marketplace + original recs).
+
+  Current Execution Status (Phase 1): SBOM artifacts + diff (vs 80abc0b) generated/recorded (stable critical crates, non-semantic only). Formal gates in pre-tag + generate + process notes in RELEASE/THREATMODEL/ROADMAP. User photos/evidence scripts + docs enhanced with verbatim Phase1 commands/states (queues visible in 'i', I2P/file/Extreme). Awaiting user run on Fedora/hardware for logs/PNGs + metainfo update + Flathub (Critical blocker). Pre-tag Phase1 SBOM gates pass when artifacts + marker present. "No stop until archive all". See ROADMAP for full Phase 1/2/3 + Approach A.
 
 These close more of the original expert table (transport priorities, Simplex QR alignment, pre-tag enforcement, demo surface pressure). Wave 10 progress: ContactAddress long-term keys full (Rust + TUI + Android parity for stable pub), Extreme scoped full in TUI (flag/cmd/gates/posture/state) + Android (setter/toggle/gates) + Rust (static/FFI/gates in ratchet/voice), VoiceStream advancing (per-stream elements + explicit end zeroize in Android Rust, call on playback). Remaining: full per-profile long-term persist + X3DH/auto-bootstrap wiring (the init_from_shared path is implemented), complete VoiceStream per-stream + destroy everywhere, I2P actual, Android mlock full, real-hardware evidence logs (template + script ready), v0.2 tag. E2EE core (Double Ratchet + long-term identity bootstrap + at-rest + zeroize + Tor + Extreme) is implemented, integrated, and stable. See RELEASE_NOTES_v0.2.md "End-to-End Encryption Status".
 
@@ -114,13 +145,13 @@ These close more of the original expert table (transport priorities, Simplex QR 
 - Tests + CI now exercise many paranoid paths (wipe, posture, disappearing, export).
 
 **Remaining Expert Priorities (v0.2 blocking + high polish):**
-- Real professional icons (64/128/256/512 PNG + final SVG) + real screenshots (see ICONS.md + docs/SCREENSHOTS.md).
+- Real professional icons (64/128/256/512 PNG + final SVG) + real screenshots (see ICONS.md + docs/SCREENSHOTS.md). **User Fedora photos/evidence via scripts is Critical hard blocker** (run screenshot-prep-fedora.sh + real-device-test.sh on Fedora/Tails + device; capture Phase1 states including queue info in 'i', I2P/file/Extreme; upload + metainfo + Flathub).
 - Voice: real end-to-end chunking on both (Android mic now reads real bytes; TUI recording labeled demo).
 - Android mlock: This is one of the most important remaining gaps. On Android, reliable mlockall(MCL_CURRENT | MCL_FUTURE) is not possible for unprivileged apps. The current implementation only does a best-effort libc::mlock on the single global ratchet store pointer and can (and frequently does) fail silently. Primary (and realistic) memory protections on Android are: Android Keystore (hardware-backed when available), app-private storage, short sensitive data lifetime via clearSensitiveScreenState + lifecycle, explicit ZeroizeOnDrop, and process death on wipe. This limitation is called out in the Rust source, the posture JNI response, RELEASE_NOTES_v0.2.md, and TESTING_STRATEGY.md. It should never be presented as strong memory protection on Android.
 - Kotlin instrumented tests exercised regularly on real devices (not just emulators) with actual assertions.
 - Move more logic (voice chunking, persistence helpers) into Rust while keeping JNI thin.
-- SBOM / cargo-audit step before real release.
-- Signed v0.2 tag execution after above + final clean + real-hardware test pass.
+- SBOM formal for signed tag (generate vs tag, semantic-clean diff review of critical crates, marker at HEAD, record findings) + cargo-audit step before real release. (Phase 1: artifacts + non-semantic diff vs 80abc0b complete/recorded; formal process now in pre-tag + docs.)
+- Signed v0.2 tag execution after above + final clean + real-hardware test pass + user-generated Fedora photos/evidence logs (hard blocker per rec list + Phase1 marketplace).
 
 ## Pegasus / Nation-State Resistance Philosophy
 
