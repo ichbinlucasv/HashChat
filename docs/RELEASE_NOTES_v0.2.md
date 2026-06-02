@@ -33,6 +33,7 @@ This release delivers on the core promise: maximum resistance to surveillance, d
   - I2P integration start (High #5): i2pProxyConfig added in Tor.hs, examples in TUI :set-proxy and help (after i2pd: :set-proxy 127.0.0.1 4444).
   - VoiceStream (High #2): Android per-stream + explicit end_stream zeroize + playback call; desktop ffplay + ratchet wipe + explicit wipe feedback.
   - Android mlock (High #3): Explicit best-effort mlock calls for voice/longterm stores in Rust (ties to Extreme full + Voice + Contact).
+- Phase 1 Android full QROT in receive processor (user-driven): Centralized generalMessageQueue + processor thread for QROT (post-decrypt detect, FFI rotate, update local contactQueues with announced recv id, system msg, Extreme safe). Integrated with bg Tor receiver, sim feeds, wipe clear. Full parity with desktop TUI queue rotation/announce. Previous FFI for proxy/queues/file chunks + I2P set + file send demo + queue rotate in sends + topbar. All with clean/push as Lucas.
   - Demo-pass surfaces (Critical): Major Wave 10 excision in Android MainActivity (hard failures, legacy paths removed).
   - Real hardware testing framework (Critical): scripts/real-device-test.sh + docs/REAL_DEVICE_TESTING.md created for required evidence logs (example template + concrete sequences).
 - Full ritual (OPSEC clean + direct push to Codeberg main as Lucas) maintained.
