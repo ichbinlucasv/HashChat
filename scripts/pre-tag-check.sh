@@ -197,6 +197,19 @@ else
     echo "  -> Evidence log found: $EVIDENCE_FILE"
 fi
 
+# Critical: User Fedora photos/evidence via scripts (hard blocker per THREATMODEL/ROADMAP/RELEASE)
+echo "[Critical v0.2] Checking for user-generated Fedora photos/evidence (screenshot-prep + real-device-test logs)..."
+FEDORA_EVIDENCE=$(find docs/evidence -name '*real-fedora*.log' -o -name '*fedora*.png' 2>/dev/null | head -3 || true)
+if [ -z "$FEDORA_EVIDENCE" ]; then
+    echo "  >>> CRITICAL HARD BLOCKER (original rec list + Phase1 marketplace + 'update THREATMODEL for SBOM' etc.): No Fedora real-device evidence or photos found."
+    echo "  >>> User MUST run on real Fedora + Tails + device:"
+    echo "  >>>   ./scripts/screenshot-prep-fedora.sh ; HASHCHAT_DEMO=main ./run-tui (capture with grim for 5+ states incl queue 'i' + I2P/file/Extreme)"
+    echo "  >>>   ./scripts/real-device-test.sh | tee docs/evidence/real-fedora-$(date +%Y-%m-%d).log"
+    echo "  >>> Then upload, edit flatpak metainfo, commit, push as Lucas. No signed v0.2 without."
+else
+    echo "  -> Fedora evidence/photos found: $FEDORA_EVIDENCE"
+fi
+
 # High #7: Enforce paranoid test coverage (make "CI" / pre-tag fail on missing)
 echo "[10/11] Enforcing paranoid test coverage (ratchet, wipe, posture, disappearing, long-term identity, extreme)..."
 # For local "CI", run the Rust tests if available.

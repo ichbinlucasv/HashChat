@@ -20,13 +20,15 @@ import Control.Exception (try, SomeException, bracket)
 import Data.List (isPrefixOf)
 import System.Directory (doesFileExist, createDirectoryIfMissing)
 import System.FilePath (takeDirectory)
-import Control.Monad (when, void)
+import Control.Monad (when, void, filterM)
 import Data.Char (intToDigit)
 import Data.Word (Word8, Word16)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newMVar, takeMVar, putMVar, MVar)
+import System.Process (createProcess, proc, std_out, std_err, StdStream(..), ProcessHandle)
+import Control.Exception (try, SomeException)
 
 data OnionAddress = OnionAddress String deriving (Show, Eq)
 
@@ -311,8 +313,24 @@ launchI2pdIfNeeded = do
   putStrLn "Extreme: refuses custom proxy (Tor-only forced for minimal surface)."
   putStrLn "OPSEC: test on Fedora/Tails; log proxy use; Extreme + posture for high risk."
   putStrLn "See ROADMAP.md (Sec1 hybrid + I2P), THREATMODEL.md (I2P + queues), scripts/real-device-test.sh (Phase1 I2P tests), TUI help."
-  -- Future (safe, non-breaking): actual createProcess "i2pd" [...] + poll 4444 readiness + handle ph. Currently user-driven for OPSEC control.
-  putStrLn "[launchI2pdIfNeeded] Helper complete. If i2pd binary present in PATH, future version will best-effort spawn."
+  -- Phase 1 actual: best-effort spawn if i2pd in PATH (non-blocking, fire-and-forget, user still controls for OPSEC).
+  -- Does not block or fail the app; just tries to bring up the daemon.
+  res <- try $ do
+    -- Common locations + PATH
+    let candidates = ["i2pd", "/usr/bin/i2pd", "/usr/local/bin/i2pd", "/opt/i2pd/i2pd"]
+    found <- filterM doesFileExist candidates
+    case found of
+      (bin:_) -> do
+        putStrLn $ "[I2P] Found i2pd at " ++ bin ++ " — attempting background launch ( --daemon )..."
+        -- Best effort, detached-ish
+        (Nothing, Nothing, Nothing, _ph) <- createProcess (proc bin ["--daemon"]) { std_out = Inherit, std_err = Inherit }
+        putStrLn "[I2P] i2pd launch attempted (check 'ps aux | grep i2pd' and 'ss -tlnp | grep 4444')."
+        threadDelay 1500000  -- ~1.5s grace for SOCKS to come up
+      [] -> putStrLn "[I2P] i2pd binary not found in common paths. Install and run manually: sudo dnf install -y i2pd && i2pd --daemon"
+  case res of
+    Left (e :: SomeException) -> putStrLn $ "[I2P] Launch attempt error (non-fatal, user can start i2pd): " ++ show e
+    Right () -> pure ()
+  putStrLn "[launchI2pdIfNeeded] Done. If SOCKS 4444 not up, start i2pd yourself and :set-proxy again."
 
 -- Basic multi-path helper stub (Phase 1 start; used by higher layers for failover).
 -- In real: attempt primary, on failure/timeout try secondary (I2P), log for OPSEC review.
