@@ -1,5 +1,5 @@
 HashChat Project - Basic SBOM Summary
-Generated: 2026-06-03T09:08:42Z
+Generated: 2026-06-03T09:39:15Z
 
 Primary Security Boundary: Rust (Double Ratchet, Argon2id, AES-GCM, Zeroize, framing)
 High-Level Logic: Haskell (TUI, protocol state machines, group logic, Tor v3 hidden services)

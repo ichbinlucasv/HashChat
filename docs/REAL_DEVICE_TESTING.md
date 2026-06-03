@@ -119,6 +119,20 @@ These logs are part of the pre-tag audit trail.
 adb logcat | grep -i hashchat
 
 ### Phase 1 Additions: I2P / Queues / File / Extreme (Fedora/Tails + Android)
+
+### Phase 2 Additions (post "continue" mesh full + email full): Mesh peer sync + Email DHT (Fedora/Tails + Android)
+- Run on real Fedora (or Tails): start i2pd for email if testing I2P, local net for mesh (UDP 12345).
+- TUI:
+  - Mesh: discoverLocalMeshPeers (or :discover), send msg (fallback + QROT over mesh), press 'i' after sends to see sendQ/recvQ/lastRot for mesh contact, simulate reconnect (profile switch or restart) to observe drain + ratchet advance.
+  - Email: :email inbox (see load/poll + ratchet), :email send pseudo msg (ratchet + persist to emails/*.enc), set I2P proxy first for garlic note.
+  - Observe: queues persist across, QROT in mesh/email paths, Extreme refusals for DHT.
+- Android: actions "Mesh local peers" + "Email inbox" + "Add contact (X3DH)" - verify queues init, processor feeds, FFI ratchet calls.
+- Log: use real-device-test.sh (now has sections 14/15) | tee docs/evidence/real-fedora-YYYY-MM-DD.log
+- Photos (screenshot-prep-fedora.sh): HASHCHAT_DEMO=mesh ./run-tui + grim for mesh+ 'i' queues; HASHCHAT_DEMO=email for :email.
+- Commit: logs + PNGs + metainfo update as Lucas.
+- This unblocks v0.2 signed tag + Flathub/Fedora marketplace (Critical blocker).
+
+See scripts/ for exact cmds, ROADMAP for "continue" status.
 - I2P: On Fedora (after i2pd), :set-proxy 127.0.0.1 4444 ; send message; verify "Proxy: ...4444" in title + garlic routing (no Tor leak if configured). Log proxy use.
 - Queues (simplex): In TUI, send ~60 msgs to trigger rotate (see [QUEUE] logs + QROT frames in receive); check 'i' for queue ids + lastRot; verify decoys + announcements in logs without breaking ratchet.
 - File (XFTP): :file /tmp/test.bin (large demo); verify ratchet-chunked send (per-chunk logs, framed cts), progress, receive side reassemble + wipe. On Android: use file send demo, check FFI chunks + proxy if set.

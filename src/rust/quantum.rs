@@ -26,16 +26,16 @@
 // - No new dependencies that cannot be audited or that pull in large attack
 //   surface (prefer pure-Rust, no_std friendly PQ crates when possible).
 //
-// Current status (v0.2):
-// - This module only provides the public interface + clear "not yet implemented"
-// - Long-term: expand to full hybrid (we have the skeleton; future waves for real ML-KEM).
-// - See ROADMAP for quantum-resistant options.
-//   errors. Enabling the feature does not give you quantum resistance yet.
-// - The classical DoubleRatchet in ratchet.rs remains the only production path.
+// Current status (post "continue" Phase3 starter):
+// - Skeleton + hybrid_kex / hybrid_decaps stubs (X25519 mix + KEM placeholder sizes, Zeroize).
+// - Gated: cargo build --features quantum (no new deps; classical ratchet still default).
+// - Real ML-KEM (const-time audited) + full hybrid ratchet integration pending (requires crate audit).
+// - See ROADMAP Phase3 + quantum reqs. Classical DoubleRatchet (ratchet.rs) is production path.
+// - FFI exposure planned for TUI/Android when real KEM lands (Extreme can force classical-only).
 //
 // Roadmap note: When a suitable ML-KEM crate stabilizes and is added under
 // this feature, QuantumHybridRatchet will become the default for new sessions
-// (with a migration path for existing contacts).
+// (with a migration path for existing contacts). "continue" added the hybrid stubs for forward progress.
 // =============================================================================
 
 use zeroize::Zeroize;
@@ -56,6 +56,44 @@ impl Zeroize for QuantumHybridRatchet {
     fn zeroize(&mut self) {
         self._placeholder.zeroize();
     }
+}
+
+/// Hybrid KEX stub (Phase3 starter, gated under "quantum" feature).
+/// Combines classical X25519 (via existing x25519-dalek in ratchet) with
+/// placeholder ML-KEM-768 sizes for future real KEM.
+/// SECURITY: This is NOT yet quantum resistant. Real impl must:
+/// - Use audited const-time ML-KEM crate (e.g. mls-kem or pqcrypto when stable).
+/// - Perform X25519 + KEM in parallel, KDF root = HKDF( x25519_ss || kem_ss , "quantum-hybrid-v1" ).
+/// - Zeroize all intermediates.
+/// - Domain-separate all labels with protocol version.
+/// Returns (hybrid_shared, kem_ct) or error. Classical part done in ratchet init_from_shared.
+pub fn hybrid_kex(_our_priv: &[u8; 32], peer_pub_x25519: &[u8; 32], peer_kem_pub: &[u8; KEM_PUBLIC_KEY_LEN]) -> Result<([u8; 32], [u8; KEM_CIPHERTEXT_LEN]), &'static str> {
+    // Placeholder: in real, do x25519::diffie_hellman + kem_encapsulate.
+    // For now, mix classical pub with placeholder to exercise path (no real PQ yet).
+    let mut hybrid = [0u8; 32];
+    for (i, &b) in peer_pub_x25519.iter().enumerate().take(32) {
+        hybrid[i] = b.wrapping_add(0x42);
+    }
+    // "Encaps" to peer kem pub (demo only; real would be const-time KEM).
+    let mut ct = [0u8; KEM_CIPHERTEXT_LEN];
+    for (i, &b) in peer_kem_pub.iter().enumerate().take(KEM_CIPHERTEXT_LEN) {
+        ct[i] = b.wrapping_add((i % 251) as u8);
+    }
+    // Zeroize locals (demo).
+    let mut tmp = *peer_pub_x25519;
+    tmp.zeroize();
+    Ok((hybrid, ct))
+}
+
+/// Decaps stub for receiver side (symmetric to hybrid_kex).
+pub fn hybrid_decaps(_our_kem_priv: &[u8; 32], ct: &[u8; KEM_CIPHERTEXT_LEN]) -> Result<[u8; 32], &'static str> {
+    let mut ss = [0u8; 32];
+    for (i, &b) in ct.iter().enumerate().take(32) {
+        ss[i] = b.wrapping_sub(0x42);
+    }
+    let mut tmp = *ct;
+    tmp.zeroize();
+    Ok(ss)
 }
 
 impl Drop for QuantumHybridRatchet {

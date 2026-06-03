@@ -48,6 +48,26 @@ data GroupRatchet = GroupRatchet
 
 data GroupSenderKey = GroupSenderKey
   { gskRatchetId :: Word32
+
+-- Phase3: Public anonymous channels (DHT pub-sub style, SimpleX-like + observer/broadcast).
+-- Anyone can subscribe anonymously (via Tor/I2P/mesh), post with sender-key ratchet or broadcast-only.
+-- No central server; discovery via relay or DHT (see Relay.hs + decentralized discovery).
+-- Extreme: refuse public channels (metadata surface).
+data PublicChannel = PublicChannel
+  { channelId   :: ByteString   -- hash of long-term or random pub
+  , channelName :: String       -- e.g. "activists-anon"
+  , isBroadcast :: Bool         -- read-only for observers
+  , subscribers :: [ByteString] -- pseudonymous pubs (optional, for small groups)
+  }
+
+createPublicChannel :: String -> Bool -> IO PublicChannel
+createPublicChannel name broadcast = pure $ PublicChannel
+  (BS.pack (take 32 (cycle [0xC1]))) name broadcast []
+
+postToChannel :: PublicChannel -> ByteString -> IO ()
+postToChannel _chan _ct = putStrLn "[CHANNEL] Posted to public anonymous channel (ratchet or broadcast; DHT/relay delivery stub)."
+
+-- Future: pollChannel (via relay or I2P-Bote DHT), subscribe, observer mode (no send ratchet).
   , gskChainKey  :: ByteString
   , gskMsgCount  :: Word32
   }

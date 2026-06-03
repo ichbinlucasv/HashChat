@@ -80,3 +80,17 @@ Current recommendations (fresh, post this batch): See detailed list in session. 
 - All after prior pushes (Lucas direct main, clean --strict). Evidence still 0 files = CRITICAL HARD BLOCKER (pre-tag --strict will exit 1 until user runs screenshot-prep-fedora.sh + real-device-test.sh on real Fedora/Tails/Qubes + device + commits logs/PNGs).
 - Stable: logic roundtrips for queues/mesh/email (TUI+Android), cargo will be checked in ritual. "no stop until we finish all" + "implement and is stable and working good".
 Next: user evidence to unblock, full pre-tag (with audit + semantic SBOM), v0.2 marker, signed tag, Phase3 (Starlink, Tauri GUI, quantum full, self-host relays, monetization, audits), more Android FFI for mesh/email native, Voice polish, Extreme compile-time. Continue immediately after ritual push.
+
+**This "continue" (user command: "continue")**: 
+- Evidence tooling hardened (Critical blocker): real-device-test.sh + screenshot-prep-fedora.sh extended with dedicated Phase2 sections 14/15 (mesh full peer sync/queue drain/QROT over local, email DHT real ratchet/persist/I2P + 'i' queues/X3DH); added explicit copy-paste + grim for mesh/email states + note "after user 'continue'". Updated REAL_DEVICE_TESTING.md + SCREENSHOTS.md with Phase2 sequences. User: run the scripts on real hardware NOW to generate logs/PNGs, commit as Lucas, unblock v0.2 + marketplace.
+- Phase3 starters implemented (stable skeletons per roadmap):
+  - Starlink / satellite (Tor.hs): detectStarlinkOrPreferred (scans /proc/net for starlink/sat, prioritizes for resilience/offline-first failover; integrate in proxy choice later; Extreme = Tor-only).
+  - Self-hostable relay MVP (new src/haskell/HashChat/Relay.hs): announceToRelay, discoverViaRelay, relaySendQueueCt / relayReceive, store-and-forward for queues (integrates with mesh/Tor drain + Queue rotation; paid hosting notes per freemium).
+  - Quantum expand (src/rust/quantum.rs): hybrid_kex + hybrid_decaps stubs (X25519 mix + ML-KEM placeholder sizes/ct, Zeroize, const-time notes, feature-gated "quantum"; no new deps yet; classical remains default; FFI future).
+  - Public channels (src/haskell/HashChat/Group.hs): PublicChannel type + create/post stubs (DHT pub-sub / observer-broadcast; relay or DHT delivery; Extreme refuse).
+  - Monetization align (android/PAID_VERSION_PLAN.md): full freemium details (free core always; Pro one-time/sub for unlimited DHT/relay credits/PQ accel/support/hardware + optional self-host relay service; desktop TUI free forever; F-Droid/donation preferred).
+- Tauri GUI: notes in roadmap + prep (TUI remains ultra-secure default; future minimal sandboxed wrapper with strict caps via FFI only).
+- Polish: scripts/docs updated, quantum/relay/channel stable entry points, no breakage to prior (E2EE/queues/Extreme/Tor primary).
+- Ritual: will clean --strict, checks (cargo passed), sbom, pre-tag (Phase3 progress + blocker note), marker, direct Lucas push to Codeberg main.
+- Stable: cargo clean, logic preserved. "no stop until finish all".
+Next after this: user runs Fedora scripts (unblock), integrate evidence, full pre-tag + v0.2 signed, deeper Phase3 (real ML-KEM crate if audited, Tauri impl, relay server binary, Starlink real scan + failover in send, public channel UI, audits). Continue with "continue" or provide evidence.

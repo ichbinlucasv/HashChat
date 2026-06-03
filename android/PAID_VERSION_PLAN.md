@@ -29,17 +29,24 @@
 
 A basic Rust + JNI skeleton now exists under `android/src/main/rust/`.
 
-## Monetization Philosophy (Updated Recommendation)
+## Monetization Philosophy (Updated Recommendation - aligns Comprehensive Roadmap Sec7)
 
-- **Linux / Desktop**: Always free and fully open source.
-- **Android**: Source remains 100% public on Codeberg (primary) + GitHub mirror. Distribution can be:
-  - Self-hosted F-Droid repository (recommended for privacy)
-  - Direct APK with donation-based unlock (preferred over Google Play billing)
-  - Optional paid unlock key for convenience
+- **Linux / Desktop (TUI)**: Always free and fully open source (AGPL). Core Tor/I2P/mesh/chat/basic email/file always free. No paywall on anonymity.
+- **Android**: Source remains 100% public on Codeberg (primary) + thin GitHub mirror. Distribution:
+  - Self-hosted F-Droid repo (recommended for privacy, donation unlock preferred)
+  - Direct APK (donation-based unlock or one-time)
+  - Optional paid unlock for convenience
 
-**Why this is better for privacy:**
-- No Google Play dependency
-- Users can audit the exact same code they run
-- Donation model aligns incentives without forcing surveillance capitalism
+**Open-core freemium (Pro tier, mirrors ProtonMail success while preserving decentralization):**
+- Free tier = all core (Tor primary + I2P + mesh + chat + basic email/file + Extreme + E2EE + queues + XFTP).
+- Pro (one-time $49-99 or $5-12/mo): unlimited DHT storage (email/groups/channels), priority relay hosting credits, enterprise team key mgmt, accelerated PQ modules, professional support, certified hardware bundles, ad-free premium themes/icons.
+- Additional: Optional paid self-hostable relay-hosting service (run your own relay for community, get credits/badges), custom integrations, donations with visible badges.
+- No Google/Play dependency; F-Droid self-hosted + donation unlock preferred.
 
-This approach keeps the project sustainable while maintaining the highest possible integrity.
+**Why this is better for privacy + sustainability:**
+- No Google Play dependency or surveillance.
+- Users audit the exact same code (open-core).
+- Aligns with roadmap: free core anonymity, paid extras for power users/teams/hosts without compromising defaults or decentralization.
+- Desktop TUI remains the ultra-secure free default forever.
+
+This approach (per user directive + approved plan) keeps the project sustainable while maintaining the highest possible integrity and "no stop until all" implementations. See ROADMAP.md Sec7 + PAID for details.

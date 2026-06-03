@@ -130,6 +130,24 @@ cat > "$LOG_FILE" << EOF
 - [ ] Extreme gate: file refused or noted when Extreme on
 - Observations / sizes tested:
 
+### 14. Phase 2 Mesh full peer sync + queue drain (UDP local discovery, Briar-style, QROT over mesh)
+- [ ] TUI: peers <- discoverLocalMeshPeers (UDP 12345 bcast/recv exercised)
+- [ ] Send msg when mesh peer visible: fallback sendOverMesh + queue rotate + QROT announce over mesh
+- [ ] Drain: receiveFromMeshPeers + processMeshIncoming (unframe, ratchet recv, QROT handling, queue persist, messages saved)
+- [ ] Reconnect/profile switch: syncMeshQueues called, queues drain to ratchets
+- [ ] 'i' shows queues advancing for mesh contact; Extreme gates mesh if on
+- [ ] Android: mesh action discovers + rotate/getSend for mesh-peer + note on sync/drain parity
+- Observations (local net / BT sim / WiFi Direct):
+
+### 15. Phase 2 Email DHT MVP (I2P-Bote style, real ratchet + persist, unlimited pseudos)
+- [ ] TUI: :email inbox (loads persisted, polls with real receiveEmail ratchet path)
+- [ ] :email send <pseudo> <msg> (real ratchet or contact, sendEmailOverRatchet, outbox persist)
+- [ ] I2P: after :set-proxy 127.0.0.1 4444 + i2pd, poll/send uses hybrid note
+- [ ] Persist: hashchat_data/emails/<pseudo>.log.enc exists (Argon2+AES like ratchets)
+- [ ] Android: email action uses ratchetNew + receive FFI + feeds general processor (QROT/text parity)
+- [ ] Extreme: refuses or notes high surface for DHT
+- Observations (ratchet steps, files created, I2P if tested):
+
 ---
 
 ## Overall Result
@@ -159,8 +177,10 @@ echo "Please fill in the sections above with your real test results."
 echo "When finished, commit this file (it is meant to be part of the audit trail)."
 echo ""
 echo "Next recommended: Run this on Tails + physical Android (GrapheneOS) + Fedora before v0.2 tag."
-echo "Concrete sequences (from TESTING_STRATEGY):"
-echo "  - Tails: live USB no persist, ./run-tui, clean-security, test voice/wipe/posture, power off."
-echo "  - Android: adb logcat | grep hashchat ; adb shell pm clear ; test mic/wipe/biometric."
-echo "  - Fedora: use screenshot-prep or run-tui with Tor, test desktop TUI shots."
-echo "  - Always: clean-security before, document in the generated log."
+echo "Concrete sequences (from TESTING_STRATEGY + post 'continue' Phase2):"
+echo "  - Tails: live USB no persist, ./run-tui, clean-security, test voice/wipe/posture/Extreme, power off."
+echo "  - Android: adb logcat | grep hashchat ; adb shell pm clear ; test mic/wipe/biometric + mesh/email actions + X3DH contact add."
+echo "  - Fedora: use screenshot-prep or run-tui with Tor, test desktop TUI shots (incl 'i' queues, :email, mesh fallback)."
+echo "  - Phase2 focus (post mesh/email full): local net for mesh discover/send/drain/queue 'i', :email inbox/send with I2P proxy if avail, observe persist + ratchet."
+echo "  - Always: clean-security before, document in the generated log. Commit log + any PNGs as Lucas."
+echo "This satisfies Critical blocker for v0.2 + marketplace (Flathub/Fedora Apps)."

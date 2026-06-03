@@ -445,3 +445,32 @@ receiveFromMeshPeers = do
 -- Queue.hs + integration in Core/TUI (queues feed existing framing/send paths;
 -- ratchets stay per-contact). See approved Phase 1 plan + ROADMAP.md.
 -- This keeps Tor v3 HS mandatory primary while adding optional overlays.
+
+-- Phase3 starter (Resilience / offline-first): Starlink / satellite interface detection + prioritize.
+-- In real: scan interfaces (ip link, /sys/class/net), detect "starlink", "sat", "wlan" with high latency or specific,
+-- return preferred ProxyConfig (or direct if local mesh) for failover when terrestrial Tor/I2P blocked.
+-- Integrate in TUI proxy choice / send paths: prefer Starlink if available + user allows (Extreme: Tor-only).
+-- Ties to full offline-first (mesh + Starlink extend local WiFi globally).
+detectStarlinkOrPreferred :: IO (Maybe ProxyConfig)
+detectStarlinkOrPreferred = do
+  putStrLn "[STARLINK] Phase3: scanning for satellite / high-latency interfaces (Starlink, OneWeb, etc.)..."
+  -- Best-effort: check common names via /sys or ip (non-fatal).
+  res <- try $ do
+    -- Simple heuristic (expand with real netlink later).
+    interfaces <- readFile "/proc/net/dev" `catch` (\(_ :: SomeException) -> pure "")
+    let hasStarlink = "starlink" `isInfixOf` (map toLower interfaces) || "sat" `isInfixOf` (map toLower interfaces)
+    if hasStarlink
+      then do
+        putStrLn "[STARLINK] Detected satellite interface - prioritizing for resilience (offline-first failover)."
+        -- In real: return a configured proxy or special "direct+mesh" for Starlink WAN + local WiFi mesh extend.
+        pure (Just (Socks5Proxy "127.0.0.1" 9050))  -- placeholder; real would use Starlink's own or VPN chain
+      else pure Nothing
+  case res of
+    Left (_ :: SomeException) -> do
+      putStrLn "[STARLINK] Scan failed (no /proc or perm) - normal for container/Tails. Fallback to Tor primary."
+      pure Nothing
+    Right m -> pure m
+
+-- Note: Call from TUI on :set-proxy or send if user enables "hybrid resilience".
+-- Extreme always forces Tor-only (no Starlink surface).
+-- See ROADMAP Sec3 (offline-first + Starlink failover).
