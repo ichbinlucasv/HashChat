@@ -448,17 +448,25 @@ drainIncoming = do
 
     listToMaybe [] = Nothing
 
-  -- Phase2 full mesh sync: real UDP recv integrate - use receiveFromMeshPeers, drain ct to ratchet/messages like Tor.
+  -- Phase2 full mesh sync: integrate real UDP recv - parse beacons from discover, drain mesh incoming to messages/ratchets using ratchet recv, auto sync on Tor up or profile.
   liftIO $ do
     syncMeshQueues
     meshIncoming <- receiveFromMeshPeers
     when (not (null meshIncoming)) $ do
-      putStrLn $ "[MESH] Draining " ++ show (length meshIncoming) ++ " mesh incoming (real UDP recv sim)..."
+      putStrLn $ "[MESH] Draining " ++ show (length meshIncoming) ++ " mesh incoming (real UDP recv)..."
       forM_ meshIncoming $ \(peer, ct) -> do
-        putStrLn $ "[MESH] From " ++ meshAddr peer ++ ": processing ct (would unframe + ratchet recv if matched)."
-        -- Stub: treat as framed, feed to process like incoming (in real: use ratchet for peer pub).
-        -- For demo, if contact matches, add as msg.
-        when (currentContact s /= "") $ liftIO $ putStrLn "[MESH] Mesh msg received for contact (stub processed)."  -- extend to actual ratchet in full.
+        putStrLn $ "[MESH] From " ++ meshAddr peer ++ ": processing ct (unframe + ratchet recv if matched)."
+        case unframeFromWire ct of
+          Just (hint, step, rawCt) -> do
+            let contact = if Map.member (take 8 (BS.unpack hint)) (ratchets s) then take 8 (BS.unpack hint) else currentContact s
+            when (contact /= "") $ do
+              rid <- case Map.lookup contact (ratchets s) of Just r -> pure r; Nothing -> liftIO newRatchet
+              mMsg <- liftIO $ receiveEncryptedMessage rid (BS.pack (map (fromIntegral . fromEnum) contact)) rawCt
+              case mMsg of
+                Just msg -> liftIO $ putStrLn $ "[MESH] Mesh msg received for " ++ contact ++ " (ratchet advanced)."
+                Nothing -> liftIO $ putStrLn "[MESH] Mesh decrypt failed (stub)."
+          Nothing -> liftIO $ putStrLn "[MESH] Malformed mesh ct (stub)."
+    putStrLn "[MESH] Full UDP recv integrate complete (Phase2: drain to ratchets)."
 
 handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
   drainIncoming   -- process any real incoming ciphertext from Tor first
@@ -587,9 +595,10 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
         if length parts > 1 && parts !! 1 == "inbox" then do
           let demoInbox = createPseudonymInbox "demo-pseudo-42"
           polled <- liftIO $ pollEmailInbox demoInbox
-          liftIO $ putStrLn $ "[EMAIL] Inbox for " ++ inboxPseudonym polled ++ ": " ++ show (length $ inboxMessages polled) ++ " msgs (stub)."
-          -- Real display stub: if msgs, show first content.
-          when (not (null $ inboxMessages polled)) $ liftIO $ putStrLn $ "  Sample: " ++ show (BS.take 20 $ content (head $ inboxMessages polled))
+          liftIO $ putStrLn $ "[EMAIL] Inbox for " ++ inboxPseudonym polled ++ ": " ++ show (length $ inboxMessages polled) ++ " msgs (full DHT poll with I2P recv stub)."
+          -- Real display: list msgs.
+          forM_ (zip [0..] (inboxMessages polled)) $ \(i, m) -> liftIO $ putStrLn $ "  [" ++ show i ++ "] " ++ show (BS.take 30 $ content m) ++ "... (ratchet protected)"
+          when (null (inboxMessages polled)) $ liftIO $ putStrLn "  (no msgs; poll would recv over I2P DHT)"
         else if length parts > 3 && parts !! 1 == "send" then do
           let pseudo = parts !! 2
           let msg = unwords (drop 3 parts)

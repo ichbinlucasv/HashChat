@@ -189,6 +189,10 @@ fi
 if grep -q "receiveFromMeshPeers\|pollEmailInbox.*I2P" app-desktop/TUI.hs src/haskell/HashChat/Core.hs ; then
     echo "  -> Mesh recv integrate in TUI + email I2P recv stub in Core present."
 fi
+# Note full mesh peer sync and email DHT poll in TUI for Phase2.
+if grep -q "drain mesh incoming\|forM_ meshIncoming" app-desktop/TUI.hs ; then
+    echo "  -> Full mesh recv drain in TUI present."
+fi
 
 # Medium: One final git history clean before v0.2 tag
 echo "[9/10] Git history clean note (Medium): Run ./scripts/clean-git-history.sh if needed for final clean before tag (removes sensitive history). See RELEASE_PROCESS.md."
