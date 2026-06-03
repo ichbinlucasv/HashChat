@@ -26,16 +26,18 @@
 // - No new dependencies that cannot be audited or that pull in large attack
 //   surface (prefer pure-Rust, no_std friendly PQ crates when possible).
 //
-// Current status (post "continue" Phase3 starter):
-// - Skeleton + hybrid_kex / hybrid_decaps stubs (X25519 mix + KEM placeholder sizes, Zeroize).
+// Current status (working on priority table High "Deeper Phase3 impl"):
+// - Skeleton + hybrid_kex / hybrid_decaps / hybrid_ratchet_new stubs (X25519 mix + KEM placeholder sizes, Zeroize, FFI).
 // - Gated: cargo build --features quantum (no new deps; classical ratchet still default).
-// - Real ML-KEM (const-time audited) + full hybrid ratchet integration pending (requires crate audit).
-// - See ROADMAP Phase3 + quantum reqs. Classical DoubleRatchet (ratchet.rs) is production path.
-// - FFI exposure planned for TUI/Android when real KEM lands (Extreme can force classical-only).
+// - Real ML-KEM (const-time audited) + full hybrid ratchet integration pending (requires crate audit + Cargo.toml dep).
+// - See ROADMAP Phase3 + quantum reqs + priority table. Classical DoubleRatchet (ratchet.rs) is production path.
+// - FFI exposure (rust_quantum_hybrid_new) for TUI/Android when real KEM lands (Extreme can force classical-only).
 //
-// Roadmap note: When a suitable ML-KEM crate stabilizes and is added under
-// this feature, QuantumHybridRatchet will become the default for new sessions
-// (with a migration path for existing contacts). "continue" added the hybrid stubs for forward progress.
+// To deepen (next): add real crate e.g. 
+// [dependencies]
+// ml-kem = { version = "0.2", features = ["zeroize"] }  # or pqcrypto when stable/audited
+// Then impl real hybrid using X25519 + ml_kem::MlKem768.
+// Roadmap note: When suitable ML-KEM stabilizes + audited, QuantumHybridRatchet becomes default for new sessions (migration for existing). "continue" + this batch deepened stubs + FFI for "stable and working good".
 // =============================================================================
 
 use zeroize::Zeroize;

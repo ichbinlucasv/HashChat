@@ -81,3 +81,14 @@ executable hashchat-cli
   extra-lib-dirs: rust-lib
   extra-libraries: hashchat_rust
   ghc-options: -optl -Wl,-rpath,rust-lib
+
+-- Phase3 High priority: self-hostable relay server binary (open protocol for community relays, paid hosting per freemium).
+-- Run: cabal run hashchat-relay
+-- Integrates Relay.hs (announce, queue sync for offline/mesh/Starlink failover).
+executable hashchat-relay
+  main-is: RelayMain.hs
+  hs-source-dirs: app-relay
+  build-depends: hashchat,
+                  base, bytestring, containers, directory, filepath, process, unix, stm, text
+  default-language: Haskell2010
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N

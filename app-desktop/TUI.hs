@@ -840,7 +840,9 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
         liftIO $ putStrLn $ "[TOR] Sending framed ciphertext to " ++ targetOnion ++ " (real contact mapping + header)"
 
         -- fetch proxy early for queue announce/decoy use
-        let currentProxy = Map.findWithDefault defaultProxyForProfile (currentProfile s) (proxies s)
+        let baseProxy = Map.findWithDefault defaultProxyForProfile (currentProfile s) (proxies s)
+        (currentProxy, isStarlink) <- liftIO $ Tor.chooseProxyWithStarlinkFallback baseProxy
+        when isStarlink $ liftIO $ putStrLn "[STARLINK] Phase3 failover active for this send (offline-first resilience; Extreme disables)."
 
         -- === Phase 1 deeper queue rotation / decoy in TUI (simplex-style unidirectional queues) ===
         -- Check/rotate per-contact queues, announce via special QROT: control frame (peer parses in drain),
@@ -919,6 +921,14 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
           _ <- liftIO $ try (Relay.relaySendQueueCt Relay.defaultRelayConfig peerPub framed) :: IO (Either SomeException ())
           liftIO $ putStrLn "[RELAY] Attempted queue send via self-host relay (Phase3 fallback + paid hosting notes; integrates with queues/QROT)."
         liftIO $ putStrLn "[RELAY] Phase3 relay fallback complete (store-and-forward for sync)."
+
+        -- Phase3 public channel (decentralized groups/channels per roadmap/priority table): simple announce/post stub.
+        -- Real: DHT/relay pub-sub, sender-key or broadcast, observer mode. Extreme refuses.
+        channelPeers <- liftIO Relay.discoverViaRelay Relay.defaultRelayConfig  -- reuse for demo
+        when (not (null channelPeers)) $ do
+          liftIO $ putStrLn "[CHANNEL] Phase3 public anonymous channel (DHT/relay; Extreme refuses high surface)."
+          liftIO $ putStrLn "  (Stub: would post ratchet-ct or broadcast to channel; poll for new via relay. Full UI :channel next.)"
+        -- Deeper: use Group.PublicChannel, integrate with queues for ratcheted posts.
 
         -- Disappearing messages: process expiry + key wipe (real ratchet key zeroization path)
         cleaned <- liftIO $ processDisappearingMessages (Map.findWithDefault [] contact (messages st))

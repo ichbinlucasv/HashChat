@@ -161,6 +161,15 @@ cat > "$LOG_FILE" << EOF
 - [ ] Notes in security info or help
 - Observations (feature gate, stubs functional)
 
+### 18. High Priority Table Items (Deeper Phase3 from user table)
+- [ ] Nix/Flake repro: nix develop + nix build .#hashchat-flatpak / tui succeeds (ghc fix, full builds, Android .so path)
+- [ ] Relay server binary: cabal run hashchat-relay (or built exe) starts, announces, queues sync
+- [ ] Starlink failover: detect + chooseProxyWithStarlinkFallback in send paths (logs, Extreme disables)
+- [ ] Public channel UI: :channel or extended groups for subscribe/post (TUI + Group.PublicChannel)
+- [ ] Tauri GUI: expanded stub with FFI examples (tauri/src-tauri), strict caps, runs basic
+- [ ] Full Tauri app notes: FFI for send/recv/wipe/posture/quantum/Extreme/relay (no direct net/fs)
+- Observations (builds, binary, failover logs, UI cmds, Tauri notes)
+
 ---
 
 ## Overall Result

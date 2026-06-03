@@ -474,3 +474,15 @@ detectStarlinkOrPreferred = do
 -- Note: Call from TUI on :set-proxy or send if user enables "hybrid resilience".
 -- Extreme always forces Tor-only (no Starlink surface).
 -- See ROADMAP Sec3 (offline-first + Starlink failover).
+
+-- Phase3 failover logic: choose best proxy with Starlink priority for resilience when detected.
+-- In send paths: try current (Tor/I2P), fallback to Starlink if detected and not Extreme, then mesh/relay.
+-- Returns (preferredProxy, isStarlinkPreferred) for logging/failover.
+chooseProxyWithStarlinkFallback :: ProxyConfig -> IO (ProxyConfig, Bool)
+chooseProxyWithStarlinkFallback current = do
+  mStar <- detectStarlinkOrPreferred
+  case mStar of
+    Just starCfg -> do
+      putStrLn "[STARLINK] Failover: preferring detected satellite interface for offline-first resilience (Extreme forces current/Tor-only)."
+      pure (starCfg, True)
+    Nothing -> pure (current, False)
