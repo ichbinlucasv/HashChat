@@ -375,11 +375,26 @@ data MeshPeer = MeshPeer { meshAddr :: String, meshPub :: ByteString } deriving 
 -- Extreme: can disable.
 discoverLocalMeshPeers :: IO [MeshPeer]
 discoverLocalMeshPeers = do
-  putStrLn "[MESH] Discovering local peers via UDP stub (simulates BT/WiFi Direct)..."
-  -- Stub: announce on localhost UDP, "discover" a demo peer (in real would recv beacons).
-  let sock = undefined -- placeholder for full UDP (would bind 0.0.0.0:0, set broadcast, send to 255.255.255.255:12345)
-  -- For demo, return a local stub peer (user can edit for testing).
-  pure [MeshPeer "127.0.0.1:12345" (BS.pack (replicate 32 0x42))]  -- demo peer pub
+  putStrLn "[MESH] Discovering local peers via UDP broadcast stub (simulates BT/WiFi Direct/local net)..."
+  -- Real-ish UDP: bind, set broadcast, send announce, recv responses (stubbed for demo; in prod use proper timeout, signed beacons).
+  -- For this, announce and return a demo peer (extend with real recv for full).
+  res <- try $ do
+    addrinfos <- getAddrInfo Nothing (Just "0.0.0.0") (Just "0")
+    let addr = head addrinfos
+    sock <- socket (addrFamily addr) Datagram defaultProtocol
+    setSocketOption sock Broadcast 1
+    -- Announce (in real: hashchat mesh beacon with pub)
+    let announce = BS.pack (map (fromIntegral . fromEnum) "HASHCHAT-MESH-ANNOUNCE")
+    _ <- sendTo sock announce (SockAddrInet 12345 (tupleToHostAddress (255,255,255,255)))
+    -- Stub recv: in full would recv from peers, parse pub/onion.
+    threadDelay 500000  -- 0.5s wait
+    close sock
+    pure ()
+  case res of
+    Left (e :: SomeException) -> putStrLn $ "[MESH] UDP announce err (non-fatal): " ++ show e
+    Right _ -> pure ()
+  -- Demo: always return local stub peer (user can hardcode real for testing).
+  pure [MeshPeer "127.0.0.1:12345" (BS.pack (replicate 32 0x42))]  -- demo peer; real would parse from UDP
 
 -- Stub send over local mesh (fallback when no Tor/I2P).
 sendOverMesh :: MeshPeer -> ByteString -> IO (Either String ())

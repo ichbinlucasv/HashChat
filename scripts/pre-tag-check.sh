@@ -174,6 +174,14 @@ else
     echo "  >>> Warning: run ./scripts/generate-sbom.sh and commit artifacts or note before final tag."
 fi
 
+# Phase2: mesh + email MVP presence
+echo "[Phase 2] Checking mesh discovery + email DHT MVP stubs..."
+if grep -q "discoverLocalMeshPeers\|sendOverMesh\|EmailInbox\|pollEmailInbox" src/haskell/HashChat/Tor.hs src/haskell/HashChat/Core.hs ; then
+    echo "  -> Mesh UDP discovery + Email DHT skeleton present."
+else
+    echo "  >>> Warning: Phase2 mesh/email not yet in code (continue to add)."
+fi
+
 # Medium: One final git history clean before v0.2 tag
 echo "[9/10] Git history clean note (Medium): Run ./scripts/clean-git-history.sh if needed for final clean before tag (removes sensitive history). See RELEASE_PROCESS.md."
 
@@ -200,6 +208,7 @@ fi
 # Critical: User Fedora photos/evidence via scripts (hard blocker per THREATMODEL/ROADMAP/RELEASE)
 # Also note X3DH now wired (real DH FFI) -- pre-tag could gate on long term x pub usage in future.
 # Mesh + Email MVP added (stubs + skeleton); gate if needed for Phase2.
+# Pre-tag now also checks for mesh/email code presence in Phase2 section.
 
 echo "[Critical v0.2] Checking for user-generated Fedora photos/evidence (screenshot-prep + real-device-test logs)..."
 FEDORA_EVIDENCE=$(find docs/evidence -name '*real-fedora*.log' -o -name '*fedora*.png' 2>/dev/null | head -3 || true)

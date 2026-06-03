@@ -566,6 +566,15 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
         liftIO $ putStrLn "[DISCOVERY] Decentralized discovery stub (Medium item). Future: concrete protocol + message formats for finding contacts without leaking metadata (no central servers)."
         liftIO $ putStrLn "  (For now, use :my-contact / :add-contact for manual QR-style sharing.)"
         modify $ \st -> st { input = "" }
+      else if ":email" `isInfixOf` inputStr
+      then do
+        liftIO $ putStrLn "[EMAIL] DHT MVP stub (Phase2). Pseudonymous inbox via I2P-Bote style (ratchet over hybrid, at-rest enc)."
+        liftIO $ putStrLn "  Usage: :email inbox (poll), :email send <pseudo> <msg> (stub)."
+        -- Stub: create demo inbox, poll.
+        let demoInbox = createPseudonymInbox "demo-pseudo-42"
+        polled <- liftIO $ pollEmailInbox demoInbox
+        liftIO $ putStrLn $ "[EMAIL] Polled inbox for " ++ inboxPseudonym polled ++ " (0 new; stub)."
+        modify $ \st -> st { input = "" }
       else if ":screenshot" `isInfixOf` inputStr || inputStr == ":shots"
       then do
         liftIO $ putStrLn "=== Marketplace Screenshot Helper (for your Fedora photos) ==="

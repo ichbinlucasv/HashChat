@@ -456,6 +456,8 @@ class MainActivity : AppCompatActivity() {
                 "Toggle Extreme mode (ultra stripped, this session)",
                 "Set I2P proxy (Phase 1 hybrid transport parity)",
                 "Send file (Phase 1 XFTP ratchet-chunked parity)",
+                "Mesh local peers (Phase2 discovery stub)",
+                "Email inbox (DHT MVP stub)",
                 "Cancel"
             )) { _, which ->
                 when (which) {
@@ -506,6 +508,15 @@ class MainActivity : AppCompatActivity() {
                     }
                     10 -> setI2PProxyForCurrentProfile()
                     11 -> sendFileDemoWithParity()
+                    12 -> {
+                        val peers = listOf("local-peer-1 (UDP stub)", "local-peer-2 (BT sim)")
+                        Toast.makeText(this, "Mesh peers discovered (Phase2): " + peers.joinToString(), Toast.LENGTH_LONG).show()
+                        // Stub: would use for offline send, queue, sync on reconnect.
+                    }
+                    13 -> {
+                        Toast.makeText(this, "Email inbox (DHT MVP): 0 new msgs (stub; ratchet over I2P, Extreme gated)", Toast.LENGTH_LONG).show()
+                        // Stub: poll, receive via ratchet.
+                    }
                 }
             }
             .show()
