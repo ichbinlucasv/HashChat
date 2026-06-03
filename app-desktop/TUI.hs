@@ -452,7 +452,6 @@ drainIncoming = do
   liftIO $ do
     syncMeshQueues
     putStrLn "[MESH] Checking local mesh peers for incoming (stub recv; would feed to ratchet if matched)."
-    listToMaybe (x:_) = Just x
 
 handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
   drainIncoming   -- process any real incoming ciphertext from Tor first
@@ -582,12 +581,15 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
           let demoInbox = createPseudonymInbox "demo-pseudo-42"
           polled <- liftIO $ pollEmailInbox demoInbox
           liftIO $ putStrLn $ "[EMAIL] Inbox for " ++ inboxPseudonym polled ++ ": " ++ show (length $ inboxMessages polled) ++ " msgs (stub)."
+          -- Real display stub: if msgs, show first content.
+          when (not (null $ inboxMessages polled)) $ liftIO $ putStrLn $ "  Sample: " ++ show (BS.take 20 $ content (head $ inboxMessages polled))
         else if length parts > 3 && parts !! 1 == "send" then do
           let pseudo = parts !! 2
           let msg = unwords (drop 3 parts)
           liftIO $ putStrLn $ "[EMAIL] Sending to " ++ pseudo ++ ": " ++ msg ++ " (stub via sendEmailOverRatchet)."
           -- Stub: would create ratchet to pseudo if needed, send.
-          _ <- liftIO $ sendEmailOverRatchet (unsafePerformIO newRatchet) (BS.pack []) (BS.pack $ map (fromIntegral . fromEnum) msg)
+          rid <- liftIO newRatchet
+          _ <- liftIO $ sendEmailOverRatchet rid (BS.pack []) (BS.pack $ map (fromIntegral . fromEnum) msg)
           liftIO $ putStrLn "[EMAIL] Email 'sent' (Phase2 stub)."
         else do
           let demoInbox = createPseudonymInbox "demo-pseudo-42"

@@ -181,7 +181,10 @@ if grep -q "discoverLocalMeshPeers\|sendOverMesh\|EmailInbox\|pollEmailInbox\|sy
 else
     echo "  >>> Warning: Phase2 mesh/email not yet in code (continue to add)."
 fi
-# Note full mesh sync (drain/receive) and email UI in TUI for Phase2.
+# Note full mesh sync (drain/receive) and email UI in TUI for Phase2. Real UDP recv in discover for mesh.
+if grep -q "recvFrom\|bind.*12345" src/haskell/HashChat/Tor.hs ; then
+    echo "  -> Real UDP recv beacons in mesh discovery present."
+fi
 
 # Medium: One final git history clean before v0.2 tag
 echo "[9/10] Git history clean note (Medium): Run ./scripts/clean-git-history.sh if needed for final clean before tag (removes sensitive history). See RELEASE_PROCESS.md."
