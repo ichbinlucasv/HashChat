@@ -14,7 +14,7 @@ flag tui
   manual: True
 
 library
-  exposed-modules: HashChat.Core HashChat.Profile HashChat.Queue HashChat.FileTransfer HashChat.Contact HashChat.Voice HashChat.Call HashChat.Settings HashChat.Security HashChat.Group HashChat.Chat
+  exposed-modules: HashChat.Core HashChat.Profile HashChat.Queue HashChat.FileTransfer HashChat.Contact HashChat.Voice HashChat.Call HashChat.Settings HashChat.Security HashChat.Group HashChat.Chat HashChat.Tor HashChat.Relay
   build-depends: base, stm, cryptonite, memory, sqlite-simple, bytestring, time, text,
                   containers, directory, filepath, process, unix
   hs-source-dirs: src/haskell
@@ -72,8 +72,10 @@ executable hashchat-cli
     HashChat.Group
     HashChat.Profile
     HashChat.Queue
+    HashChat.Relay
     HashChat.Security
     HashChat.Settings
+    HashChat.Tor
     HashChat.Voice
   -- Rust FFI library (produced by cargo build)
   extra-lib-dirs: rust-lib

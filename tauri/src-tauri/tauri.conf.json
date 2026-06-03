@@ -1,0 +1,34 @@
+{
+  "build": {
+    "beforeBuildCommand": "",
+    "beforeDevCommand": "",
+    "devPath": "../dist",
+    "distDir": "../dist"
+  },
+  "package": {
+    "productName": "HashChat",
+    "version": "0.1.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "shell": { "all": false }
+    },
+    "windows": [
+      {
+        "fullscreen": false,
+        "height": 600,
+        "resizable": true,
+        "title": "HashChat (Tauri GUI stub - Phase3, TUI is default secure)",
+        "width": 800
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'"
+    },
+    "bundle": {
+      "active": true,
+      "targets": "all"
+    }
+  }
+}

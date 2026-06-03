@@ -1,0 +1,18 @@
+[package]
+name = "hashchat-tauri"
+version = "0.1.0"
+edition = "2021"
+
+# Phase3: Minimal sandboxed GUI wrapper (optional, TUI remains ultra-secure default).
+# Strict capabilities: no direct net/fs; all via our Rust FFI (crypto, transport, ratchet, Extreme).
+# See ROADMAP Sec5: "Optional minimal sandboxed GUI (Tauri strict — no surface increase). Consistent parity..."
+# Build: cargo tauri or from nix later. Desktop always free; Android separate.
+
+[dependencies]
+# Will depend on the hashchat-rust lib for FFI (Double Ratchet, LongTerm, etc.)
+# tauri = { version = "1", features = ["api-all"] } but strict: disable most, use only custom.
+# For now stub; real will have isolated webview + JS thin that calls Rust cmds for send/recv.
+
+[features]
+default = []
+# quantum feature passthrough if needed.

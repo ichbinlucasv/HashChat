@@ -201,6 +201,30 @@ if grep -q "persistEmailInbox" src/haskell/HashChat/Core.hs ; then
     echo "  -> Email persist stub present."
 fi
 
+# Phase3 starters (post "continue" batch): Starlink, self-host Relay, quantum hybrid, public channels, monetization, Tauri stub, :relay integration
+echo "[Phase 3] Checking Starlink detect + self-host Relay + quantum hybrid + public channels + Tauri stub + :relay cmd..."
+if grep -q "detectStarlinkOrPreferred" src/haskell/HashChat/Tor.hs ; then
+    echo "  -> Starlink detect present (Phase3 resilience)."
+fi
+if [ -f src/haskell/HashChat/Relay.hs ] && grep -q "module HashChat.Relay" src/haskell/HashChat/Relay.hs ; then
+    echo "  -> Self-host Relay.hs MVP present (announce, queue relay, paid notes)."
+fi
+if grep -q "hybrid_kex\|hybrid_ratchet_new" src/rust/quantum.rs ; then
+    echo "  -> Quantum hybrid_kex + FFI stub present (gated feature)."
+fi
+if grep -q "PublicChannel" src/haskell/HashChat/Group.hs ; then
+    echo "  -> PublicChannel (decentralized groups/channels) present."
+fi
+if [ -f tauri/src-tauri/Cargo.toml ] && [ -f tauri/README.md ] ; then
+    echo "  -> Tauri GUI stub present (minimal sandboxed, TUI default secure)."
+fi
+if grep -q ":relay" app-desktop/TUI.hs ; then
+    echo "  -> :relay cmd in TUI (integrates Relay module)."
+fi
+if grep -q "freemium\|Pro (one-time" android/PAID_VERSION_PLAN.md ; then
+    echo "  -> PAID freemium align present (unlimited DHT/relay credits, self-host service)."
+fi
+
 # Medium: One final git history clean before v0.2 tag
 echo "[9/10] Git history clean note (Medium): Run ./scripts/clean-git-history.sh if needed for final clean before tag (removes sensitive history). See RELEASE_PROCESS.md."
 

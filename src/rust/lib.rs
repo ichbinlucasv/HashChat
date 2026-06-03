@@ -20,6 +20,13 @@ mod quantum;
 #[cfg(feature = "quantum")]
 pub use quantum::{hybrid_ratchet_new, QuantumHybridRatchet};
 
+#[cfg(feature = "quantum")]
+#[no_mangle]
+pub extern "C" fn rust_quantum_hybrid_new() -> *mut QuantumHybridRatchet {
+    let r = Box::new(hybrid_ratchet_new());
+    Box::into_raw(r)
+}
+
 pub use longterm_identity::{
     export_encrypted as longterm_export_encrypted,
     import_encrypted as longterm_import_encrypted,

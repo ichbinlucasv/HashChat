@@ -96,6 +96,11 @@ pub fn hybrid_decaps(_our_kem_priv: &[u8; 32], ct: &[u8; KEM_CIPHERTEXT_LEN]) ->
     Ok(ss)
 }
 
+/// Stub for FFI reexport (matches lib.rs pub use).
+pub fn hybrid_ratchet_new() -> QuantumHybridRatchet {
+    QuantumHybridRatchet { _placeholder: [0u8; 32] }
+}
+
 impl Drop for QuantumHybridRatchet {
     fn drop(&mut self) {
         self.zeroize();

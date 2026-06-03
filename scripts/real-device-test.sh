@@ -148,6 +148,19 @@ cat > "$LOG_FILE" << EOF
 - [ ] Extreme: refuses or notes high surface for DHT
 - Observations (ratchet steps, files created, I2P if tested):
 
+### 16. Phase 3 Starlink / Resilience + Self-host Relay (offline-first, paid hosting)
+- [ ] Tor: detectStarlinkOrPreferred called (scans for sat interfaces)
+- [ ] :relay announce / discover / send (uses Relay module, queue tie-in, stub cts)
+- [ ] Relay self-host: announce presence, queue sync for mesh/Tor failover
+- [ ] Extreme: refuses relay/Starlink surface (Tor primary only)
+- [ ] Observations (Starlink detect log, relay peers, paid notes in help)
+
+### 17. Phase 3 Quantum + Public Channels (gated, stubs)
+- [ ] Quantum: --features quantum builds, hybrid_kex/hybrid_ratchet_new available (FFI stub)
+- [ ] Public channels: :channel or group public mode (DHT/relay stub, observer/broadcast)
+- [ ] Notes in security info or help
+- Observations (feature gate, stubs functional)
+
 ---
 
 ## Overall Result

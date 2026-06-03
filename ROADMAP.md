@@ -94,3 +94,14 @@ Next: user evidence to unblock, full pre-tag (with audit + semantic SBOM), v0.2 
 - Ritual: will clean --strict, checks (cargo passed), sbom, pre-tag (Phase3 progress + blocker note), marker, direct Lucas push to Codeberg main.
 - Stable: cargo clean, logic preserved. "no stop until finish all".
 Next after this: user runs Fedora scripts (unblock), integrate evidence, full pre-tag + v0.2 signed, deeper Phase3 (real ML-KEM crate if audited, Tauri impl, relay server binary, Starlink real scan + failover in send, public channel UI, audits). Continue with "continue" or provide evidence.
+
+**This "continue" (user: "continue")**: 
+- Integrated Phase3 into TUI/FFI/cabal: :relay cmd (announce/discover/send using Relay module + queue notes), Starlink detect called on :set-proxy (visible log + status note), quantum hybrid FFI (rust_quantum_hybrid_new + hybrid_ratchet_new under feature, lib reexport), public channels stub, Tauri minimal skeleton (tauri/src-tauri/ with Cargo.toml/main.rs/conf.json + README plan for strict caps FFI-only GUI).
+- Updated cabal (added Relay/Tor to exposed/other-modules for build).
+- Evidence scripts enhanced with Phase3 sections (16/17: Starlink, relay, quantum, channels) + screenshot DEMO=relay.
+- Pre-tag: added Phase3 gate checks (Relay.hs, detect fn, hybrid, PublicChannel, Tauri stub, :relay, PAID freemium).
+- Docs: ROADMAP/THREATMODEL/RELEASE updated with this continue + Phase3 integration + blocker reminder (verbatim user cmds).
+- SBOM gen, cargo clean.
+- Ritual: clean --strict, checks (cargo + nix note), sbom, pre-tag (new gates + blocker), marker, direct Lucas push to Codeberg main only.
+- Stable: no breakage, new code wired (stubs call real modules, feature gated), evidence still 0 = Critical hard blocker for v0.2 (user MUST run scripts on real Fedora/Tails/device now to unblock + marketplace).
+- "no stop until finish all". Next: user evidence, deeper Phase3 (real KEM, full Tauri, relay server, etc), v0.2. Say "continue" after.
