@@ -447,6 +447,11 @@ drainIncoming = do
     findFuzzyRatchet _hint m = listToMaybe (Map.elems m)   -- last resort: any ratchet (still better than before)
 
     listToMaybe [] = Nothing
+
+  -- Phase2 full mesh sync: stub receive from local peers (UDP sim), drain to messages if peer known.
+  liftIO $ do
+    syncMeshQueues
+    putStrLn "[MESH] Checking local mesh peers for incoming (stub recv; would feed to ratchet if matched)."
     listToMaybe (x:_) = Just x
 
 handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
@@ -572,12 +577,23 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
       then do
         liftIO $ putStrLn "[EMAIL] DHT MVP stub (Phase2). Pseudonymous inbox via I2P-Bote style (ratchet over hybrid, at-rest enc)."
         liftIO $ putStrLn "  Usage: :email inbox (poll), :email send <pseudo> <msg> (stub)."
-        -- Stub: create demo inbox, poll.
-        let demoInbox = createPseudonymInbox "demo-pseudo-42"
-        polled <- liftIO $ pollEmailInbox demoInbox
-        liftIO $ putStrLn $ "[EMAIL] Polled inbox for " ++ inboxPseudonym polled ++ " (0 new; stub)."
-        -- Background poll stub for email DHT.
-        liftIO $ putStrLn "[EMAIL] Background poll started (stub; would loop over DHT for new ratchet msgs)."
+        let parts = words inputStr
+        if length parts > 1 && parts !! 1 == "inbox" then do
+          let demoInbox = createPseudonymInbox "demo-pseudo-42"
+          polled <- liftIO $ pollEmailInbox demoInbox
+          liftIO $ putStrLn $ "[EMAIL] Inbox for " ++ inboxPseudonym polled ++ ": " ++ show (length $ inboxMessages polled) ++ " msgs (stub)."
+        else if length parts > 3 && parts !! 1 == "send" then do
+          let pseudo = parts !! 2
+          let msg = unwords (drop 3 parts)
+          liftIO $ putStrLn $ "[EMAIL] Sending to " ++ pseudo ++ ": " ++ msg ++ " (stub via sendEmailOverRatchet)."
+          -- Stub: would create ratchet to pseudo if needed, send.
+          _ <- liftIO $ sendEmailOverRatchet (unsafePerformIO newRatchet) (BS.pack []) (BS.pack $ map (fromIntegral . fromEnum) msg)
+          liftIO $ putStrLn "[EMAIL] Email 'sent' (Phase2 stub)."
+        else do
+          let demoInbox = createPseudonymInbox "demo-pseudo-42"
+          polled <- liftIO $ pollEmailInbox demoInbox
+          liftIO $ putStrLn $ "[EMAIL] Polled inbox for " ++ inboxPseudonym polled ++ " (0 new; stub)."
+          liftIO $ putStrLn "[EMAIL] Background poll started (stub; would loop over DHT for new ratchet msgs)."
         modify $ \st -> st { input = "" }
       else if ":screenshot" `isInfixOf` inputStr || inputStr == ":shots"
       then do
@@ -1141,6 +1157,7 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
             _ <- liftIO $ try (Tor.sendOverProxy currentProxy targetOnion df) :: IO (Either SomeException ())
             liftIO $ putStrLn "[QUEUE] Voice: decoy sent"
         liftIO $ putStrLn $ "[VOICE] ✓ All voice chunks sent to " ++ contact ++ " (per-chunk ratchet + decoys)."
+        liftIO Tor.syncMeshQueues  -- Phase2: sync mesh after voice for local peers.
 
 -- Full multi-member group UI + sender keys (Simplex-style) — 'g' key opens menu
 handleEvent (VtyEvent (V.EvKey (V.KChar 'g') [])) = do

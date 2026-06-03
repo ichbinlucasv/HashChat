@@ -181,6 +181,7 @@ if grep -q "discoverLocalMeshPeers\|sendOverMesh\|EmailInbox\|pollEmailInbox\|sy
 else
     echo "  >>> Warning: Phase2 mesh/email not yet in code (continue to add)."
 fi
+# Note full mesh sync (drain/receive) and email UI in TUI for Phase2.
 
 # Medium: One final git history clean before v0.2 tag
 echo "[9/10] Git history clean note (Medium): Run ./scripts/clean-git-history.sh if needed for final clean before tag (removes sensitive history). See RELEASE_PROCESS.md."
