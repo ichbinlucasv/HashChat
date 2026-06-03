@@ -129,12 +129,12 @@ Updated table (progress/remaining): see below or full in THREATMODEL. Evidence s
 
 **This "continue" (user: "continue") - FOCUSED ONLY ON CRITICAL PER USER INSTRUCTION (no High/Medium/Long yet)**:
 - Critical #1 Evidence (User Fedora/Tails/Qubes + physical Android photos/logs - the hard blocker):
-  - PREP DONE AND STABLE: Massively enhanced scripts/screenshot-prep-fedora.sh and real-device-test.sh with dedicated "CRITICAL #1: EXACT COPY-PASTE COMMANDS..." section at end.
-  - Provides complete, copy-paste terminal commands for user to run on real hardware: clean, nix builds, all HASHCHAT_DEMO states (main/refusal/voice/groups/actions/extreme/i2p/file/relay/channel + 'i' queues + Extreme refusals), grim captures for 10+ marketplace photos, relay server test, full real-device-test log with table items.
+  - PREP DONE AND STABLE (further enhanced this continue): scripts/screenshot-prep-fedora.sh and real-device-test.sh with dedicated "CRITICAL #1: EXACT COPY-PASTE COMMANDS..." + auto-generate evidence log template with table items pre-filled. Added Tails/Qubes notes, precise grim for all table states (incl Phase3 relay/channel/Starlink/quantum/Tauri/nix builds/relay server/'i' queues/Extreme).
+  - Complete, copy-paste terminal commands for user to run on real hardware: clean, nix builds, all HASHCHAT_DEMO states, grim captures for 10+ marketplace photos, relay server test, full real-device-test log.
   - Updated REAL_DEVICE_TESTING.md, SCREENSHOTS.md, and this ROADMAP table row.
   - User must NOW run the exact commands on real Fedora + Tails + physical Android, commit the photos + logs + metainfo update as Lucas. This unblocks v0.2 + marketplace.
 - Critical #2 Nix/Flake repro + full builds:
-  - PREP DONE AND STABLE: flake.nix deepened (explicit table commands in shellHook for nix build .#hashchat-tui / .#hashchat-flatpak / .#hashchat-android-rust, improved Android fail-hard section, guidance tying to evidence capture).
+  - PREP DONE AND STABLE (further deepened this continue): flake.nix deepened more (added explicit 'repro-test' commands in shellHook for nix build .#hashchat-tui / .#hashchat-flatpak / .#hashchat-android-rust, improved Android fail-hard, guidance tying to evidence capture).
   - nix env confirmed ready (ghc 9.10.3, cabal present). Builds tested in ritual.
   - Updated docs/scripts to reference the exact nix commands from table.
 - Only after user executes the evidence on hardware + confirms "done and stable and good" will we move to High (deeper Phase3 ML-KEM/Tauri/relay/Starlink/channels), Medium, Long-term.

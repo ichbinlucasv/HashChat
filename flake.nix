@@ -135,6 +135,8 @@
             echo "  nix build .#hashchat-flatpak"
             echo "  # For Android .so (fail-hard, requires cargo-ndk + NDK in env or use android/build-android.sh):"
             echo "  nix build .#hashchat-android-rust"
+            echo "  # Full repro test for Critical:"
+            echo "  nix build .#hashchat-tui && nix build .#hashchat-flatpak && echo 'Nix repro builds stable for tui/flatpak'"
             echo "To build the full installable Flatpak end-to-end with NO external scripts:"
             echo "  nix build .#hashchat-flatpak"
             echo "  # Produces result/hashchat-tui.flatpak (pure Nix, pinned tools)"
@@ -142,6 +144,7 @@
             echo "Recommended: still use ./build.sh tui ONLY for quick dev inside Tails/Qubes disposable."
             echo "This flake is the ONLY path for reproducible, auditable Flatpak distribution."
             echo "After builds, use scripts/screenshot-prep-fedora.sh + real-device-test.sh to capture evidence photos/logs for Critical #1."
+            echo "  # Then commit as Lucas."
           '';
         };
 

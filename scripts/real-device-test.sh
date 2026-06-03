@@ -213,3 +213,11 @@ echo "      2. ./scripts/real-device-test.sh | tee docs/evidence/real-fedora-$(d
 echo "  - Phase3/table focus: test :relay, :channel, Starlink failover, quantum, Tauri (if built), relay server binary, nix repro builds while capturing."
 echo "  - Always: clean-security before/after, document dates + 'real Fedora/Tails + physical Android' + commit the photos + log + update metainfo as Lucas."
 echo "This + the grim photos is exactly what satisfies the Critical v0.2 evidence blocker and allows Flathub/Fedora Apps marketplace submission."
+echo ""
+echo "To auto-append a pre-filled table template to your log (for Critical #1):"
+echo "  cat >> $LOG_FILE << 'TABLEEOF'
+### Critical Table Items - Fill after captures
+- [ ] User evidence photos: grim for main, refusal, voice, groups, actions, extreme, i2p, file, relay, channel, queues-i (from screenshot-prep)
+- [ ] Nix/Flake: nix build .#hashchat-tui ; nix build .#hashchat-flatpak succeeded
+TABLEEOF
+echo "Log updated with table template. Fill [x] after your runs."
