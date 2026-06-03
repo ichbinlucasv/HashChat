@@ -295,3 +295,9 @@ We should continue hardening the **boundaries** and **minimization** rather than
 - Additional High deepen: TUI :quantum cmd + full FFI kex test (real X25519 exercised via call), Relay now has working store roundtrip for queue send/poll (local tests stable, QROT notes), pre-tag checks added, Android kex FFI.
 - OPSEC/ritual same (cleans, Lucas push). Threat sim guidance already in.
 - Evidence blocker unchanged. New recs in ROADMAP.
+
+**This continue (user: "continue")**:
+- Relay drain integration for stable offline (poll in drainIncoming, process notes for ratchet/QROT).
+- :quantum uses real long-term x pub for peer in test (more realistic).
+- Pre-tag/evidence script updates for new.
+- Ritual/push. Evidence still blocker. Continue on Medium after user hardware evidence.

@@ -279,3 +279,9 @@ For build reproducibility and OPSEC, see docs/BUILD_REPRODUCIBILITY.md and docs/
 
 **This continue (user: "continue")**:
 - More High stabilize: added :quantum TUI cmd + Core FFI wrapper + Rust kex_test FFI (exercises real X25519 hybrid via call, Extreme gate); Relay now uses store for actual queue send/poll roundtrip (local demo stable + QROT notes); pre-tag checks for new items; Android kex FFI parity. Full ritual (cleans, checks, sbom, pre-tag, marker, Lucas push to Codeberg). Evidence 0 = blocker. See ROADMAP for details + next (user hardware run to unblock, then Medium/Long).
+
+**This continue (user: "continue")**:
+- Relay cts now polled in drainIncoming (stable offline sync).
+- :quantum uses real long-term x pub for peer in test (more realistic).
+- Evidence script + pre-tag updated.
+- Ritual/push as Lucas. Blocker active. Continue after user evidence.

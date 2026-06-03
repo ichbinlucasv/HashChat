@@ -221,6 +221,12 @@ fi
 if grep -q "rustQuantumHybridKexTest\|Java_chat_hashchat_HashChatNative_rustQuantumHybridKexTest" android/src/main/rust/src/lib.rs ; then
     echo "  -> Android quantum kex test FFI present (High parity)."
 fi
+if grep -q "relayCts\|RELAY-DRAIN\|relayReceive.*drain" app-desktop/TUI.hs ; then
+    echo "  -> Relay cts polled/processed in drainIncoming (stable offline queue sync + QROT)."
+fi
+if grep -q "getSessionLongTermPublic.*peerXDemo\|real long x used for peer" app-desktop/TUI.hs ; then
+    echo "  -> :quantum uses real long-term x pub for realistic hybrid test (deeper integration)."
+fi
 if grep -q "PublicChannel" src/haskell/HashChat/Group.hs ; then
     echo "  -> PublicChannel (decentralized groups/channels) present."
 fi

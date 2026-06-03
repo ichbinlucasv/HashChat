@@ -173,3 +173,16 @@ Next: user evidence (unblock), full pre-tag + v0.2 signed (after semantic SBOM +
 - "no stop until finish all". Stable for these. 
 New recs: user run evidence cmds on hardware NOW (to unblock v0.2), then full pre-tag/signed, then Medium items (Voice polish, Extreme compile min, auto X3DH, more tests) + deeper roadmap (real mesh peer sync with queue drain over UDP, full email I2P recv/poll, quantum as optional default for new, Tauri full frontend thin + build in flake, self-host relay prod docs/exe, audits, monetization stub).
 Say "continue" to keep going (or provide Fedora/Tails/Android logs+photos).
+
+**This continue (user: "continue")**:
+- Deepened for stable High + start Medium (no stop):
+  - Relay integration: added relay poll + process (surface + note) in drainIncoming (after mesh) so relay cts from store are "drained" on events for offline sync demo. :relay poll enhanced with processing note. Makes relay "working good" for queue roundtrip + QROT parity in UI/drain.
+  - Quantum: :quantum now uses real session long-term x pub (from getSessionLongTermPublic) as peerXDemo for realistic classical dh in hybrid test (our fixed for demo, no priv expose). Pre-tag checks updated.
+  - Evidence/Critical: real-device-test.sh updated for :quantum cmd test in Phase3 section (user hardware run guidance).
+  - Pre-tag: added checks for relay drain integration + real long x in :quantum.
+  - All cargo checks (incl quantum), clean, SBOM.
+- Docs: this entry + table + "where ended" + verbatim.
+- Ritual + push as Lucas to Codeberg main.
+- Stable: drain now handles relay cts, :quantum more real, no breakage.
+New recs: user execute evidence scripts on real hardware (Fedora/Tails + Android photos/logs with :quantum, relay poll, drain, queues 'i' etc) + commit/push as Lucas to unblock v0.2. Then full pre-tag + signed. Then more Medium (Voice real polish, Extreme compile-min, tests, auto X3DH full, mesh full UDP sync, email full I2P, Tauri frontend, etc) + Long roadmap.
+"continue" or provide outputs to keep no-stop.
