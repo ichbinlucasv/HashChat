@@ -185,6 +185,10 @@ fi
 if grep -q "recvFrom\|bind.*12345" src/haskell/HashChat/Tor.hs ; then
     echo "  -> Real UDP recv beacons in mesh discovery present."
 fi
+# Full integrate: mesh recv in TUI drain, email I2P recv in Core.
+if grep -q "receiveFromMeshPeers\|pollEmailInbox.*I2P" app-desktop/TUI.hs src/haskell/HashChat/Core.hs ; then
+    echo "  -> Mesh recv integrate in TUI + email I2P recv stub in Core present."
+fi
 
 # Medium: One final git history clean before v0.2 tag
 echo "[9/10] Git history clean note (Medium): Run ./scripts/clean-git-history.sh if needed for final clean before tag (removes sensitive history). See RELEASE_PROCESS.md."

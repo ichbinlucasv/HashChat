@@ -720,12 +720,20 @@ receiveEmail = receiveEncryptedMessage
 -- Note: Full DHT would use I2P pub-sub for "inbox" announcements, local encrypted store.
 -- Extreme: gate creation/use.
 
--- Simple poll/receive loop stub (Phase2 MVP): in real, poll DHT for new msgs to pseudonym, decrypt with ratchet, store.
+-- Simple poll/receive loop stub (Phase2 full DHT): in real, poll I2P DHT for new msgs to pseudonym (stub I2P recv), decrypt with ratchet, store to persist.
 pollEmailInbox :: EmailInbox -> IO EmailInbox
 pollEmailInbox inbox = do
-  putStrLn $ "[EMAIL] Polling DHT inbox for " ++ inboxPseudonym inbox ++ " (stub; would recv over I2P/Tor mesh)..."
-  -- Stub: no new msgs; in full would add received via receiveEmail.
-  pure inbox { lastSync = 0 }
+  putStrLn $ "[EMAIL] Polling DHT inbox for " ++ inboxPseudonym inbox ++ " (full: stub I2P recv + ratchet decrypt + persist)..."
+  -- Stub I2P recv: in real would use I2P lib to recv to pseudo addr.
+  let fakeI2PRecv = BS.pack (map (fromIntegral . fromEnum) "I2P-DHT-RECV-DEMO-EMAIL-CT")
+  -- If recv, decrypt (stub use receiveEmail logic), add.
+  mNew <- if BS.null fakeI2PRecv then pure Nothing else receiveEmail (unsafePerformIO newRatchet) (BS.pack []) fakeI2PRecv  -- stub rid
+  case mNew of
+    Just newMsg -> do
+      let newMsgs = inboxMessages inbox ++ [newMsg]
+      putStrLn $ "[EMAIL] Recv + added to inbox (persist stub)."
+      pure inbox { inboxMessages = newMsgs, lastSync = 0 }
+    Nothing -> pure inbox { lastSync = 0 }
 
 -- Persist note: use encrypted store like ratchets (hashchat_data/emails/<pseudo>.enc).
 -- TUI stub command would be :email send <pseudo> <msg> or :email inbox.

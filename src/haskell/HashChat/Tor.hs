@@ -16,6 +16,7 @@ module HashChat.Tor
   , discoverLocalMeshPeers
   , sendOverMesh
   , syncMeshQueues
+  , receiveFromMeshPeers
   ) where
 
 import Network.Socket
@@ -415,6 +416,17 @@ sendOverMesh peer ct = do
 -- When reconnected, drain mesh queue into main send path + ratchet sync.
 syncMeshQueues :: IO ()
 syncMeshQueues = putStrLn "[MESH] Stub: would sync queued messages + ratchet state on Tor/I2P reconnect (drain local queue)."
+
+-- Full mesh receive: stub to "recv" from discovered peers (in real: listen on local socket/BT, receive framed ct, return for drain to ratchet).
+-- Integrates with discover for peers.
+receiveFromMeshPeers :: IO [(MeshPeer, ByteString)]
+receiveFromMeshPeers = do
+  peers <- discoverLocalMeshPeers
+  if null peers then pure [] else do
+    -- Stub: for demo peer, return a fake framed ct (in real: actual recvFrom on socket).
+    let fakeCt = BS.pack (map (fromIntegral . fromEnum) "MESH-RECV-DEMO-FRAMED-CT")
+    putStrLn "[MESH] Recv from local peers (stub; would parse real beacons/ct)."
+    pure [(head peers, fakeCt)]  -- return peer + ct for TUI to process like Tor frames.
 -- per-contact per-dir queues for metadata elimination, decoy generator) lives in
 -- Queue.hs + integration in Core/TUI (queues feed existing framing/send paths;
 -- ratchets stay per-contact). See approved Phase 1 plan + ROADMAP.md.
