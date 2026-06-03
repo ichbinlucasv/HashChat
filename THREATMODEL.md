@@ -247,6 +247,24 @@ Full ritual + force-with-lease + CI checks on every batch. See todo "ALL-Recs-Wa
 5. **Future considerations (only if expanding platforms)**:
    - iOS: Swift (much safer default than Kotlin for Apple).
    - Pure desktop TUI alternative: ratatui (Rust) would be a viable pure-Rust path if we ever want to deprecate the Haskell TUI.
+
+## Phase 3 OPSEC Review & New Threats (post "continue" integration: Relay, Starlink, Quantum, Tauri, Public Channels)
+
+**OPSEC against threats (this continue batch):**
+- Cleaned all unnecessary surface on Codeberg: rm 19+ stale .pre-tag-check-local-ran-* markers, ran clean-git-history.sh (filter-repo purged old grok-media, dead Desktop.hs from history), git gc --prune --aggressive, committed deletions as Lucas.
+- Code review: grepped for leaks (no tokens/pass in code; old demo-pass excised; TODOs limited to Phase3 quantum/Group; verbose logs in Core hardened - e.g. "wrong passphrase" -> generic "wrong credentials" to not confirm auth method in logs under threat).
+- New Phase3 surfaces mitigated:
+  - **Self-host Relay (Relay.hs, :relay cmd)**: New correlation/metadata threat if relay operator malicious or compromised (can log announce/queue sizes, link pseudos). Mitigations: Extreme refuses custom relays (Tor-primary only), all cts are ratchet-encrypted (opaque to relay), QROT/decoy on relay paths too, per-peer isolation, paid hosting optional (no central). Threat model: relay as untrusted store-and-forward (like Tor HS but user-run). Add garlic routing note for I2P relays.
+  - **Starlink/satellite (detectStarlinkOrPreferred)**: Geo/ISP correlation (Starlink has known beams, less anonymity than Tor exit), traffic analysis easier for state ISP. Mitigations: detect only (no auto use), Extreme forces Tor-only, hybrid with mesh/local for offline, no persistent Starlink pub in QR. OPSEC: user must manually enable in trusted (e.g. remote area), log use.
+  - **Quantum hybrid (quantum.rs + FFI)**: HNDL (harvest-now-decrypt-later) for current sessions if classical broken. Mitigations: gated feature (default classical Double Ratchet), hybrid design (X25519 || KEM), const-time/Zeroize reqs documented, no new unaudited deps yet. When real ML-KEM added: must be audited crate, domain sep. Current: no quantum resistance until feature + crate.
+  - **Tauri GUI stub**: Webview injection/XSS if not strict (JS can exfil if caps leak). Mitigations: tauri.conf.json with allowlist all:false, CSP default-src 'self', no api-all, only custom FFI cmds to Rust core (same as TUI), Extreme can disable GUI entirely. TUI remains default for paranoid.
+  - **Public channels (Group.hs PublicChannel)**: DHT/relay pub-sub for anon broadcast: spam, correlation via timing/subscriber lists, observer deanonym. Mitigations: Extreme refuse, sender-key ratchet or broadcast-only, no central, relay/DHT optional + gated, decoy traffic.
+- General OPSEC: all new features Extreme-gated first, logs verbose only for dev (harden in prod builds?), supply chain (SBOM formal ongoing), history cleaned (no old media/tokens in repo surface).
+
+**Updated Recommendations (new prioritized for next steps):**
+See end of this doc + ROADMAP for full. Critical now: user evidence (still blocker), nix flake repro (fixed ghc96), deeper Phase3 wiring (Relay in send fallback, Starlink failover, real Tauri FFI), formal audits prep, SBOM + signed v0.2 after evidence.
+
+Run clean-security --strict + Lucas push always. No unnecessary messages in commits/repo (cleaned history + markers).
    - Server components: Never. If we ever need any, Rust (or nothing).
 
 **Bottom line for expert-level resistance**:

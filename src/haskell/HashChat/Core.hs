@@ -653,7 +653,7 @@ loadEncryptedMessages baseDir profile contact pass = do
     case mPlain of
       Just plain -> pure (unpackMessageList plain)
       Nothing -> do
-        putStrLn "[SECURITY] Failed to decrypt message log (wrong passphrase or corruption)"
+        putStrLn "[SECURITY] Failed to decrypt message log (wrong credentials or corruption) -- OPSEC: avoid detailed error in high-threat to not confirm passphrase use"
         pure []
   else pure []
 

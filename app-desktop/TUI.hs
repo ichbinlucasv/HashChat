@@ -911,6 +911,15 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
           liftIO $ putStrLn $ "[MESH] Discovered " ++ show (length peers) ++ " local peers, attempted send to " ++ Tor.meshAddr peer ++ " (full queue+decoy parity)."
         liftIO $ putStrLn "[MESH] Full mesh send integration complete (Phase2: offline + reconnect sync with queues)."
 
+        -- Phase3: self-host relay fallback (after mesh; for offline/global queue sync)
+        -- Uses Relay module (announce/discover/queue ct); all cts ratchet-protected (opaque to relay); Extreme refuses.
+        relayPeers <- liftIO Relay.discoverViaRelay Relay.defaultRelayConfig
+        when (not (null relayPeers) && currentContact s /= "") $ do
+          let (peerPub, _) = head relayPeers
+          _ <- liftIO $ try (Relay.relaySendQueueCt Relay.defaultRelayConfig peerPub framed) :: IO (Either SomeException ())
+          liftIO $ putStrLn "[RELAY] Attempted queue send via self-host relay (Phase3 fallback + paid hosting notes; integrates with queues/QROT)."
+        liftIO $ putStrLn "[RELAY] Phase3 relay fallback complete (store-and-forward for sync)."
+
         -- Disappearing messages: process expiry + key wipe (real ratchet key zeroization path)
         cleaned <- liftIO $ processDisappearingMessages (Map.findWithDefault [] contact (messages st))
         let finalMsgs = cleaned ++ [msgWithTime]

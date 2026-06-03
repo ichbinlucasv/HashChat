@@ -118,7 +118,7 @@
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             rustc cargo
-            ghc ghc96 cabal-install
+            ghc cabal-install  # fixed ghc96 (undefined in current nixpkgs for repro builds; use ghc or pin nixpkgs with ghc96 if needed)
             pkg-config openssl
             # For Tor testing
             tor
