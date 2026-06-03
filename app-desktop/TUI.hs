@@ -394,6 +394,8 @@ drainIncoming = do
     liftIO $ putStrLn $ "[TOR] Draining " ++ show (length blobs) ++ " incoming framed blob(s)..."
     newS <- liftIO $ foldM processOneIncoming s blobs
     put newS
+  -- Phase2 mesh: sync queued mesh msgs on drain (stub for offline sync).
+  liftIO Tor.syncMeshQueues
   where
     processOneIncoming st (_rawHint, framedBlob) = do
       case unframeFromWire framedBlob of
@@ -574,6 +576,8 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
         let demoInbox = createPseudonymInbox "demo-pseudo-42"
         polled <- liftIO $ pollEmailInbox demoInbox
         liftIO $ putStrLn $ "[EMAIL] Polled inbox for " ++ inboxPseudonym polled ++ " (0 new; stub)."
+        -- Background poll stub for email DHT.
+        liftIO $ putStrLn "[EMAIL] Background poll started (stub; would loop over DHT for new ratchet msgs)."
         modify $ \st -> st { input = "" }
       else if ":screenshot" `isInfixOf` inputStr || inputStr == ":shots"
       then do
@@ -903,6 +907,7 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'p') [])) = do
         Just cfg -> setProfileProxy next cfg (proxies s)
         Nothing -> proxies s
   modify $ \st -> st { currentProfile = next, historyIndex = -1, securityPosture = newP, proxies = updatedPxs, contactQueues = Map.empty }  -- Phase 1: reset queues on profile switch (load real ones in full)
+  liftIO Tor.syncMeshQueues  -- Phase2: sync mesh on profile switch for local peers.
 
 handleEvent (VtyEvent (V.EvKey (V.KChar 'n') [])) = do
   s <- get

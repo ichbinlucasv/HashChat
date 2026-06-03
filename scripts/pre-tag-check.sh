@@ -176,8 +176,8 @@ fi
 
 # Phase2: mesh + email MVP presence
 echo "[Phase 2] Checking mesh discovery + email DHT MVP stubs..."
-if grep -q "discoverLocalMeshPeers\|sendOverMesh\|EmailInbox\|pollEmailInbox" src/haskell/HashChat/Tor.hs src/haskell/HashChat/Core.hs ; then
-    echo "  -> Mesh UDP discovery + Email DHT skeleton present."
+if grep -q "discoverLocalMeshPeers\|sendOverMesh\|EmailInbox\|pollEmailInbox\|syncMeshQueues" src/haskell/HashChat/Tor.hs src/haskell/HashChat/Core.hs ; then
+    echo "  -> Mesh UDP discovery + sync + Email DHT skeleton present."
 else
     echo "  >>> Warning: Phase2 mesh/email not yet in code (continue to add)."
 fi
