@@ -18,7 +18,7 @@ mod longterm_identity;
 #[cfg(feature = "quantum")]
 mod quantum;
 #[cfg(feature = "quantum")]
-pub use quantum::{hybrid_ratchet_new, QuantumHybridRatchet};
+pub use quantum::{hybrid_ratchet_new, QuantumHybridRatchet, KEM_PUBLIC_KEY_LEN, KEM_CIPHERTEXT_LEN};
 
 #[cfg(feature = "quantum")]
 #[no_mangle]
@@ -26,6 +26,37 @@ pub extern "C" fn rust_quantum_hybrid_new() -> *mut QuantumHybridRatchet {
     match hybrid_ratchet_new() {
         Ok(r) => Box::into_raw(Box::new(r)),
         Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// High Phase3 continue: FFI for hybrid kex test from TUI (real X25519 part + placeholder).
+/// Haskell calls with our x priv (demo or future long-derived), peer long x pub, peer kem pub (placeholder size).
+/// Returns true on success, fills out_ct (KEM_CIPHERTEXT_LEN) and out_ss (32).
+#[cfg(feature = "quantum")]
+#[no_mangle]
+pub extern "C" fn rust_quantum_hybrid_kex_test(
+    our_priv: *const u8,
+    peer_x: *const u8,
+    peer_kem: *const u8,
+    out_ct: *mut u8,
+    out_ss: *mut u8,
+) -> bool {
+    if our_priv.is_null() || peer_x.is_null() || peer_kem.is_null() || out_ct.is_null() || out_ss.is_null() {
+        return false;
+    }
+    unsafe {
+        let our: [u8; 32] = std::slice::from_raw_parts(our_priv, 32).try_into().unwrap_or([0u8; 32]);
+        let px: [u8; 32] = std::slice::from_raw_parts(peer_x, 32).try_into().unwrap_or([0u8; 32]);
+        let pkem_arr: [u8; quantum::KEM_PUBLIC_KEY_LEN] = std::slice::from_raw_parts(peer_kem, quantum::KEM_PUBLIC_KEY_LEN)
+            .try_into().unwrap_or([0u8; quantum::KEM_PUBLIC_KEY_LEN]);
+        match quantum::hybrid_kex(&our, &px, &pkem_arr) {
+            Ok((ss, ct)) => {
+                std::ptr::copy_nonoverlapping(ct.as_ptr(), out_ct, ct.len());
+                std::ptr::copy_nonoverlapping(ss.as_ptr(), out_ss, ss.len());
+                true
+            }
+            Err(_) => false,
+        }
     }
 }
 

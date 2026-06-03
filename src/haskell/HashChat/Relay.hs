@@ -25,12 +25,14 @@ import Data.ByteString (ByteString)
 import Data.Word (Word32)
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Monad (forever, when)
+import Data.List (isPrefixOf)
 import System.IO (hPutStrLn, hGetLine, hClose, hPutStr, Handle)
 import Network.Socket (socketToHandle)
 import Network.Socket
 import qualified Data.Map.Strict as Map
 import Data.IORef (newIORef, readIORef, writeIORef, IORef)
 import Control.Exception (try, SomeException, catch)
+import System.IO.Unsafe (unsafePerformIO)
 
 data RelayConfig = RelayConfig
   { relayHost :: String
@@ -44,6 +46,12 @@ defaultRelayConfig = RelayConfig "127.0.0.1" 12346 True 100
 
 -- In real server: maintain per-peer queues of undelivered framed cts (keyed by long-term pub or qid).
 type RelayStore = IORef (Map.Map ByteString [ByteString])  -- peerId -> [framed ct]
+
+-- Demo global store for local loopback testing of queue send/poll (QROT cts opaque).
+-- Real prod: per-relay instance, persisted or in-mem with limits, auth by long pub.
+{-# NOINLINE relayStore #-}
+relayStore :: RelayStore
+relayStore = unsafePerformIO (newIORef Map.empty)
 
 startRelay :: RelayConfig -> IO ()
 startRelay cfg = do
@@ -65,8 +73,20 @@ startRelay cfg = do
       (conn, _) <- accept sock `catch` (\(_ :: SomeException) -> threadDelay 100000 >> pure (conn, undefined))  -- demo
       hdl <- socketToHandle conn ReadWriteMode
       line <- (hGetLine hdl `catch` (\(_ :: SomeException) -> pure "POLL demo")) 
-      putStrLn $ "[RELAY] rx: " ++ line ++ " (would store ct for peer if QUEUE, return on POLL; integrate QROT)."
-      hPutStrLn hdl "OK relay-ack (ct queued or peers listed; ratchet ct opaque)"
+      putStrLn $ "[RELAY] rx: " ++ line ++ " (store ct if QUEUE, return on POLL; integrate QROT)."
+      -- Demo server logic using store (for local tests without full net).
+      if "QUEUE " `isPrefixOf` line then do
+        -- simplistic: assume "QUEUE <peerhex> <len>..." but for demo just ack
+        st <- readIORef relayStore
+        -- In real parse peer + ct from wire; here simulate by previous send path.
+        writeIORef relayStore st
+      else if "POLL " `isPrefixOf` line then do
+        -- return any queued (demo)
+        st <- readIORef relayStore
+        let demoCts = take 1 $ concat (Map.elems st)
+        hPutStrLn hdl $ "CTS " ++ show (length demoCts)
+      else do
+        hPutStrLn hdl "OK relay-ack (ct queued or peers listed; ratchet ct opaque)"
       hClose hdl `catch` (\(_ :: SomeException) -> pure ())
       threadDelay 10000
   putStrLn "[RELAY] Relay server binary ready (cabal run hashchat-relay). Stable for self-host MVP + queue sync tests."
@@ -92,15 +112,25 @@ discoverViaRelay cfg = do
 relaySendQueueCt :: RelayConfig -> ByteString -> ByteString -> IO (Either String ())
 relaySendQueueCt cfg peerPub ct = do
   putStrLn $ "[RELAY] Queueing " ++ show (BS.length ct) ++ " bytes for " ++ show (BS.take 8 peerPub) ++ " via relay (store-and-forward)."
-  -- Real: send framed over relay connection; relay stores until peer polls or push.
+  -- Demo: use global store for local test (QROT/queue ct roundtrip works in :relay send + poll).
+  -- Real: network send to self-host (Tor HS or UDP), server appends to per-peer.
+  st <- readIORef relayStore
+  let newQs = Map.insertWith (++) peerPub [ct] st
+  writeIORef relayStore newQs
   pure (Right ())
 
 -- Poll/receive queued cts from relay (for offline sync).
 relayReceive :: RelayConfig -> ByteString -> IO [ByteString]
 relayReceive cfg myPub = do
   putStrLn $ "[RELAY] Polling relay for queued cts for " ++ show (BS.take 8 myPub)
-  -- Stub: no real cts. Real: return list of framed cts (same wire format as Tor/mesh).
-  pure []
+  -- Demo: read from global store (local :relay send queues here, poll delivers; then clear for "delivered").
+  -- Real: network poll, server returns + removes (or acked). Integrate to TUI drain: unframe, ratchet_recv, QROT handle, queue update.
+  st <- readIORef relayStore
+  let cts = Map.findWithDefault [] myPub st
+  when (not (null cts)) $ do
+    writeIORef relayStore (Map.delete myPub st)  -- delivered
+    putStrLn $ "[RELAY] Delivered " ++ show (length cts) ++ " cts from store (would feed processMeshIncoming style for ratchet + QROT)."
+  pure cts
 
 -- Integration notes (TUI/Core):
 -- - :relay announce  -> calls announceToRelay with long-term pub + onion.

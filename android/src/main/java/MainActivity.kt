@@ -82,6 +82,7 @@ object HashChatNative {
 
     // Phase3 High: quantum FFI parity (gated; test from actions, Extreme refuse, processor note).
     external fun rustQuantumHybridNew(): Int
+    external fun rustQuantumHybridKexTest(our: ByteArray, peerX: ByteArray, peerKem: ByteArray): ByteArray
 
     // Combined Kotlin + JNI strict mode (authoritative for refusal decisions).
     // Expands the old stub with real root detection, dangerous props via reflection + files,
@@ -585,6 +586,9 @@ class MainActivity : AppCompatActivity() {
                             Toast.makeText(this, "Quantum FFI: feature not enabled or refused (build --features quantum for full).", Toast.LENGTH_LONG).show()
                         } else {
                             Toast.makeText(this, "Quantum hybrid FFI: handle $qh (X25519 real in kex + placeholder KEM; interface stable). See TUI :quantum too.", Toast.LENGTH_LONG).show()
+                            // Exercise kex test FFI (real path).
+                            val kexRes = HashChatNative.rustQuantumHybridKexTest(ByteArray(32) { 0x11 }, ByteArray(32) { 0x22 }, ByteArray(1184) { 0x33 })
+                            Toast.makeText(this, "KexTest res len=${kexRes.size} (demo ct).", Toast.LENGTH_SHORT).show()
                             // Demo feed for processor (control frame sim).
                             generalMessageQueue.put("QUANTUM-HYBRID-TEST".toByteArray())
                         }

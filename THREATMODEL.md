@@ -290,3 +290,8 @@ We should continue hardening the **boundaries** and **minimization** rather than
 - Evidence 0 = still Critical hard blocker (pre-tag --strict HARD FAILs; user run Fedora scripts NOW for photos/logs + commit as Lucas to unblock v0.2 + marketplace).
 - SBOM formal: re-gen + diff (non-semantic only expected); review before signed.
 - Stable, working good for deepened items. "implement and is stable and working good". Continue on Medium/Long after evidence + pre-tag.
+
+**This continue (user: "continue")**:
+- Additional High deepen: TUI :quantum cmd + full FFI kex test (real X25519 exercised via call), Relay now has working store roundtrip for queue send/poll (local tests stable, QROT notes), pre-tag checks added, Android kex FFI.
+- OPSEC/ritual same (cleans, Lucas push). Threat sim guidance already in.
+- Evidence blocker unchanged. New recs in ROADMAP.

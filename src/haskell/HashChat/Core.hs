@@ -30,6 +30,7 @@ module HashChat.Core
   , isExtremeMode
   , sessionLongTermIdentityId
   , longtermX25519Dh
+  , quantumHybridKexTest
   -- Rust Extreme for parity
   , rust_set_extreme_mode
   , rust_is_extreme_mode
@@ -125,6 +126,9 @@ foreign import ccall unsafe "rust_longterm_identity_wipe" rust_longterm_identity
 foreign import ccall unsafe "rust_set_extreme_mode" rust_set_extreme_mode :: Bool -> IO ()
 foreign import ccall unsafe "rust_is_extreme_mode" rust_is_extreme_mode :: IO Bool
 foreign import ccall unsafe "rust_longterm_x25519_dh" rust_longterm_x25519_dh :: Word32 -> Ptr Word8 -> Ptr Word8 -> IO Bool
+-- Phase3 High continue: quantum hybrid kex test FFI (real X25519 classical part + placeholder KEM).
+-- ourPriv32, peerX32, peerKemPub (1184 bytes placeholder), outCt (1088), outSs (32).
+foreign import ccall unsafe "rust_quantum_hybrid_kex_test" rust_quantum_hybrid_kex_test :: Ptr Word8 -> Ptr Word8 -> Ptr Word8 -> Ptr Word8 -> Ptr Word8 -> IO Bool
 
 initProfile :: IO ProfileKey
 initProfile = do
@@ -247,6 +251,29 @@ longtermX25519Dh lid peerX = do
         if ok then do
           sh <- peekArray 32 pOut
           pure $ Just (pack sh)
+        else pure Nothing
+
+-- Quantum hybrid test (Phase3 High continue): calls FFI for real X25519 + placeholder KEM.
+-- Returns (hybrid_ss, kem_ct) or Nothing on error/gate.
+-- ourPriv is 32-byte x priv for classical part (demo fixed or future secure long-derived).
+quantumHybridKexTest :: ByteString -> ByteString -> ByteString -> IO (Maybe (ByteString, ByteString))
+quantumHybridKexTest ourPriv peerX peerKemPub = do
+  let kemPubLen = 1184
+  let ctLen = 1088
+  let ssLen = 32
+  if BS.length ourPriv /= 32 || BS.length peerX /= 32 || BS.length peerKemPub /= kemPubLen
+    then pure Nothing
+    else
+      withArray (unpack ourPriv) $ \pOur ->
+      withArray (unpack peerX) $ \pX ->
+      withArray (unpack peerKemPub) $ \pKem ->
+      allocaArray ctLen $ \pCt ->
+      allocaArray ssLen $ \pSs -> do
+        ok <- rust_quantum_hybrid_kex_test pOur pX pKem pCt pSs
+        if ok then do
+          ct <- peekArray ctLen pCt
+          ss <- peekArray ssLen pSs
+          pure $ Just (pack ss, pack ct)
         else pure Nothing
 
 -- Session-cached long-term identity ID (for demo / within-run stability)

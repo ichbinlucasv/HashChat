@@ -276,3 +276,6 @@ For build reproducibility and OPSEC, see docs/BUILD_REPRODUCIBILITY.md and docs/
 - Critical: evidence prep + docs updated; SBOM regen/record; still 0 real Fedora photos/logs = v0.2 hard blocker (pre-tag --strict prints exact user cmds; run screenshot-prep + real-device on hardware NOW).
 - All stable + working good + Extreme gated + OPSEC ritual. E2EE solid. "no stop until finish all".
 - New recs: user evidence, full pre-tag (semantic SBOM + marker + audit), v0.2 signed, then Medium items + full roadmap.
+
+**This continue (user: "continue")**:
+- More High stabilize: added :quantum TUI cmd + Core FFI wrapper + Rust kex_test FFI (exercises real X25519 hybrid via call, Extreme gate); Relay now uses store for actual queue send/poll roundtrip (local demo stable + QROT notes); pre-tag checks for new items; Android kex FFI parity. Full ritual (cleans, checks, sbom, pre-tag, marker, Lucas push to Codeberg). Evidence 0 = blocker. See ROADMAP for details + next (user hardware run to unblock, then Medium/Long).

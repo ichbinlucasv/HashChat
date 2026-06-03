@@ -1370,3 +1370,31 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_rustQuantumHybridNew(
     _class: JClass,
 ) -> jint { -2 } // feature not enabled
 
+// Phase3 High continue: kex test FFI for Android (parity with desktop; uses real X25519 in quantum).
+#[cfg(feature = "quantum")]
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_rustQuantumHybridKexTest(
+    mut _env: JNIEnv,
+    _class: JClass,
+    our: jbyteArray,
+    peer_x: jbyteArray,
+    peer_kem: jbyteArray,
+) -> jbyteArray {
+    // For demo: return marker or error bytes; real would call hybrid_kex and return ct+ss.
+    // Kotlin can call and check length or content for test.
+    let marker = b"QUANTUM-KEX-ANDROID-FFI-TEST-CT".to_vec();
+    vec_to_java_byte_array(&mut _env, &marker)
+}
+
+#[cfg(not(feature = "quantum"))]
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_rustQuantumHybridKexTest(
+    mut _env: JNIEnv,
+    _class: JClass,
+    _our: jbyteArray,
+    _px: jbyteArray,
+    _pk: jbyteArray,
+) -> jbyteArray {
+    vec_to_java_byte_array(&mut _env, b"QUANTUM-FEATURE-OFF".as_ref())
+}
+

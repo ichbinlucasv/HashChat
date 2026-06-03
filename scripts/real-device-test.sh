@@ -157,6 +157,7 @@ cat > "$LOG_FILE" << EOF
 
 ### 17. Phase 3 Quantum + Public Channels (gated, stubs)
 - [ ] Quantum: --features quantum builds, hybrid_kex/hybrid_ratchet_new available (FFI stub)
+  - :quantum cmd in TUI: test hybrid kex (real X25519 part now), observe FFI call + output (Extreme refuses)
 - [ ] Public channels: :channel or group public mode (DHT/relay stub, observer/broadcast)
 - [ ] Notes in security info or help
 - Observations (feature gate, stubs functional)

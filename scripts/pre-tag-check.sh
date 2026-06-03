@@ -212,6 +212,15 @@ fi
 if grep -q "hybrid_kex\|hybrid_ratchet_new\|ML-KEM" src/rust/quantum.rs ; then
     echo "  -> Quantum hybrid_kex + FFI + ML-KEM notes present (gated feature, table)."
 fi
+if grep -q ":quantum\|quantumHybridKexTest\|rust_quantum_hybrid_kex_test" app-desktop/TUI.hs src/haskell/HashChat/Core.hs ; then
+    echo "  -> :quantum cmd + Core FFI wrapper for hybrid kex test present (TUI test using FFI, table)."
+fi
+if grep -q "relayStore\|readIORef relayStore\|writeIORef relayStore" src/haskell/HashChat/Relay.hs ; then
+    echo "  -> Relay store used in send/receive/poll (demo queue roundtrip for local tests + QROT)."
+fi
+if grep -q "rustQuantumHybridKexTest\|Java_chat_hashchat_HashChatNative_rustQuantumHybridKexTest" android/src/main/rust/src/lib.rs ; then
+    echo "  -> Android quantum kex test FFI present (High parity)."
+fi
 if grep -q "PublicChannel" src/haskell/HashChat/Group.hs ; then
     echo "  -> PublicChannel (decentralized groups/channels) present."
 fi
