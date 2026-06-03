@@ -206,6 +206,10 @@ if [ -z "$FEDORA_EVIDENCE" ]; then
     echo "  >>>   ./scripts/screenshot-prep-fedora.sh ; HASHCHAT_DEMO=main ./run-tui (capture with grim for 5+ states incl queue 'i' + I2P/file/Extreme)"
     echo "  >>>   ./scripts/real-device-test.sh | tee docs/evidence/real-fedora-$(date +%Y-%m-%d).log"
     echo "  >>> Then upload, edit flatpak metainfo, commit, push as Lucas. No signed v0.2 without."
+    if [ "$STRICT" = true ]; then
+      echo "  >>> In --strict: HARD FAIL on missing user Fedora evidence/photos."
+      exit 1
+    fi
 else
     echo "  -> Fedora evidence/photos found: $FEDORA_EVIDENCE"
 fi

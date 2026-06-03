@@ -314,7 +314,7 @@ launchI2pdIfNeeded = do
   putStrLn "OPSEC: test on Fedora/Tails; log proxy use; Extreme + posture for high risk."
   putStrLn "See ROADMAP.md (Sec1 hybrid + I2P), THREATMODEL.md (I2P + queues), scripts/real-device-test.sh (Phase1 I2P tests), TUI help."
   -- Phase 1 actual: best-effort spawn if i2pd in PATH (non-blocking, fire-and-forget, user still controls for OPSEC).
-  -- Does not block or fail the app; just tries to bring up the daemon.
+  -- Does not block or fail the app; just tries to bring up the daemon + basic readiness poll for 4444.
   res <- try $ do
     -- Common locations + PATH
     let candidates = ["i2pd", "/usr/bin/i2pd", "/usr/local/bin/i2pd", "/opt/i2pd/i2pd"]
@@ -323,9 +323,23 @@ launchI2pdIfNeeded = do
       (bin:_) -> do
         putStrLn $ "[I2P] Found i2pd at " ++ bin ++ " — attempting background launch ( --daemon )..."
         -- Best effort, detached-ish
-        (Nothing, Nothing, Nothing, _ph) <- createProcess (proc bin ["--daemon"]) { std_out = Inherit, std_err = Inherit }
+        (Nothing, Nothing, Nothing, ph) <- createProcess (proc bin ["--daemon"]) { std_out = Inherit, std_err = Inherit }
         putStrLn "[I2P] i2pd launch attempted (check 'ps aux | grep i2pd' and 'ss -tlnp | grep 4444')."
-        threadDelay 1500000  -- ~1.5s grace for SOCKS to come up
+        -- Simple readiness poll (up to ~5s)
+        let poll 0 = pure ()
+            poll n = do
+              threadDelay 1000000
+              -- Best effort: try to connect to 4444 (SOCKS). If fails, retry.
+              sockRes <- try $ do
+                addr <- head <$> getAddrInfo Nothing (Just "127.0.0.1") (Just "4444")
+                s <- socket (addrFamily addr) Stream defaultProtocol
+                connect s (addrAddress addr)
+                close s
+                pure ()
+              case sockRes of
+                Right _ -> putStrLn "[I2P] SOCKS 4444 ready (i2pd up)."
+                Left (_ :: SomeException) -> poll (n-1)
+        poll 5
       [] -> putStrLn "[I2P] i2pd binary not found in common paths. Install and run manually: sudo dnf install -y i2pd && i2pd --daemon"
   case res of
     Left (e :: SomeException) -> putStrLn $ "[I2P] Launch attempt error (non-fatal, user can start i2pd): " ++ show e
