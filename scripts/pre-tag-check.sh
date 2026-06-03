@@ -198,6 +198,8 @@ else
 fi
 
 # Critical: User Fedora photos/evidence via scripts (hard blocker per THREATMODEL/ROADMAP/RELEASE)
+# Also note X3DH now wired (real DH FFI) -- pre-tag could gate on long term x pub usage in future.
+
 echo "[Critical v0.2] Checking for user-generated Fedora photos/evidence (screenshot-prep + real-device-test logs)..."
 FEDORA_EVIDENCE=$(find docs/evidence -name '*real-fedora*.log' -o -name '*fedora*.png' 2>/dev/null | head -3 || true)
 if [ -z "$FEDORA_EVIDENCE" ]; then

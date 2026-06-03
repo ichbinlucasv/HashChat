@@ -566,6 +566,7 @@ pub extern "C" fn rust_encrypt_blob_with_passphrase(
 // ============================================================================
 
 use crate::longterm_identity::LongTermIdentity;
+use x25519_dalek::PublicKey as X25519Public;
 
 /// Global store for long-term identities (indexed by u32, similar to ratchets).
 /// In a real application these would be managed per-profile in the host (Haskell).
@@ -661,6 +662,29 @@ pub extern "C" fn rust_longterm_identity_wipe(identity_id: u32) {
         if (identity_id as usize) < LONGTERM_STORE.len() {
             LONGTERM_STORE[identity_id as usize].wipe();
         }
+    }
+}
+
+/// X3DH helper: compute shared secret = local_long_x25519 .diffie_hellman( peer_x25519_pub )
+/// Used for initial ratchet bootstrap from ContactAddress QR (long-term x pub).
+#[no_mangle]
+pub extern "C" fn rust_longterm_x25519_dh(
+    identity_id: u32,
+    peer_x: *const u8,
+    out_shared: *mut u8,
+) -> bool {
+    unsafe {
+        if (identity_id as usize) >= LONGTERM_STORE.len() || peer_x.is_null() || out_shared.is_null() {
+            return false;
+        }
+        let id = &LONGTERM_STORE[identity_id as usize];
+        let peer_slice = std::slice::from_raw_parts(peer_x, 32);
+        let mut peer_arr = [0u8; 32];
+        peer_arr.copy_from_slice(peer_slice);
+        let peer_pub = X25519Public::from(peer_arr);
+        let shared = id.x25519_dh(&peer_pub);
+        std::ptr::copy_nonoverlapping(shared.as_ptr(), out_shared, 32);
+        true
     }
 }
 

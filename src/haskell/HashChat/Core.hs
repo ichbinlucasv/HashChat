@@ -28,6 +28,8 @@ module HashChat.Core
   , wipeLongTermIdentity
   , setExtremeMode
   , isExtremeMode
+  , sessionLongTermIdentityId
+  , longtermX25519Dh
   -- Rust Extreme for parity
   , rust_set_extreme_mode
   , rust_is_extreme_mode
@@ -113,6 +115,7 @@ foreign import ccall unsafe "rust_longterm_identity_import_encrypted" rust_longt
 foreign import ccall unsafe "rust_longterm_identity_wipe" rust_longterm_identity_wipe :: Word32 -> IO ()
 foreign import ccall unsafe "rust_set_extreme_mode" rust_set_extreme_mode :: Bool -> IO ()
 foreign import ccall unsafe "rust_is_extreme_mode" rust_is_extreme_mode :: IO Bool
+foreign import ccall unsafe "rust_longterm_x25519_dh" rust_longterm_x25519_dh :: Word32 -> Ptr Word8 -> Ptr Word8 -> IO Bool
 
 initProfile :: IO ProfileKey
 initProfile = do
@@ -224,6 +227,18 @@ importLongTermIdentity lid passphrase blob =
 
 wipeLongTermIdentity :: Word32 -> IO ()
 wipeLongTermIdentity = rust_longterm_identity_wipe
+
+-- X3DH: compute shared secret from local long-term x25519 and peer's x pub from QR.
+longtermX25519Dh :: Word32 -> ByteString -> IO (Maybe ByteString)
+longtermX25519Dh lid peerX = do
+  if BS.length peerX /= 32 then pure Nothing else
+    withArray (unpack peerX) $ \pPeer ->
+      allocaArray 32 $ \pOut -> do
+        ok <- rust_longterm_x25519_dh lid pPeer pOut
+        if ok then do
+          sh <- peekArray 32 pOut
+          pure $ Just (pack sh)
+        else pure Nothing
 
 -- Session-cached long-term identity ID (for demo / within-run stability)
 -- In real app this would be loaded per Profile using encrypted storage + ProfileKey.

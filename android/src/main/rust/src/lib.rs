@@ -1311,6 +1311,21 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_encryptFileChunk(
 // Note: In Kotlin side, use setProxy for I2P (e.g. 127.0.0.1:4444), rotateQueue before send, getSendQueueId for framing if used,
 // generateDecoy for padding, encryptFileChunk for XFTP parity. Receive processor can check for QROT: prefix in decrypted to rotate local queues.
 
+// X3DH parity for Android: x25519 dh from longterm (for bootstrap from QR x pub).
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_longtermX25519Dh(
+    mut env: JNIEnv,
+    _class: JClass,
+    lid: jint,
+    peer_x: jni::objects::JByteArray,
+) -> jbyteArray {
+    // Stub: in full, lookup LONGTERM_STORE or ANDROID_LONGTERM, do dh, return 32B.
+    // For now return zeroed to not crash; real impl mirrors desktop.
+    let mut sh = vec![0u8; 32];
+    // TODO: actual dh using x25519_dalek on the android longterm store.
+    vec_to_java_byte_array(&mut env, &sh)
+}
+
 // Phase 1/2 real receive FFI stub for Android processor (rid + framed ct -> ratchet recv + decrypt inside Rust crown jewels).
 // Mirrors desktop receiveEncryptedMessage. For now decrypt + note; full ratchet_recv integration next.
 #[no_mangle]

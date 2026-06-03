@@ -88,6 +88,11 @@ impl LongTermIdentity {
         X25519Public::from(&self.x25519_secret)
     }
 
+    /// X3DH DH: local secret .diffie_hellman(peer pub) -> 32B shared
+    pub fn x25519_dh(&self, peer: &X25519Public) -> [u8; 32] {
+        self.x25519_secret.diffie_hellman(peer).to_bytes()
+    }
+
     /// Serialize the sensitive material (seed only — the rest is derived).
     /// The caller must encrypt this before persisting.
     pub fn to_bytes(&self) -> [u8; 32] {
