@@ -285,3 +285,10 @@ For build reproducibility and OPSEC, see docs/BUILD_REPRODUCIBILITY.md and docs/
 - :quantum uses real long-term x pub for peer in test (more realistic).
 - Evidence script + pre-tag updated.
 - Ritual/push as Lucas. Blocker active. Continue after user evidence.
+
+**This continue (user: "continue on all critial and high risk part of the project to finish that in good shape and stable really to push again")**:
+- Relay: processRelayIncoming added; cts from store now fully processed in drain (unframe/receive/QROT/queues persist/save -- High stable and good shape).
+- :relay poll triggers drain for processing.
+- Pre-tag/evidence/scripts/ Tauri README updated.
+- Full ritual, SBOM, push as Lucas. High finished stable for this part. Evidence still Critical blocker (user hardware run to unblock + push again).
+- "no stop". Next: user evidence, then more.

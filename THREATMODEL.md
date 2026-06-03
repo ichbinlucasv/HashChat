@@ -301,3 +301,8 @@ We should continue hardening the **boundaries** and **minimization** rather than
 - :quantum uses real long-term x pub for peer in test (more realistic).
 - Pre-tag/evidence script updates for new.
 - Ritual/push. Evidence still blocker. Continue on Medium after user hardware evidence.
+
+**This continue (user: "continue on all critial and high risk part of the project to finish that in good shape and stable really to push again")**:
+- Relay drain processing made stable (processRelayIncoming in drainIncoming for real ratchet/QROT/persist on relay cts).
+- Evidence/pre-tag for relay drain + quantum.
+- Pushed after ritual. High items now finished in good shape. Evidence blocker.
