@@ -201,28 +201,34 @@ if grep -q "persistEmailInbox" src/haskell/HashChat/Core.hs ; then
     echo "  -> Email persist stub present."
 fi
 
-# Phase3 starters (post "continue" batch): Starlink, self-host Relay, quantum hybrid, public channels, monetization, Tauri stub, :relay integration
-echo "[Phase 3] Checking Starlink detect + self-host Relay + quantum hybrid + public channels + Tauri stub + :relay cmd..."
-if grep -q "detectStarlinkOrPreferred" src/haskell/HashChat/Tor.hs ; then
-    echo "  -> Starlink detect present (Phase3 resilience)."
+# Phase3 starters (post "continue" batch + this continue on table): Starlink, self-host Relay, quantum hybrid, public channels, monetization, Tauri stub, :relay/:channel integration
+echo "[Phase 3] Checking Starlink detect + self-host Relay + quantum hybrid + public channels + Tauri stub + :relay/:channel cmd..."
+if grep -q "detectStarlinkOrPreferred\|chooseProxyWithStarlinkFallback" src/haskell/HashChat/Tor.hs ; then
+    echo "  -> Starlink detect + failover present (Phase3 resilience, table)."
 fi
 if [ -f src/haskell/HashChat/Relay.hs ] && grep -q "module HashChat.Relay" src/haskell/HashChat/Relay.hs ; then
     echo "  -> Self-host Relay.hs MVP present (announce, queue relay, paid notes)."
 fi
-if grep -q "hybrid_kex\|hybrid_ratchet_new" src/rust/quantum.rs ; then
-    echo "  -> Quantum hybrid_kex + FFI stub present (gated feature)."
+if grep -q "hybrid_kex\|hybrid_ratchet_new\|ML-KEM" src/rust/quantum.rs ; then
+    echo "  -> Quantum hybrid_kex + FFI + ML-KEM notes present (gated feature, table)."
 fi
 if grep -q "PublicChannel" src/haskell/HashChat/Group.hs ; then
     echo "  -> PublicChannel (decentralized groups/channels) present."
 fi
-if [ -f tauri/src-tauri/Cargo.toml ] && [ -f tauri/README.md ] ; then
-    echo "  -> Tauri GUI stub present (minimal sandboxed, TUI default secure)."
+if [ -f tauri/src-tauri/Cargo.toml ] && grep -q "FFI" tauri/src-tauri/src/main.rs ; then
+    echo "  -> Tauri GUI stub present (FFI examples, strict caps, table full app)."
 fi
-if grep -q ":relay" app-desktop/TUI.hs ; then
-    echo "  -> :relay cmd in TUI (integrates Relay module)."
+if grep -q ":relay\|:channel" app-desktop/TUI.hs ; then
+    echo "  -> :relay/:channel cmds in TUI (integrates Relay/Group module, table)."
+fi
+if [ -f app-relay/RelayMain.hs ] ; then
+    echo "  -> Relay server binary (app-relay/RelayMain + cabal exec, table)."
 fi
 if grep -q "freemium\|Pro (one-time" android/PAID_VERSION_PLAN.md ; then
     echo "  -> PAID freemium align present (unlimited DHT/relay credits, self-host service)."
+fi
+if grep -q "Phase3: Relay\|Phase3: Public channel" android/src/main/java/MainActivity.kt ; then
+    echo "  -> Android Phase3 FFI/actions (Relay/Channel, table)."
 fi
 
 # Medium: One final git history clean before v0.2 tag

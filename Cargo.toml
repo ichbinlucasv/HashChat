@@ -27,7 +27,9 @@ subtle = "2.6"
 
 [features]
 default = []
-# long-13: optional gated quantum resistance (stub only in v0.2).
+# long-13: optional gated quantum resistance (stub only in v0.2, deepening per priority table).
 # When enabled, src/rust/quantum.rs is compiled and the hybrid interface is available.
-# No actual PQ security is provided until a real audited ML-KEM implementation lands.
+# No actual PQ security until real audited ML-KEM (e.g. ml-kem or pqcrypto crate, const-time, zeroize).
+# Example for real: add under [dependencies] when audited: ml-kem = { version = "0.2", features = ["zeroize"] }
+# Then impl hybrid using X25519 + MlKem768 in quantum.rs.
 quantum = []

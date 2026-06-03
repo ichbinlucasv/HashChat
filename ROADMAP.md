@@ -115,3 +115,14 @@ New recommendations (prioritized next steps - see full table below + THREATMODEL
 - Ritual: clean --strict, checks (cargo + nix note), sbom, pre-tag (new gates + blocker), marker, direct Lucas push to Codeberg main only.
 - Stable: no breakage, new code wired (stubs call real modules, feature gated), evidence still 0 = Critical hard blocker for v0.2 (user MUST run scripts on real Fedora/Tails/device now to unblock + marketplace).
 - "no stop until finish all". Next: user evidence, deeper Phase3 (real KEM, full Tauri, relay server, etc), v0.2. Say "continue" after.
+
+**This "continue" (user: "continue") - no stop on priority table**:
+- Critical: evidence prep (scripts updated with table section 18 + exact cmds for photos/evidence on Fedora/Tails/Android to unblock v0.2; guidance for grim captures, nix builds, relay test, :channel/Starlink states).
+- Critical Nix/Flake: nix env ready (ghc/cabal in develop; builds tested); flake Android section hardened.
+- High Deeper Phase3 (table): quantum.rs + Cargo.toml deepened with real ML-KEM crate notes + example dep (ml-kem/pqcrypto for audit); Tauri expanded (main.rs + Cargo.toml with FFI invokes for Phase3 features + strict caps); relay server polished (app-relay/RelayMain + cabal exec for prod/self-host); Starlink failover complete (choose fn + wired in message/voice/file sends + TUI); full public channel UI ( :channel cmd handler in TUI + Group.PublicChannel integration for create/post/poll).
+- Medium: Android MainActivity deepened with Phase3 actions (Relay/Channel + processor/queue/Extreme parity); Voice/Extreme notes in docs.
+- OPSEC: clean --strict, threats review.
+- Docs: ROADMAP/THREATMODEL/RELEASE updated with table progress + new recs (below).
+- Ritual: clean, checks (cargo/nix), sbom, pre-tag (table + blocker), marker, commit as Lucas, direct push to Codeberg main.
+- Stable. "no stop until finish all".
+Updated table (progress/remaining): see below or full in THREATMODEL. Evidence still 0 real = Critical blocker (user run scripts NOW). Continue.

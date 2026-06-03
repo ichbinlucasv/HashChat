@@ -757,7 +757,9 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
                            liftIO $ saveEncryptedRatchet prof contact r pass
                            modify $ \st -> st { ratchets = Map.insert contact r (ratchets s) }
                            pure r
-                let currentProxy = Map.findWithDefault defaultProxyForProfile prof (proxies s)
+                let baseProxyF = Map.findWithDefault defaultProxyForProfile prof (proxies s)
+                (currentProxy, isStarF) <- liftIO $ Tor.chooseProxyWithStarlinkFallback baseProxyF
+                when isStarF $ liftIO $ putStrLn "[STARLINK] Failover for file send (Phase3)."
                 let maybeContact = Prelude.lookup contact (map (\c -> (Contact.contactId c, c)) (contacts s))
                 let targetOnion = case maybeContact of
                       Just c  -> Contact.onionAddress c

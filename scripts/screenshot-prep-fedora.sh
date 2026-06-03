@@ -57,6 +57,7 @@ echo "  HASHCHAT_DEMO=channel  ./run-tui   # Phase3: public channel stub ( :chan
 echo "  # Phase1/2/3 queue observe (in any state): after ~60 sends or mesh/relay, press 'i' -> sendQ=... recvQ=... lastRot=... (rotation active, QROT processed)"
 echo "  # X3DH: :add-contact with long-term link -> real bootstrap (queues init, ratchet from shared)"
 echo "  # Starlink: :set-proxy or status shows Phase3 detect + failover; quantum feature for hybrid stubs; relay server: cabal run hashchat-relay"
+echo "  # TABLE EXACT FOR PHOTOS (Critical blocker): HASHCHAT_DEMO=relay ./run-tui ; grim for relay/channel/Starlink/Tauri states; test nix build .#hashchat-tui ; run hashchat-relay in bg"
 echo ""
 echo "OPSEC: Run clean-security.sh --strict before/after. Resize terminal to 80x24 or consistent for repro shots. Use grim -g \"\$(slurp -o)\" or gnome-screenshot -a. Raster icons with rsvg-convert if needed (see flatpak/ICONS.md)."
 echo "For real-device evidence: Use scripts/real-device-test.sh on Fedora/Tails (covers voice, groups, QR, posture/Extreme, proxy/I2P, file, wipe). Log dated results."
