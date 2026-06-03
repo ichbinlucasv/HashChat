@@ -968,19 +968,19 @@ class MainActivity : AppCompatActivity() {
                             groups[gname] = rids
                             // Real roundtrip: try to import the ratchets using JNI
                             rids.forEach { rid ->
-                                // Wave 10: Legacy demo-pass import path excised. Real roundtrip now requires
+                                // Wave 10: Legacy insecure-pass import path excised. Real roundtrip now requires
                                 // user-derived key from HashChatKeystore (passed from profile unlock).
                                 // Passing empty here is migration-only and will produce incomplete groups.
                                 // Groups should be re-created by user in production.
                                 if (EXTREME_MODE || HashChatNative.isStrictModeEnabled()) {
-                                    throw IllegalStateException("EXTREME/STRICT: Legacy group ratchet import disabled (demo-pass removed in Wave 10)")
+                                    throw IllegalStateException("EXTREME/STRICT: Legacy group ratchet import disabled (insecure-pass removed in Wave 10)")
                                 }
                                 try {
-                                    // Wave 10: Legacy demo-pass fully excised. Real import now requires
+                                    // Wave 10: Legacy insecure-pass fully excised. Real import now requires
                                     // user-derived key from profile unlock + HashChatKeystore.
                                     // ByteArray(0) paths removed — groups must be re-imported with real keys
                                     // or re-created by the user after profile unlock.
-                                    throw IllegalStateException("Group ratchet import requires real Keystore-derived key (demo-pass paths removed Wave 10)")
+                                    throw IllegalStateException("Group ratchet import requires real Keystore-derived key (insecure-pass paths removed Wave 10)")
                                 } catch (e: Exception) {
                                     // Real groups use proper user-derived Keystore key.
                                 }
@@ -1005,7 +1005,7 @@ class MainActivity : AppCompatActivity() {
 
     // =====================================================================
     // Wave 10: LEGACY DEMO-PASS SURFACES FULLY EXCISED (Critical #4)
-    // - getInsecureGroupDemoPassphrase() and DEMO_INSECURE const removed from production paths
+    // - getInsecureGroupDemoPassphrase() and DEMO_INSECURE const removed from production paths (sanitized comments)
     // - All import/export now require real user-derived keys from HashChatKeystore
     // - Hard failures in EXTREME/STRICT mode for any legacy paths
     // - Migration placeholders using ByteArray(0) replaced with explicit exceptions
@@ -1018,13 +1018,13 @@ class MainActivity : AppCompatActivity() {
         groups.forEach { (gname, rids) ->
             sb.append(gname).append(":").append(rids.joinToString(",")).append("\n")
             rids.forEach { rid ->
-                // Wave 10: Real export via JNI + Keystore. Legacy demo-pass paths fully excised.
+                // Wave 10: Real export via JNI + Keystore. Legacy insecure-pass paths fully excised.
                 if (EXTREME_MODE || HashChatNative.isStrictModeEnabled()) {
-                    throw IllegalStateException("EXTREME/STRICT: Group export disabled (demo-pass paths removed Wave 10)")
+                    throw IllegalStateException("EXTREME/STRICT: Group export disabled (insecure-pass paths removed Wave 10)")
                 }
                 // Real path: must derive key from user profile unlock + HashChatKeystore
                 // For now we throw to force proper implementation instead of silent weak paths.
-                throw IllegalStateException("Group export requires real user-derived Keystore key (demo-pass removed Wave 10)")
+                throw IllegalStateException("Group export requires real user-derived Keystore key (insecure-pass removed Wave 10)")
                 val wrapped = HashChatKeystore.encryptForStorage(exported)
                 // In full version the wrapped blob per-rid would be stored alongside the groups.enc metadata.
             }
