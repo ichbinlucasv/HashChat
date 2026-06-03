@@ -36,6 +36,11 @@ module HashChat.Core
   -- Per-profile proxy persistence (High #4)
   , exportEncryptedProxy
   , importEncryptedProxy
+  -- Email DHT MVP skeleton (Phase2): unlimited pseudonyms, at-rest inbox, ratchet over I2P/Tor/mesh, Extreme gate.
+  , EmailInbox(..)
+  , createPseudonymInbox
+  , sendEmailOverRatchet
+  , receiveEmail
   ) where
 
 import Control.Concurrent.STM
@@ -691,4 +696,27 @@ importEncryptedProxy blob pass =
           (host, ':' : portStr) | Just p <- readMaybe portStr -> pure (Just (Socks5Proxy host p))
           _ -> pure Nothing
       else pure Nothing
+
+-- Email DHT MVP skeleton (Phase2): unlimited pseudonymous identities, at-rest encrypted inbox (ratchet protected),
+-- send/receive via ratchet over I2P/Tor/mesh (hybrid), optional SMTP bridge. Extreme refuses high surface.
+-- Real: DHT (I2P-Bote/Eppie style) for discovery/inbox, local store for messages.
+data EmailInbox = EmailInbox
+  { inboxPseudonym :: String      -- e.g. hash of long-term pub or random
+  , inboxMessages  :: [Message]   -- ratchet-encrypted emails
+  , lastSync       :: NominalDiffTime
+  } deriving (Show)
+
+createPseudonymInbox :: String -> EmailInbox
+createPseudonymInbox pid = EmailInbox pid [] 0
+
+-- Send email: treat as message content over ratchet (to contact's inbox addr or DHT pub).
+sendEmailOverRatchet :: Word32 -> ByteString -> ByteString -> IO Message
+sendEmailOverRatchet rid sender content = sendEncryptedMessage rid sender content False Nothing
+
+-- Receive: decrypt, store in inbox (stub for DHT poll).
+receiveEmail :: Word32 -> ByteString -> ByteString -> IO (Maybe Message)
+receiveEmail = receiveEncryptedMessage
+
+-- Note: Full DHT would use I2P pub-sub for "inbox" announcements, local encrypted store.
+-- Extreme: gate creation/use.
 

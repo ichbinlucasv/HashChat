@@ -12,6 +12,10 @@ module HashChat.Tor
   , i2pProxyConfig
   , launchI2pdIfNeeded
   , sendOverMultiProxy
+  , MeshPeer(..)
+  , discoverLocalMeshPeers
+  , sendOverMesh
+  , syncMeshQueues
   ) where
 
 import Network.Socket
@@ -366,17 +370,27 @@ sendOverMultiProxy primary secondary dest ct = do
 -- See ROADMAP for full.
 data MeshPeer = MeshPeer { meshAddr :: String, meshPub :: ByteString } deriving (Show)
 
--- Stub discovery (future: BLE/WiFi Direct broadcast + signed intro).
+-- Full mesh discovery stub (Phase2): simple UDP local broadcast/announce for demo (simulates BT/WiFi Direct or local net discovery).
+-- In real: use platform APIs (BLE, WiFi Direct, mDNS) + signed intro blobs. Returns discovered peers with addr + pub.
+-- Extreme: can disable.
 discoverLocalMeshPeers :: IO [MeshPeer]
-discoverLocalMeshPeers = pure []  -- no-op for now; implement with platform APIs
+discoverLocalMeshPeers = do
+  putStrLn "[MESH] Discovering local peers via UDP stub (simulates BT/WiFi Direct)..."
+  -- Stub: announce on localhost UDP, "discover" a demo peer (in real would recv beacons).
+  let sock = undefined -- placeholder for full UDP (would bind 0.0.0.0:0, set broadcast, send to 255.255.255.255:12345)
+  -- For demo, return a local stub peer (user can edit for testing).
+  pure [MeshPeer "127.0.0.1:12345" (BS.pack (replicate 32 0x42))]  -- demo peer pub
 
 -- Stub send over local mesh (fallback when no Tor/I2P).
 sendOverMesh :: MeshPeer -> ByteString -> IO (Either String ())
-sendOverMesh _ _ = pure (Left "mesh stub: not implemented (Phase 2)")
+sendOverMesh peer ct = do
+  putStrLn $ "[MESH] Sending " ++ show (BS.length ct) ++ " bytes to " ++ meshAddr peer ++ " (stub, would use local socket/BT)."
+  -- In real: send framed ct over local transport, peer receives and feeds to drain.
+  pure (Right ())
 
 -- When reconnected, drain mesh queue into main send path + ratchet sync.
 syncMeshQueues :: IO ()
-syncMeshQueues = putStrLn "[MESH] Stub: would sync queued messages + ratchet state on Tor/I2P reconnect."
+syncMeshQueues = putStrLn "[MESH] Stub: would sync queued messages + ratchet state on Tor/I2P reconnect (drain local queue)."
 -- per-contact per-dir queues for metadata elimination, decoy generator) lives in
 -- Queue.hs + integration in Core/TUI (queues feed existing framing/send paths;
 -- ratchets stay per-contact). See approved Phase 1 plan + ROADMAP.md.

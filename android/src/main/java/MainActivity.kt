@@ -77,6 +77,8 @@ object HashChatNative {
     external fun encryptFileChunk(rid: Int, chunk: ByteArray, hint: ByteArray): ByteArray
     // Real receive path FFI (Phase1/2): rid + framed ct -> ratchet receive + decrypt in Rust (crown jewels stay in Rust).
     external fun receiveEncryptedMessage(rid: Int, frame: ByteArray): ByteArray
+    // X3DH parity: compute shared from local long-term x + peer x from QR/contact link for bootstrap.
+    external fun longtermX25519Dh(lid: Int, peerX: ByteArray): ByteArray
 
     // Combined Kotlin + JNI strict mode (authoritative for refusal decisions).
     // Expands the old stub with real root detection, dangerous props via reflection + files,
@@ -490,6 +492,11 @@ class MainActivity : AppCompatActivity() {
                         val pub = HashChatNative.longtermGetPublic(HashChatNative.longtermNew())
                         val preview = pub.take(8).joinToString("") { "%02x".format(it) }
                         Toast.makeText(this, "My contact pub (ed25519 from real LongTermIdentity): $preview... (use for QR/share like TUI)", Toast.LENGTH_LONG).show()
+                        // X3DH: compute shared with peer x from "QR" for bootstrap (parity with TUI).
+                        val demoPeerX = ByteArray(32) { 0x42 }
+                        val shared = HashChatNative.longtermX25519Dh(HashChatNative.longtermNew(), demoPeerX)
+                        val shPreview = shared.take(8).joinToString("") { "%02x".format(it) }
+                        Toast.makeText(this, "X3DH shared (demo): $shPreview... (real DH from long x + peer x)", Toast.LENGTH_LONG).show()
                         // In full: generate hashchat://contact/v1/<onion>/len:hexpub using the pub and current onion, show QR.
                     }
                     9 -> {
