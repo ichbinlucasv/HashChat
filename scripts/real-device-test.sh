@@ -168,8 +168,11 @@ cat > "$LOG_FILE" << EOF
 - [ ] Public channel UI: :channel create testchan ; :channel post ... ; observe in TUI + Group
 - [ ] Tauri GUI: cd tauri/src-tauri ; cargo tauri dev (or build; test FFI for Phase3 features, strict caps)
 - [ ] Full Tauri app notes: test FFI calls for send/recv/wipe/posture/quantum/Extreme/relay (no direct net/fs in JS)
-- CAPTURE FOR PHOTOS/EVIDENCE (use with screenshot-prep): HASHCHAT_DEMO=relay ./run-tui (grim for relay/channel/Starlink states); after sends check 'i' for queues; run relay server in bg for test
-- Observations (builds, binary, failover logs, UI cmds, Tauri notes) - LOG DATES + ENV FOR v0.2 BLOCKER UNBLOCK
+- CAPTURE FOR PHOTOS/EVIDENCE (CRITICAL - MUST DO FOR v0.2 UNBLOCK + MARKETPLACE):
+  Follow EXACT the big "CRITICAL #1: EXACT COPY-PASTE COMMANDS..." section at the end of scripts/screenshot-prep-fedora.sh
+  (includes grim for main/refusal/voice/groups/actions/extreme/i2p/file/relay/channel/queues-i + nix builds + relay server test + 'i' queue observe)
+  While running the tests below, also run the grim captures listed there.
+- Observations (builds, binary, failover logs, UI cmds, Tauri notes) - LOG DATES + ENV + "ran on real Fedora/Tails + physical Android" FOR v0.2 BLOCKER UNBLOCK
 
 ---
 
@@ -199,11 +202,14 @@ echo ""
 echo "Please fill in the sections above with your real test results."
 echo "When finished, commit this file (it is meant to be part of the audit trail)."
 echo ""
-echo "Next recommended: Run this on Tails + physical Android (GrapheneOS) + Fedora before v0.2 tag."
-echo "Concrete sequences (from TESTING_STRATEGY + post 'continue' Phase2):"
+echo "Next recommended: Run this on Tails + physical Android (GrapheneOS) + Fedora before v0.2 tag. THIS IS THE CRITICAL #1 BLOCKER."
+echo "Concrete sequences (from priority table Critical #1 - EXACT for unblock + marketplace):"
 echo "  - Tails: live USB no persist, ./run-tui, clean-security, test voice/wipe/posture/Extreme, power off."
-echo "  - Android: adb logcat | grep hashchat ; adb shell pm clear ; test mic/wipe/biometric + mesh/email actions + X3DH contact add."
-echo "  - Fedora: use screenshot-prep or run-tui with Tor, test desktop TUI shots (incl 'i' queues, :email, mesh fallback)."
-echo "  - Phase2 focus (post mesh/email full): local net for mesh discover/send/drain/queue 'i', :email inbox/send with I2P proxy if avail, observe persist + ratchet."
-echo "  - Always: clean-security before, document in the generated log. Commit log + any PNGs as Lucas."
-echo "This satisfies Critical blocker for v0.2 + marketplace (Flathub/Fedora Apps)."
+echo "  - Android: adb logcat | grep hashchat ; adb shell pm clear ; test mic/wipe/biometric + Phase3 relay/channel/Starlink actions + X3DH."
+echo "  - Fedora (MUST DO FOR PHOTOS + LOG TO UNBLOCK v0.2): "
+echo "      1. Follow the FULL 'CRITICAL #1: EXACT COPY-PASTE COMMANDS...' section at the END of scripts/screenshot-prep-fedora.sh"
+echo "         (includes all grim captures for table states: main/refusal/voice/groups/actions/extreme/i2p/file/relay/channel/queues-i + nix builds + relay server)"
+echo "      2. ./scripts/real-device-test.sh | tee docs/evidence/real-fedora-$(date +%Y-%m-%d).log"
+echo "  - Phase3/table focus: test :relay, :channel, Starlink failover, quantum, Tauri (if built), relay server binary, nix repro builds while capturing."
+echo "  - Always: clean-security before/after, document dates + 'real Fedora/Tails + physical Android' + commit the photos + log + update metainfo as Lucas."
+echo "This + the grim photos is exactly what satisfies the Critical v0.2 evidence blocker and allows Flathub/Fedora Apps marketplace submission."

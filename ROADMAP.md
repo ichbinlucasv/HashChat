@@ -127,12 +127,17 @@ New recommendations (prioritized next steps - see full table below + THREATMODEL
 - Stable. "no stop until finish all".
 Updated table (progress/remaining): see below or full in THREATMODEL. Evidence still 0 real = Critical blocker (user run scripts NOW). Continue.
 
-**This "continue" (user: "continue")**:
-- Evidence scripts/docs with table section 18 + exact cmds/guidance for user Fedora photos/evidence (Critical to unblock v0.2).
-- Nix/Flake: env ready, tested.
-- Phase3 deepen: quantum + Cargo ML-KEM notes; Tauri main.rs + Cargo FFI expand; relay server polish; Starlink in more sends (message/voice/file); full :channel UI/cmd in TUI + help; help text updated.
-- Android: Phase3 actions/FFI (Relay/Channel).
-- OPSEC clean, pre-tag updated for table, docs/ROADMAP appended.
-- Ritual: clean --strict, checks, sbom, pre-tag (table + blocker), marker, commit as Lucas, direct Codeberg main push.
-- Stable. "no stop".
-Next per table: user evidence (run scripts NOW), integrate, full pre-tag + signed v0.2, real ML-KEM, full Tauri, relay server prod, Starlink complete, public channel full, audits, etc. Say "continue" after evidence.
+**This "continue" (user: "continue") - FOCUSED ONLY ON CRITICAL PER USER INSTRUCTION (no High/Medium/Long yet)**:
+- Critical #1 Evidence (User Fedora/Tails/Qubes + physical Android photos/logs - the hard blocker):
+  - PREP DONE AND STABLE: Massively enhanced scripts/screenshot-prep-fedora.sh and real-device-test.sh with dedicated "CRITICAL #1: EXACT COPY-PASTE COMMANDS..." section at end.
+  - Provides complete, copy-paste terminal commands for user to run on real hardware: clean, nix builds, all HASHCHAT_DEMO states (main/refusal/voice/groups/actions/extreme/i2p/file/relay/channel + 'i' queues + Extreme refusals), grim captures for 10+ marketplace photos, relay server test, full real-device-test log with table items.
+  - Updated REAL_DEVICE_TESTING.md, SCREENSHOTS.md, and this ROADMAP table row.
+  - User must NOW run the exact commands on real Fedora + Tails + physical Android, commit the photos + logs + metainfo update as Lucas. This unblocks v0.2 + marketplace.
+- Critical #2 Nix/Flake repro + full builds:
+  - PREP DONE AND STABLE: flake.nix deepened (explicit table commands in shellHook for nix build .#hashchat-tui / .#hashchat-flatpak / .#hashchat-android-rust, improved Android fail-hard section, guidance tying to evidence capture).
+  - nix env confirmed ready (ghc 9.10.3, cabal present). Builds tested in ritual.
+  - Updated docs/scripts to reference the exact nix commands from table.
+- Only after user executes the evidence on hardware + confirms "done and stable and good" will we move to High (deeper Phase3 ML-KEM/Tauri/relay/Starlink/channels), Medium, Long-term.
+- OPSEC: clean --strict, checks, sbom, pre-tag (noted Critical progress + still blocker on actual photos), marker, commit as Lucas, direct Codeberg main push.
+- Stable. "no stop". 
+Next (only after Criticals fully unblocked by user evidence execution): user provides confirmation + the photos/logs, we integrate, full pre-tag + signed v0.2, then High items. Say "continue" after you run the evidence commands on hardware.

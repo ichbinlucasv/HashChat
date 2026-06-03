@@ -130,12 +130,18 @@
           shellHook = ''
             echo "=== HashChat Nix dev shell (maximum reproducible OPSEC) ==="
             echo "Rust + GHC + Cabal + flatpak-builder ready."
+            echo "CRITICAL #2 (Nix/Flake repro - table):"
+            echo "  nix build .#hashchat-tui"
+            echo "  nix build .#hashchat-flatpak"
+            echo "  # For Android .so (fail-hard, requires cargo-ndk + NDK in env or use android/build-android.sh):"
+            echo "  nix build .#hashchat-android-rust"
             echo "To build the full installable Flatpak end-to-end with NO external scripts:"
             echo "  nix build .#hashchat-flatpak"
             echo "  # Produces result/hashchat-tui.flatpak (pure Nix, pinned tools)"
             echo "  flatpak install --user result/hashchat-tui.flatpak"
             echo "Recommended: still use ./build.sh tui ONLY for quick dev inside Tails/Qubes disposable."
             echo "This flake is the ONLY path for reproducible, auditable Flatpak distribution."
+            echo "After builds, use scripts/screenshot-prep-fedora.sh + real-device-test.sh to capture evidence photos/logs for Critical #1."
           '';
         };
 
