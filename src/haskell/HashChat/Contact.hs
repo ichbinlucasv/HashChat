@@ -69,8 +69,8 @@ contactPubHint = pubHint
 -- Real per-profile long-term identity keypair (generated in Rust, persisted via Keystore,
 -- only pub exported for QR) + X3DH setup is the next major recommendation after this closure.
 -- The current path provides usable Simplex-style QR with good metadata resistance.
-contactToAddress :: Contact -> ByteString -> ContactAddress
-contactToAddress contact pubKey = createContactAddress (onionAddress contact) pubKey
+contactToAddress :: Contact -> ByteString -> ByteString -> ContactAddress
+contactToAddress contact edPub xPub = createContactAddress (onionAddress contact) edPub xPub
 
 -- =====================================================================
 -- Simplex-style Connection Request (Wave 7)
@@ -121,55 +121,68 @@ connectionRequestToLink cr =
 
 data ContactAddress = ContactAddress
   { caOnion     :: String      -- full .onion address (public)
-  , caPubKey    :: ByteString  -- public identity / signing key (public)
-  , caVersion   :: Int         -- for future format evolution
+  , caPubKey    :: ByteString  -- public identity / ed25519 signing key (public, for QR display/verify)
+  , caX25519Pub :: ByteString  -- x25519 static for initial X3DH DH (public)
+  , caVersion   :: Int         -- for future format evolution (v2+ includes x)
   }
   deriving (Show, Eq)
 
 -- Create a shareable contact address (public data only)
 -- The private key must never be included here.
-createContactAddress :: String -> ByteString -> ContactAddress
-createContactAddress onion pubKey = ContactAddress
-  { caOnion   = onion
-  , caPubKey  = pubKey
-  , caVersion = 1
+-- For X3DH bootstrap (skeleton): include x25519 pub (from long term) so peer can compute initial shared = x25519_dh(local_x, peer_x)
+createContactAddress :: String -> ByteString -> ByteString -> ContactAddress
+createContactAddress onion edPub xPub = ContactAddress
+  { caOnion     = onion
+  , caPubKey    = edPub
+  , caX25519Pub = xPub
+  , caVersion   = 2
   }
 
 -- Generate a shareable link string suitable for QR code
+-- v2: /<onion>/<len-ed:hex-ed>/<len-x:hex-x>
 contactAddressToLink :: ContactAddress -> String
 contactAddressToLink ca =
   "hashchat://contact/v" ++ show (caVersion ca) ++ "/" ++
   takeWhile (/= '.') (caOnion ca) ++ "/" ++
-  show (BS.length (caPubKey ca)) ++ ":" ++
-  concatMap (printf "%02x") (BS.unpack (caPubKey ca))
+  show (BS.length (caPubKey ca)) ++ ":" ++ concatMap (printf "%02x") (BS.unpack (caPubKey ca)) ++ "/" ++
+  show (BS.length (caX25519Pub ca)) ++ ":" ++ concatMap (printf "%02x") (BS.unpack (caX25519Pub ca))
 
 -- Parse a contact link (from QR or pasted)
--- Returns Nothing if format is invalid or data malformed.
--- SECURITY MODEL (Simplex-style, Wave 7/8): QR/link carries ONLY public onion + public identity key.
+-- v1 backward compat (ed only, x=empty), v2 has ed + x25519 for X3DH bootstrap.
+-- SECURITY MODEL: QR/link carries ONLY public onion + public ed25519 (identity) + public x25519 (for initial DH).
 -- Private ratchet keys + long-term identity secrets stay on device and are never shared.
--- Progress on E (as of this wave):
--- - Desktop TUI now uses proper crypto random (cryptonite getSystemDRG) for the pub in generated QR links.
--- - Android side has a minimal generator (still fresh random for now).
--- Remaining: Real persisted per-profile long-term signing/identity keypair (generated + stored securely,
--- only pub exported for QR). See THREATMODEL "big remaining gap". This is the last major placeholder
--- for full Simplex-style profile sharing strength.
+-- This enables real X3DH: shared = x25519_dh( my_long_x , peer_long_x_from_qr )
 parseContactAddress :: String -> Maybe ContactAddress
 parseContactAddress link = do
   guard ( "hashchat://contact/v" `isPrefixOf` link )
   let rest = drop (length "hashchat://contact/v") link
   (verStr, afterVer) <- breakOn '/' rest
   ver <- readMaybe verStr
-  guard (ver == 1)
-  let (onionPart, keyPart) = breakOn '/' afterVer
+  let (onionPart, afterOnion) = breakOn '/' afterVer
   let onion = onionPart ++ ".onion"
-  (lenStr, hexKey) <- breakOn ':' keyPart
-  keyLen <- readMaybe lenStr
-  -- Safer decode: skip empty/invalid hex pairs from malformed input (QR damage, paste error)
-  let decodedPairs = chunksOf 2 hexKey
-  let safeDecode p = case readHex p of (x:_) -> [fst x]; _ -> []
-  let keyBytes = BS.pack $ map fromIntegral (concatMap safeDecode decodedPairs)
-  guard (BS.length keyBytes == keyLen)
-  pure $ ContactAddress onion keyBytes ver
+  if ver == 1 then do
+    (lenStr, hexKey) <- breakOn ':' afterOnion
+    keyLen <- readMaybe lenStr
+    let decodedPairs = chunksOf 2 hexKey
+    let safeDecode p = case readHex p of (x:_) -> [fst x]; _ -> []
+    let keyBytes = BS.pack $ map fromIntegral (concatMap safeDecode decodedPairs)
+    guard (BS.length keyBytes == keyLen)
+    pure $ ContactAddress onion keyBytes BS.empty ver
+  else do
+    -- v2+: ed part then / x part
+    (edPart, xPart) <- breakOn '/' afterOnion
+    (edLenStr, edHex) <- breakOn ':' edPart
+    edLen <- readMaybe edLenStr
+    let edDecoded = chunksOf 2 edHex
+    let safeDecode p = case readHex p of (x:_) -> [fst x]; _ -> []
+    let edBytes = BS.pack $ map fromIntegral (concatMap safeDecode edDecoded)
+    guard (BS.length edBytes == edLen)
+    (xLenStr, xHex) <- breakOn ':' xPart
+    xLen <- readMaybe xLenStr
+    let xDecoded = chunksOf 2 xHex
+    let xBytes = BS.pack $ map fromIntegral (concatMap safeDecode xDecoded)
+    guard (BS.length xBytes == xLen)
+    pure $ ContactAddress onion edBytes xBytes ver
   where
     breakOn c s = case break (== c) s of
       (a, _ : b) -> Just (a, b)

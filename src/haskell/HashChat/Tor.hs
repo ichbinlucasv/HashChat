@@ -358,6 +358,25 @@ sendOverMultiProxy primary secondary dest ct = do
       sendOverProxy secondary dest ct
 
 -- Note: Full unidirectional simplex queue layer (newSMPQueue real impl, rotation,
+
+-- Phase 2 starter (mesh/Starlink): local discovery + BT/WiFi Direct + Briar-like peer sync on reconnect.
+-- Stub: when offline, queue messages; on local net (BT/WiFi), discover peers via hashchat mesh beacon,
+-- sync queues/ratchets when reconnected to Tor/I2P.
+-- Extreme: can disable mesh for minimal surface.
+-- See ROADMAP for full.
+data MeshPeer = MeshPeer { meshAddr :: String, meshPub :: ByteString } deriving (Show)
+
+-- Stub discovery (future: BLE/WiFi Direct broadcast + signed intro).
+discoverLocalMeshPeers :: IO [MeshPeer]
+discoverLocalMeshPeers = pure []  -- no-op for now; implement with platform APIs
+
+-- Stub send over local mesh (fallback when no Tor/I2P).
+sendOverMesh :: MeshPeer -> ByteString -> IO (Either String ())
+sendOverMesh _ _ = pure (Left "mesh stub: not implemented (Phase 2)")
+
+-- When reconnected, drain mesh queue into main send path + ratchet sync.
+syncMeshQueues :: IO ()
+syncMeshQueues = putStrLn "[MESH] Stub: would sync queued messages + ratchet state on Tor/I2P reconnect."
 -- per-contact per-dir queues for metadata elimination, decoy generator) lives in
 -- Queue.hs + integration in Core/TUI (queues feed existing framing/send paths;
 -- ratchets stay per-contact). See approved Phase 1 plan + ROADMAP.md.
