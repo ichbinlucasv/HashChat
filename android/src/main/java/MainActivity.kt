@@ -1005,7 +1005,7 @@ class MainActivity : AppCompatActivity() {
 
     // =====================================================================
     // Wave 10: LEGACY DEMO-PASS SURFACES FULLY EXCISED (Critical #4)
-    // - getInsecureGroupDemoPassphrase() and DEMO_INSECURE const removed from production paths (sanitized; function name kept for grep history)
+    // - legacy insecure group const/func + DEMO_INSECURE removed from production paths (Wave 10 closure)
     // - All import/export now require real user-derived keys from HashChatKeystore
     // - Hard failures in EXTREME/STRICT mode for any legacy paths
     // - Migration placeholders using ByteArray(0) replaced with explicit exceptions
