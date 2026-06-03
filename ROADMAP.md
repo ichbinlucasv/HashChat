@@ -126,3 +126,13 @@ New recommendations (prioritized next steps - see full table below + THREATMODEL
 - Ritual: clean, checks (cargo/nix), sbom, pre-tag (table + blocker), marker, commit as Lucas, direct push to Codeberg main.
 - Stable. "no stop until finish all".
 Updated table (progress/remaining): see below or full in THREATMODEL. Evidence still 0 real = Critical blocker (user run scripts NOW). Continue.
+
+**This "continue" (user: "continue")**:
+- Evidence scripts/docs with table section 18 + exact cmds/guidance for user Fedora photos/evidence (Critical to unblock v0.2).
+- Nix/Flake: env ready, tested.
+- Phase3 deepen: quantum + Cargo ML-KEM notes; Tauri main.rs + Cargo FFI expand; relay server polish; Starlink in more sends (message/voice/file); full :channel UI/cmd in TUI + help; help text updated.
+- Android: Phase3 actions/FFI (Relay/Channel).
+- OPSEC clean, pre-tag updated for table, docs/ROADMAP appended.
+- Ritual: clean --strict, checks, sbom, pre-tag (table + blocker), marker, commit as Lucas, direct Codeberg main push.
+- Stable. "no stop".
+Next per table: user evidence (run scripts NOW), integrate, full pre-tag + signed v0.2, real ML-KEM, full Tauri, relay server prod, Starlink complete, public channel full, audits, etc. Say "continue" after evidence.

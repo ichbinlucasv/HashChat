@@ -361,7 +361,7 @@ drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll
   , str "1. Run ./run-tui  → it shows your audio backends and Tor status"
   , str "2. Press 'n' to create a burner profile"
   , str "3. Press 'v' to test voice (real desktop mic via pw-record/parecord/arecord or Android; per-chunk ratchet E2EE + wipe)"
-  , str "4. Use :set-proxy 127.0.0.1 9050 (Tor) or 4444 (I2P after i2pd) for per-profile transport (High #5 / Phase 1 Roadmap hybrid). Run launchI2pdIfNeeded or see Tor.hs for garlic/multi-path + simplex queues. :file now does real ratchet-chunked XFTP E2EE (Phase 1). :discover for decentralized (Medium). :screenshot for marketplace. :export stub. :relay for Phase3 self-host relay (announce/discover/queue sync). Starlink detect in Tor for resilience."
+  , str "4. Use :set-proxy 127.0.0.1 9050 (Tor) or 4444 (I2P after i2pd) for per-profile transport (High #5 / Phase 1 Roadmap hybrid). Run launchI2pdIfNeeded or see Tor.hs for garlic/multi-path + simplex queues. :file now does real ratchet-chunked XFTP E2EE (Phase 1). :discover for decentralized (Medium). :screenshot for marketplace. :export stub. :relay for Phase3 self-host relay (announce/discover/queue sync). :channel for Phase3 public channels (create/post/poll). Starlink detect in Tor for resilience."
   , str "5. '?' toggles this help. 'w' is the nuclear wipe (use it!)"
   , str ""
   , str "Enter          → Send encrypted message (real ratchet + AES-GCM)"
@@ -1464,6 +1464,7 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'i') [])) = do
   let rat = Map.lookup contact (ratchets s)
   liftIO $ putStrLn $ "\n=== Security Info for " ++ contact ++ " (Simplex-style) ==="
   liftIO $ putStrLn $ "Ratchet ID: " ++ maybe "none" show rat
+  liftIO $ putStrLn "Phase3: Starlink failover available if detected (see :set-proxy or send logs; Extreme disables)."
   liftIO $ putStrLn "E2EE: Double Ratchet + AES-256-GCM (forward secrecy)"
   liftIO $ putStrLn "Transport: Tor v3 hidden service only"
   liftIO $ putStrLn "Posture at last eval: " ++ securityPosture s

@@ -16,4 +16,5 @@ fn main() {
     // extern "C" { fn rust_init_profile() -> *mut c_void; fn rust_quantum_hybrid_new() -> *mut c_void; fn rust_longterm... }
     println!("No direct sockets/files in JS; crown jewels in Rust FFI (ratchet, relay, quantum, Starlink, channels). Extreme gate.");
     // See tauri.conf.json for allowlist:false + CSP. Build: cargo tauri build (after full setup).
+    // For full: add commands that call the Rust FFI from hashchat_rust (same as desktop lib).
 }
