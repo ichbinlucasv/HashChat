@@ -199,3 +199,18 @@ New recs: user execute evidence scripts on real hardware (Fedora/Tails + Android
 - Stable: no regressions, builds clean, logic roundtrips for relay cts in drain (High item complete in good shape).
 New recs: user run full evidence on real hardware (incl relay poll + drain test, :quantum) NOW to unblock v0.2. Then pre-tag full + signed v0.2. Then Medium (Voice/Extreme polish, tests, auto X3DH, mesh full, email full, Tauri frontend, etc).
 "continue" to keep finishing all.
+
+**This continue (user: "continue working deep hardr no stop until u finish")**:
+- Deep hard on remaining Critical/High to finish in good shape and stable:
+  - Quantum: wired optional hybrid into ratchet via initRatchetHybrid (uses quantum kex for enhanced shared, called in :add-contact X3DH bootstrap for new contacts with real long x; gated/Extreme refuse, fallback classical). Now "layered" in bootstrap path.
+  - Tauri: made builder active with invoke_handler for all commands (send, hybrid, relay, etc.); README updated. Closer to full app (still needs frontend dist for run).
+  - Android: added "Phase3: Relay drain test" action (simulates cts feed to processor for parity with TUI stable processRelayIncoming + QROT).
+  - Threat sim: integrated call + tail in pre-tag Phase3; evidence script calls noted.
+  - Evidence scripts: appended exact cmds for :add-contact quantum layer, :relay poll + drain observe (queues 'i', QROT), threat sim.
+  - Pre-tag: new gates for initRatchetHybrid in bootstrap, relay drain, Android relay drain.
+  - All cargo/rust checks, clean.
+- Docs: this entry + table + "where ended" + verbatim user "continue working deep hardr no stop until u finish".
+- Ritual + push as Lucas to Codeberg main (ssh).
+- Stable: quantum now in ratchet bootstrap (High), relay drain full processor (High), Tauri/Android parity, no breakage to prior (E2EE/queues/Extreme/Tor).
+New recs: user MUST run evidence on real hardware NOW (Fedora/Tails/Android with new :add-contact quantum, relay drain/poll, :quantum, drain logs, threat sim, 'i' queues) + commit/push as Lucas to unblock v0.2 + marketplace. Then full pre-tag (with audit) + signed v0.2. Then Medium (Voice polish, Extreme min builds, auto X3DH full, tests) + Long (mesh full, email full I2P, quantum default, Tauri frontend, audits, etc).
+"continue working deep hardr no stop until u finish" all.

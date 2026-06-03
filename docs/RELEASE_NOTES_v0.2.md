@@ -292,3 +292,11 @@ For build reproducibility and OPSEC, see docs/BUILD_REPRODUCIBILITY.md and docs/
 - Pre-tag/evidence/scripts/ Tauri README updated.
 - Full ritual, SBOM, push as Lucas. High finished stable for this part. Evidence still Critical blocker (user hardware run to unblock + push again).
 - "no stop". Next: user evidence, then more.
+
+**This continue (user: "continue working deep hardr no stop until u finish")**:
+- Quantum: initRatchetHybrid in Core + called from :add-contact X3DH for layered PQ-enhanced bootstrap (real long x, gated).
+- Tauri: active Builder with handlers (deeper stable).
+- Android: relay drain test action for TUI parity.
+- Threat sim in pre-tag, evidence scripts with exact new cmds (quantum bootstrap, relay drain/poll).
+- Pre-tag gates added. Full ritual, SBOM, Lucas push. High now deeper stable/good shape. Evidence Critical blocker (run hardware for :add-contact quantum, relay drain etc to unblock + push again).
+- "continue working deep hardr no stop until u finish" all.

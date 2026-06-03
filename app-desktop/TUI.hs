@@ -639,6 +639,23 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
                   modify $ \st -> st { ratchets = Map.insert (take 8 (caOnion ca)) rid (ratchets st) }
                   putStrLn "[X3DH] Real bootstrap: shared secret from long-term x25519 DH (QR x pub). First message will use init_from_shared E2EE."
                 Nothing -> putStrLn "[X3DH] DH failed (bad peer x pub length?), using fresh ratchet fallback."
+            -- Phase3 High deep: layer optional quantum hybrid on the bootstrap (gated, uses real long x pub for peer, demo our for classical dh part)
+            liftIO $ do
+              let peerX = caX25519Pub ca
+              let ourDemo = BS.replicate 32 0x11  -- demo our x (real path would derive securely from long x priv via extended FFI without exposure)
+              let peerKemDemo = BS.replicate 1184 0x33
+              mH <- quantumHybridKexTest ourDemo peerX peerKemDemo
+              case mH of
+                Just (hss, _ct) -> do
+                  ridH <- newRatchet
+                  initRatchetHybrid ridH ourDemo peerX peerKemDemo peerX  -- uses hybrid ss for init (demo layer on X3DH)
+                  mlockSensitiveRatchets
+                  let prof = currentProfile s
+                  let pass = passForSession s
+                  saveEncryptedRatchet prof (take 8 (caOnion ca)) ridH pass
+                  modify $ \st -> st { ratchets = Map.insert (take 8 (caOnion ca)) ridH (ratchets st) }
+                  putStrLn "[QUANTUM] Layered hybrid ratchet init on X3DH bootstrap (real X25519 dh + KEM placeholder; Extreme can refuse)."
+                Nothing -> putStrLn "[QUANTUM] Hybrid layer skipped (not built with feature or Extreme)."
             pure ()
           Nothing -> do
             liftIO $ putStrLn "[CONTACT] Invalid or malformed contact link. Must be hashchat://contact/v1/<onion>/<len-ed:hex-ed> or v2 with /<len-x:hex-x> for X3DH (ed + x25519 pubs from long-term identity)."

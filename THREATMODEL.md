@@ -306,3 +306,8 @@ We should continue hardening the **boundaries** and **minimization** rather than
 - Relay drain processing made stable (processRelayIncoming in drainIncoming for real ratchet/QROT/persist on relay cts).
 - Evidence/pre-tag for relay drain + quantum.
 - Pushed after ritual. High items now finished in good shape. Evidence blocker.
+
+**This continue (user: "continue working deep hardr no stop until u finish")**:
+- Quantum hybrid now wired into ratchet init/bootstrap (initRatchetHybrid + :add-contact layer with real long x).
+- Tauri builder active, Android relay drain parity, threat sim in pre-tag, evidence cmds for new stable paths.
+- Ritual/push. Still blocker. Deep no stop on remaining High/Medium.

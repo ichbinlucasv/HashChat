@@ -466,6 +466,7 @@ class MainActivity : AppCompatActivity() {
                 "Phase3: Relay announce/discover (self-host)",
                 "Phase3: Public channel post/poll",
                 "Phase3: Quantum hybrid test (gated, X25519 real + placeholder)",
+                "Phase3: Relay drain test (process cts like TUI stable processRelayIncoming)",
                 "Cancel"
             )) { _, which ->
                 when (which) {
@@ -592,6 +593,17 @@ class MainActivity : AppCompatActivity() {
                             // Demo feed for processor (control frame sim).
                             generalMessageQueue.put("QUANTUM-HYBRID-TEST".toByteArray())
                         }
+                    }
+                    18 -> {
+                        // Phase3 Relay drain test (High, parity with TUI processRelayIncoming for stable).
+                        if (EXTREME_MODE) { Toast.makeText(this, "EXTREME: Relay disabled.", Toast.LENGTH_LONG).show(); return@setItems }
+                        Toast.makeText(this, "Phase3 Relay drain: simulating process cts (unframe/receive/QROT/queue like TUI).", Toast.LENGTH_SHORT).show()
+                        val rC = "relay-drain-peer"
+                        HashChatNative.rotateQueueForContact(rC)
+                        // Simulate receiving framed ct via general queue for processor to handle (QROT/ratchet parity).
+                        generalMessageQueue.put("RELAY-DRAIN-CT-DEMO".toByteArray())
+                        HashChatNative.feedReceivedData("RELAY-DRAIN-CT-DEMO".toByteArray())
+                        Toast.makeText(this, "Relay drain sim fed to processor (stable sync parity).", Toast.LENGTH_LONG).show()
                     }
                 }
             }

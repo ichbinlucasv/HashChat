@@ -64,17 +64,18 @@ fn channel_post(chan: String, msg: String) -> String {
 // }
 
 fn main() {
-    println!("HashChat Tauri (Phase3 High deepened): strict FFI-only to Rust core for all sensitive ops.");
+    println!("HashChat Tauri (Phase3 High deepened for stable): strict FFI-only to Rust core for all sensitive ops.");
     println!("No net/fs in webview/JS. TUI default for max security. Extreme can disable this GUI entirely.");
-    // Full builder (uncomment + cargo tauri after deps/setup; link rust lib via build.rs or workspace):
-    // Builder::default()
-    //     .invoke_handler(generate_handler![
-    //         get_security_posture, send_message, wipe_all, hybrid_kex_test,
-    //         relay_announce, starlink_detect, channel_post
-    //     ])
-    //     .run(generate_context!())
-    //     .expect("Tauri error");
-    // For now: prints + command fns ready for invoke from frontend (thin webview).
+    // Full builder active (deepened): registers all Phase3 commands for invoke from frontend.
+    // Requires tauri-cli + cargo tauri build after frontend setup (dist/ with index.html calling invoke).
+    // Link to hashchat_rust (with quantum feature for hybrid cmds) via build.rs or workspace.
     // See tauri.conf.json for security: allowlist false, CSP self-only, no dangerous.
-    println!("Commands registered for frontend invoke (FFI parity with TUI queues/Extreme/Phase3). Build with: cd tauri/src-tauri && cargo tauri build");
+    tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            get_security_posture, send_message, wipe_all, hybrid_kex_test,
+            relay_announce, starlink_detect, channel_post
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+    // Note: for full, add frontend that does invoke('send_message', {contact, msg}) etc, matching TUI parity (queues, Extreme, relay, quantum).
 }

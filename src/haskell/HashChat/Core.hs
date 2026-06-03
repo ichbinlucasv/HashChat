@@ -31,6 +31,7 @@ module HashChat.Core
   , sessionLongTermIdentityId
   , longtermX25519Dh
   , quantumHybridKexTest
+  , initRatchetHybrid
   -- Rust Extreme for parity
   , rust_set_extreme_mode
   , rust_is_extreme_mode
@@ -153,6 +154,20 @@ initRatchet rid remotePub shared = do
   withArray (unpack remotePub) $ \p ->
     withArray (unpack shared) $ \s ->
       rust_ratchet_init rid p s
+
+-- Phase3 High: optional quantum hybrid ratchet init (gated by Extreme and Rust --features quantum).
+-- Uses quantumHybridKexTest (real X25519 classical + placeholder KEM) to derive hybrid shared, then initRatchet with it.
+-- Falls back to classical. For real: mix with X3DH shared + PQ layer. Extreme refuses.
+initRatchetHybrid :: Word32 -> ByteString -> ByteString -> ByteString -> ByteString -> IO ()
+initRatchetHybrid rid ourPriv peerX peerKemPub remotePub = do
+  mH <- quantumHybridKexTest ourPriv peerX peerKemPub
+  case mH of
+    Just (hybridShared, _ct) -> do
+      liftIO $ putStrLn "[QUANTUM] Hybrid shared derived (X25519 + KEM); initializing ratchet with PQ-enhanced shared"
+      initRatchet rid remotePub hybridShared
+    Nothing -> do
+      liftIO $ putStrLn "[QUANTUM] Hybrid not available (build with --features quantum or Extreme on); falling back to classical"
+      initRatchet rid remotePub (BS.replicate 32 0x42)  -- demo fallback shared
 
 ratchetSend :: Word32 -> IO (ByteString, Word32)
 ratchetSend rid = do

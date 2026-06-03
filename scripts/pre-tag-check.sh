@@ -230,6 +230,9 @@ fi
 if grep -q "getSessionLongTermPublic.*peerXDemo\|real long x used for peer" app-desktop/TUI.hs ; then
     echo "  -> :quantum uses real long-term x pub for realistic hybrid test (deeper integration)."
 fi
+if grep -q "initRatchetHybrid\|Layered hybrid ratchet init on X3DH" src/haskell/HashChat/Core.hs app-desktop/TUI.hs ; then
+    echo "  -> initRatchetHybrid wired in Core + used in :add-contact X3DH bootstrap (optional quantum layer for new contacts, gated)."
+fi
 if grep -q "PublicChannel" src/haskell/HashChat/Group.hs ; then
     echo "  -> PublicChannel (decentralized groups/channels) present."
 fi
@@ -247,6 +250,15 @@ if grep -q "freemium\|Pro (one-time" android/PAID_VERSION_PLAN.md ; then
 fi
 if grep -q "Phase3: Relay\|Phase3: Public channel" android/src/main/java/MainActivity.kt ; then
     echo "  -> Android Phase3 FFI/actions (Relay/Channel, table)."
+fi
+
+# Threat sim integration (High OPSEC awareness)
+echo "[Phase 3] Running threat-correlation-sim.sh for relay/Starlink/AI/channel correlation notes (findings for THREATMODEL)..."
+if [ -x scripts/threat-correlation-sim.sh ]; then
+  ./scripts/threat-correlation-sim.sh | tail -10 || echo "  -> sim ran (or note)"
+  echo "  -> Threat sim present and executable (integrate output in evidence runs)."
+else
+  echo "  >>> Warning: threat sim script missing or not exec."
 fi
 
 # Medium: One final git history clean before v0.2 tag

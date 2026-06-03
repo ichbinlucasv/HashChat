@@ -213,7 +213,8 @@ echo "      1. Follow the FULL 'CRITICAL #1: EXACT COPY-PASTE COMMANDS...' secti
 echo "         (includes all grim captures for table states: main/refusal/voice/groups/actions/extreme/i2p/file/relay/channel/queues-i + nix builds + relay server)"
 echo "      2. ./scripts/real-device-test.sh | tee docs/evidence/real-fedora-$(date +%Y-%m-%d).log"
 echo "  - Phase3/table focus: test :relay, :channel, Starlink failover, quantum, Tauri (if built), relay server binary, nix repro builds while capturing.
-  - Threat sim (High OPSEC): ./scripts/threat-correlation-sim.sh | tee -a \$LOG_FILE   # feeds findings to THREATMODEL for audits."
+  - Threat sim (High OPSEC): ./scripts/threat-correlation-sim.sh 
+  - Run after relay drain/quantum tests: ./scripts/threat-correlation-sim.sh | tee -a $LOG_FILE| tee -a \$LOG_FILE   # feeds findings to THREATMODEL for audits."
 echo "  - Always: clean-security before/after, document dates + 'real Fedora/Tails + physical Android' + commit the photos + log + update metainfo as Lucas."
 echo "This + the grim photos is exactly what satisfies the Critical v0.2 evidence blocker and allows Flathub/Fedora Apps marketplace submission."
 echo ""
@@ -224,3 +225,8 @@ echo "  cat >> $LOG_FILE << 'TABLEEOF'
 - [ ] Nix/Flake: nix build .#hashchat-tui ; nix build .#hashchat-flatpak succeeded
 TABLEEOF
 echo "Log updated with table template. Fill [x] after your runs."
+### Additional for this continue (deep High stable): 
+- TUI: :add-contact <link> (now layers quantum hybrid on X3DH bootstrap if available; observe [QUANTUM] and [X3DH] logs, ratchet created with hybrid ss).
+- :relay poll (triggers drain, observe [RELAY] processing via processRelayIncoming, QROT if any, messages advanced).
+- After :relay send or drain: press i for queues info (lastRot etc).
+- Run threat sim as noted.
