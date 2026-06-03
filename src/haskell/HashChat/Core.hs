@@ -41,6 +41,7 @@ module HashChat.Core
   , createPseudonymInbox
   , sendEmailOverRatchet
   , receiveEmail
+  , persistEmailInbox
   ) where
 
 import Control.Concurrent.STM
@@ -737,4 +738,10 @@ pollEmailInbox inbox = do
 
 -- Persist note: use encrypted store like ratchets (hashchat_data/emails/<pseudo>.enc).
 -- TUI stub command would be :email send <pseudo> <msg> or :email inbox.
+
+persistEmailInbox :: EmailInbox -> IO ()
+persistEmailInbox inbox = do
+  putStrLn $ "[EMAIL] Persisting inbox for " ++ inboxPseudonym inbox ++ " (stub to encrypted store like ratchets)."
+  -- Stub: would use exportEncryptedProxy style for inbox, save to hashchat_data/emails/<pseudo>.enc
+  -- Real: encrypt with profile pass, write file. Extreme would refuse or wipe.
 

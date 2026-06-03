@@ -599,6 +599,7 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
           -- Real display: list msgs.
           forM_ (zip [0..] (inboxMessages polled)) $ \(i, m) -> liftIO $ putStrLn $ "  [" ++ show i ++ "] " ++ show (BS.take 30 $ content m) ++ "... (ratchet protected)"
           when (null (inboxMessages polled)) $ liftIO $ putStrLn "  (no msgs; poll would recv over I2P DHT)"
+          liftIO $ persistEmailInbox polled  -- persist after poll.
         else if length parts > 3 && parts !! 1 == "send" then do
           let pseudo = parts !! 2
           let msg = unwords (drop 3 parts)
