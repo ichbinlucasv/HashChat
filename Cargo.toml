@@ -27,9 +27,7 @@ subtle = "2.6"
 
 [features]
 default = []
-# long-13: optional gated quantum resistance (stub only in v0.2, deepening per priority table).
-# When enabled, src/rust/quantum.rs is compiled and the hybrid interface is available.
-# No actual PQ security until real audited ML-KEM (e.g. ml-kem or pqcrypto crate, const-time, zeroize).
-# Example for real: add under [dependencies] when audited: ml-kem = { version = "0.2", features = ["zeroize"] }
-# Then impl hybrid using X25519 + MlKem768 in quantum.rs.
+# long-13 / High Phase3 (deepened "work on all critial and hight risk now no stop"): optional gated.
+# --features quantum: hybrid_kex now does REAL X25519 (x25519-dalek dep) + KEM placeholder. Interface stable+working-good.
+# NO PQ security (placeholder). Add audited const-time zeroize ML-KEM later (e.g. ml-kem=0.2). Classical default.
 quantum = []

@@ -23,8 +23,10 @@ pub use quantum::{hybrid_ratchet_new, QuantumHybridRatchet};
 #[cfg(feature = "quantum")]
 #[no_mangle]
 pub extern "C" fn rust_quantum_hybrid_new() -> *mut QuantumHybridRatchet {
-    let r = Box::new(hybrid_ratchet_new());
-    Box::into_raw(r)
+    match hybrid_ratchet_new() {
+        Ok(r) => Box::into_raw(Box::new(r)),
+        Err(_) => std::ptr::null_mut(),
+    }
 }
 
 pub use longterm_identity::{

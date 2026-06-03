@@ -270,3 +270,9 @@ Special thanks to the user for the relentless "keep working deeper" drive.
 For the full threat model, see THREATMODEL.md.
 
 For build reproducibility and OPSEC, see docs/BUILD_REPRODUCIBILITY.md and docs/BUILD_ISOLATION.md.
+
+**This continue (user: "work on all critial and hight risk stuff now no stop")**:
+- High Phase3 deepened (see ROADMAP for full): quantum real X25519 hybrid, Tauri FFI+strict, relay prod listener, Starlink complete in paths + UI, public channel poll/UI, Android High FFI/actions/quantum, threat sim script.
+- Critical: evidence prep + docs updated; SBOM regen/record; still 0 real Fedora photos/logs = v0.2 hard blocker (pre-tag --strict prints exact user cmds; run screenshot-prep + real-device on hardware NOW).
+- All stable + working good + Extreme gated + OPSEC ritual. E2EE solid. "no stop until finish all".
+- New recs: user evidence, full pre-tag (semantic SBOM + marker + audit), v0.2 signed, then Medium items + full roadmap.

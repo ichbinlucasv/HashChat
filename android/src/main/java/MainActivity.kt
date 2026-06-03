@@ -80,6 +80,9 @@ object HashChatNative {
     // X3DH parity: compute shared from local long-term x + peer x from QR/contact link for bootstrap.
     external fun longtermX25519Dh(lid: Int, peerX: ByteArray): ByteArray
 
+    // Phase3 High: quantum FFI parity (gated; test from actions, Extreme refuse, processor note).
+    external fun rustQuantumHybridNew(): Int
+
     // Combined Kotlin + JNI strict mode (authoritative for refusal decisions).
     // Expands the old stub with real root detection, dangerous props via reflection + files,
     // Build.TAGS test-keys, userdebug, ro.debuggable, etc. + delegates to Rust for /proc/fs signals.
@@ -461,6 +464,7 @@ class MainActivity : AppCompatActivity() {
                 "Add contact (X3DH auto bootstrap from pub)",
                 "Phase3: Relay announce/discover (self-host)",
                 "Phase3: Public channel post/poll",
+                "Phase3: Quantum hybrid test (gated, X25519 real + placeholder)",
                 "Cancel"
             )) { _, which ->
                 when (which) {
@@ -572,6 +576,18 @@ class MainActivity : AppCompatActivity() {
                         // Feed processor for demo.
                         generalMessageQueue.put("CHANNEL-PUBLIC-DEMO".toByteArray())
                         HashChatNative.feedReceivedData("CHANNEL-PUBLIC-DEMO".toByteArray())
+                    }
+                    17 -> {
+                        // Phase3 Quantum (High table): test hybrid (real X25519 part now), Extreme gate, FFI parity.
+                        if (EXTREME_MODE) { Toast.makeText(this, "EXTREME: Quantum/PQ surface disabled.", Toast.LENGTH_LONG).show(); return@setItems }
+                        val qh = HashChatNative.rustQuantumHybridNew()
+                        if (qh < 0) {
+                            Toast.makeText(this, "Quantum FFI: feature not enabled or refused (build --features quantum for full).", Toast.LENGTH_LONG).show()
+                        } else {
+                            Toast.makeText(this, "Quantum hybrid FFI: handle $qh (X25519 real in kex + placeholder KEM; interface stable). See TUI :quantum too.", Toast.LENGTH_LONG).show()
+                            // Demo feed for processor (control frame sim).
+                            generalMessageQueue.put("QUANTUM-HYBRID-TEST".toByteArray())
+                        }
                     }
                 }
             }

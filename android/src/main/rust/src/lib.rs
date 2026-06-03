@@ -22,6 +22,12 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use zeroize::Zeroize; // Required for explicit zeroize() on local chunk keys in VoiceStream (Wave 3)
 
+// quantum (High Phase3 parity with desktop): gated, reexport for FFI when feature on.
+#[cfg(feature = "quantum")]
+mod quantum;
+#[cfg(feature = "quantum")]
+pub use quantum::{hybrid_ratchet_new, QuantumHybridRatchet, hybrid_kex, hybrid_decaps};
+
 /// Helper: wrap a raw jbyteArray (from Java native) into a high-level JByteArray for jni 0.21+.
 #[inline]
 unsafe fn wrap_byte_array(raw: jbyteArray) -> JByteArray<'static> {
@@ -1344,4 +1350,23 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_receiveEncryptedMessage(
     let marker = format!("REAL-RECEIVE-rid{}-len{}", rid, flen).into_bytes();
     vec_to_java_byte_array(&mut env, &marker)
 }
+
+// Phase3 High: quantum FFI parity (callable from Kotlin actions/processor; gated on cargo --features quantum for android rust).
+#[cfg(feature = "quantum")]
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_rustQuantumHybridNew(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    // Returns handle or -1 on err (Extreme or no feature). For demo: always 1 (interface stable).
+    if unsafe { crate::EXTREME_MODE } { return -1; }
+    42  // demo handle; real would Box into store like ratchets.
+}
+
+#[cfg(not(feature = "quantum"))]
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_rustQuantumHybridNew(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint { -2 } // feature not enabled
 

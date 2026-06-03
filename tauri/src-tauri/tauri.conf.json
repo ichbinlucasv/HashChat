@@ -19,7 +19,7 @@
         "fullscreen": false,
         "height": 600,
         "resizable": true,
-        "title": "HashChat (Tauri GUI stub - Phase3, TUI is default secure)",
+        "title": "HashChat (Tauri Phase3 High: strict FFI-only, TUI ultra-secure default; Extreme disables GUI)",
         "width": 800
       }
     ],

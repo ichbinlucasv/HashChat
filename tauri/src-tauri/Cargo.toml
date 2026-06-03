@@ -12,7 +12,7 @@ edition = "2021"
 # Phase3 High 'full Tauri app': depend on hashchat-rust for FFI (ratchet, relay, quantum, Starlink, channels, Extreme).
 # tauri = { version = "1", features = ["api-all"] } but strict: no api-all, only custom invoke for FFI.
 # JS thin calls Rust for all sensitive (same as TUI/Android).
-tauri = { version = "1", features = ["api-all"] }  # tighten in prod to custom only
+tauri = { version = "1", features = [] }  # STRICT: no api-all (High table). All crown jewels via FFI to hashchat_rust only (no net/fs in JS). See tauri.conf.json allowlist:false + CSP.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

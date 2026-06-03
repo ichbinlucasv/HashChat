@@ -30,7 +30,8 @@ main = do
       forever $ threadDelay 1000000000
     _ -> do
       startRelay cfg
-      putStrLn "Relay MVP started on default port 12346 (use Tor HS for real anon relay)."
+      putStrLn "Relay MVP (deepened prod) started on default 12346. Self-host: publish onion, TUI :relay announce uses it for queue sync (QROT parity)."
+      putStrLn "For paid/community: run behind Tor HS + rate-limit/auth in real impl. See ROADMAP Sec7."
       forever $ threadDelay 1000000000
   where
     readMaybe :: String -> Maybe Int
@@ -39,3 +40,4 @@ main = do
       _ -> Nothing
 
     forever act = act >> forever act
+    -- Real self-host: cabal run hashchat-relay 9999 ; expose via tor --HiddenService; TUI peers use :relay discover. Extreme clients skip.

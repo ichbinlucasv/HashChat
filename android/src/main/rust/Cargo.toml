@@ -24,3 +24,8 @@ argon2 = "0.5" # Real KDF for ratchet export envelope (high-4 / crit-2 OPSEC)
 # Replaces deprecated internal ring API. subtle is the recommended audited primitive.
 subtle = "2.6"
 # Note: no Python, no gi-gtk, pure Rust + Haskell as per project rules.
+
+[features]
+default = []
+# quantum passthrough for High parity (same as desktop; gated, real X25519 in kex now).
+quantum = []

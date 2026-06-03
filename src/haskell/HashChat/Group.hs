@@ -67,7 +67,14 @@ createPublicChannel name broadcast = pure $ PublicChannel
 postToChannel :: PublicChannel -> ByteString -> IO ()
 postToChannel _chan _ct = putStrLn "[CHANNEL] Posted to public anonymous channel (ratchet or broadcast; DHT/relay delivery stub)."
 
--- Future: pollChannel (via relay or I2P-Bote DHT), subscribe, observer mode (no send ratchet).
+-- Poll (deepened for full UI + DHT/relay; returns demo ratchet-cts or broadcast for TUI drain/process like mesh).
+pollChannel :: PublicChannel -> IO [ByteString]
+pollChannel ch = do
+  putStrLn $ "[CHANNEL] Polling public channel " ++ channelName ch ++ " (via relay/DHT stub; Extreme refuses)."
+  -- Real: query relay or I2P-Bote style DHT for new posts (ratchet protected or bcast).
+  pure [ BS.pack (map (fromIntegral . fromEnum) "CHAN-DEMO-POST-QROT-POSSIBLE") ]  -- TUI can unframe + ratchet if hint matches.
+
+-- Future: subscribe, observer mode (no send ratchet).
   , gskChainKey  :: ByteString
   , gskMsgCount  :: Word32
   }

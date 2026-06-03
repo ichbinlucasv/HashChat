@@ -717,7 +717,10 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
           liftIO $ G.postToChannel (G.PublicChannel chanId "demo" False []) (BS.pack $ map (fromIntegral . fromEnum) msg)
           liftIO $ putStrLn "[CHANNEL] Posted to public channel (ratchet-ct or broadcast via relay/DHT stub)."
         else do
-          liftIO $ putStrLn "[CHANNEL] Poll stub: would receive via relay or DHT for new channel msgs."
+          cts <- liftIO $ G.pollChannel (G.PublicChannel (BS.pack (replicate 32 0xC1)) "demo" False [])
+          liftIO $ putStrLn $ "[CHANNEL] Poll: received " ++ show (length cts) ++ " (would unframe + ratchet_recv + QROT check + add to channel view; integrates queues/relay like mesh)."
+          -- For demo: surface as system note (full: feed to drainIncoming for ratchet process).
+          modify $ \st -> st { messages = Map.insertWith (++) (currentContact st) (map (\c -> ("[CHAN] " <> c, False)) cts) (messages st) }
         modify $ \st -> st { input = "" }
       else if ":screenshot" `isInfixOf` inputStr || inputStr == ":shots"
       then do
@@ -936,6 +939,8 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
 
         -- Phase3: self-host relay fallback (after mesh; for offline/global queue sync)
         -- Uses Relay module (announce/discover/queue ct); all cts ratchet-protected (opaque to relay); Extreme refuses.
+        (relayProxy, isStarR) <- liftIO $ Tor.chooseProxyWithStarlinkFallback (Map.findWithDefault Tor.defaultProxyForProfile (currentProfile s) (proxies s))
+        when isStarR $ liftIO $ putStrLn "[STARLINK] Relay path using detected sat failover (resilience; Extreme disables)."
         relayPeers <- liftIO Relay.discoverViaRelay Relay.defaultRelayConfig
         when (not (null relayPeers) && currentContact s /= "") $ do
           let (peerPub, _) = head relayPeers
@@ -1465,8 +1470,10 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'i') [])) = do
   liftIO $ putStrLn $ "\n=== Security Info for " ++ contact ++ " (Simplex-style) ==="
   liftIO $ putStrLn $ "Ratchet ID: " ++ maybe "none" show rat
   liftIO $ putStrLn "Phase3: Starlink failover available if detected (see :set-proxy or send logs; Extreme disables)."
+  starM <- liftIO Tor.detectStarlinkOrPreferred
+  liftIO $ putStrLn $ "Starlink detect (live): " ++ maybe "none (Tor primary or mesh)" (const "DETECTED - offline-first resilience active") starM
   liftIO $ putStrLn "E2EE: Double Ratchet + AES-256-GCM (forward secrecy)"
-  liftIO $ putStrLn "Transport: Tor v3 hidden service only"
+  liftIO $ putStrLn "Transport: Tor v3 hidden service only + Phase1 queues + Phase3 relay/Starlink/mesh optional overlays (Extreme = Tor-only minimal)"
   liftIO $ putStrLn "Posture at last eval: " ++ securityPosture s
   -- Phase 1 deeper queue info
   case Map.lookup contact (contactQueues s) of
