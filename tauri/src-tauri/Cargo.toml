@@ -9,10 +9,13 @@ edition = "2021"
 # Build: cargo tauri or from nix later. Desktop always free; Android separate.
 
 [dependencies]
-# Will depend on the hashchat-rust lib for FFI (Double Ratchet, LongTerm, etc.)
-# tauri = { version = "1", features = ["api-all"] } but strict: disable most, use only custom.
-# For now stub; real will have isolated webview + JS thin that calls Rust cmds for send/recv.
+# Phase3 High 'full Tauri app': depend on hashchat-rust for FFI (ratchet, relay, quantum, Starlink, channels, Extreme).
+# tauri = { version = "1", features = ["api-all"] } but strict: no api-all, only custom invoke for FFI.
+# JS thin calls Rust for all sensitive (same as TUI/Android).
+tauri = { version = "1", features = ["api-all"] }  # tighten in prod to custom only
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [features]
 default = []
-# quantum feature passthrough if needed.
+# quantum passthrough.

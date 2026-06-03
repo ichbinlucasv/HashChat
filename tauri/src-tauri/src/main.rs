@@ -5,12 +5,15 @@
 // Monetization: desktop always free.
 
 fn main() {
-    println!("HashChat Tauri GUI stub (Phase3, priority table High).");
-    println!("In real: tauri::Builder::default() ... invoke_handler for FFI calls to hashchat_rust (send, recv, wipe, posture, quantum if feature, relay, starlink detect, public channels).");
-    println!("No direct sockets/files in JS; all crown jewels in Rust FFI (same as Android/TUI).");
-    println!("Extreme mode: compile or runtime gate to minimal surface.");
-    // Example FFI (stub; link to rust-lib/hashchat_rust like TUI):
-    // extern "C" { fn rust_init_profile() -> *mut c_void; fn rust_quantum_hybrid_new() -> *mut Quantum...; ... }
-    // tauri::Builder::default().invoke_handler(tauri::generate_handler![send_msg, wipe, get_posture, hybrid_kex]).run(...).expect("error");
-    // See tauri.conf.json for strict allowlist:false + CSP.
+    println!("HashChat Tauri GUI stub (Phase3, priority table High 'full Tauri app').");
+    println!("TUI default secure; this for mainstream with strict caps (no net/fs; only FFI to Rust for all crypto/transport/Extreme/Phase3).");
+    // Basic Tauri setup stub (expand with tauri::Builder, window, etc.):
+    // tauri::Builder::default()
+    //   .invoke_handler(tauri::generate_handler![send_msg, recv, wipe_all, get_posture, hybrid_kex, relay_announce, starlink_detect, channel_post])
+    //   .run(tauri::generate_context!())
+    //   .expect("error while running tauri application");
+    // FFI examples (link rust-lib like TUI/Android):
+    // extern "C" { fn rust_init_profile() -> *mut c_void; fn rust_quantum_hybrid_new() -> *mut c_void; fn rust_longterm... }
+    println!("No direct sockets/files in JS; crown jewels in Rust FFI (ratchet, relay, quantum, Starlink, channels). Extreme gate.");
+    // See tauri.conf.json for allowlist:false + CSP. Build: cargo tauri build (after full setup).
 }

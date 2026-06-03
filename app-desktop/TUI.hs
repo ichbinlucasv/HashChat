@@ -42,6 +42,7 @@ import qualified HashChat.Queue as Q  -- Phase 1: deeper unidirectional simplex 
 import MessageUI
 import qualified HashChat.Tor as Tor  -- Real Tor hidden service transport scaffolding started (SOCKS5/ProxyConfig foundation for I2P + bridges)
 import qualified HashChat.Relay as Relay  -- Phase3 self-hostable relay + discovery skeleton (announce, queue sync, paid hosting notes)
+import qualified HashChat.Group as G  -- for PublicChannel (Phase3 decentralized channels per table)
 import Control.Monad (when, void, foldM, forM_)
 import Control.Monad.IO.Class (liftIO)
 import System.Directory (doesFileExist)
@@ -700,6 +701,24 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
           cts <- liftIO $ Relay.relayReceive Relay.defaultRelayConfig (BS.pack (replicate 32 0xAA))
           liftIO $ putStrLn $ "[RELAY] Received " ++ show (length cts) ++ " queued cts (would drain to process like mesh for ratchet + QROT)."
         modify $ \st -> st { input = "" }
+      else if ":channel" `isInfixOf` inputStr
+      then do
+        liftIO $ putStrLn "[CHANNEL] Phase3 public anonymous channel (DHT/relay pub-sub, sender-key or broadcast, observer mode; Extreme refuses)."
+        liftIO $ putStrLn "  Usage: :channel create <name> [broadcast] | :channel post <chanid> <msg> | :channel poll"
+        let parts = words inputStr
+        if length parts > 2 && parts !! 1 == "create" then do
+          let name = parts !! 2
+          let isBcast = length parts > 3 && parts !! 3 == "broadcast"
+          ch <- liftIO $ G.createPublicChannel name isBcast
+          liftIO $ putStrLn $ "[CHANNEL] Created public channel: " ++ show (G.channelName ch) ++ " (id " ++ show (BS.take 8 $ G.channelId ch) ++ ", broadcast=" ++ show isBcast ++ ")"
+        else if length parts > 3 && parts !! 1 == "post" then do
+          let chanId = BS.pack (replicate 32 0xC1)  -- demo
+          let msg = unwords (drop 3 parts)
+          liftIO $ G.postToChannel (G.PublicChannel chanId "demo" False []) (BS.pack $ map (fromIntegral . fromEnum) msg)
+          liftIO $ putStrLn "[CHANNEL] Posted to public channel (ratchet-ct or broadcast via relay/DHT stub)."
+        else do
+          liftIO $ putStrLn "[CHANNEL] Poll stub: would receive via relay or DHT for new channel msgs."
+        modify $ \st -> st { input = "" }
       else if ":screenshot" `isInfixOf` inputStr || inputStr == ":shots"
       then do
         liftIO $ putStrLn "=== Marketplace Screenshot Helper (for your Fedora photos) ==="
@@ -1279,7 +1298,9 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
                 Nothing -> (BS.pack (map (fromIntegral . fromEnum) contact), "unknown.onion")
           let voicePrefixed = BS.pack [0x56,0x4F,0x49,0x43,0x45] <> ciphertext voiceMsgWithTime
           let framedVoice = frameForWire hint (ratchetStep voiceMsgWithTime) voicePrefixed
-          let currentProxy = Map.findWithDefault defaultProxyForProfile (currentProfile s) (proxies s)
+          let baseProxyV = Map.findWithDefault defaultProxyForProfile (currentProfile s) (proxies s)
+          (currentProxy, isStarV) <- liftIO $ Tor.chooseProxyWithStarlinkFallback baseProxyV
+          when isStarV $ liftIO $ putStrLn "[STARLINK] Failover for voice send (Phase3)."
           -- Phase 1: queue rotation/decoy also for voice (deeper TUI integration)
           currentP2 <- liftIO getSecurityPosture
           let extremeOn2 = unsafePerformIO isExtremeMode

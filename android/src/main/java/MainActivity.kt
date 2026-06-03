@@ -459,6 +459,8 @@ class MainActivity : AppCompatActivity() {
                 "Mesh local peers (Phase2 discovery stub)",
                 "Email inbox (DHT MVP stub)",
                 "Add contact (X3DH auto bootstrap from pub)",
+                "Phase3: Relay announce/discover (self-host)",
+                "Phase3: Public channel post/poll",
                 "Cancel"
             )) { _, which ->
                 when (which) {
@@ -554,6 +556,22 @@ class MainActivity : AppCompatActivity() {
                         Toast.makeText(this, "Added contact with X3DH auto: shared preview ${shared.take(4).joinToString { \"%02x\".format(it) }}, rid $rid, queues init for $contactKey (bootstrap + queue parity done)", Toast.LENGTH_LONG).show()
                         // Now send to it will use queues/rotate; processor handles QROT for it.
                         currentContact = contactKey  // make active for demo send
+                    }
+                    15 -> {
+                        // Phase3 Relay (table High): announce/discover via sim, tie to queues.
+                        if (EXTREME_MODE) { Toast.makeText(this, "EXTREME: Relay disabled.", Toast.LENGTH_LONG).show(); return@setItems }
+                        Toast.makeText(this, "Phase3 Relay: announce + discover (self-host binary parity).", Toast.LENGTH_SHORT).show()
+                        val rC = "relay-peer"
+                        HashChatNative.rotateQueueForContact(rC)
+                        Toast.makeText(this, "Relay: queue for peer active. Use server binary for real sync.", Toast.LENGTH_LONG).show()
+                    }
+                    16 -> {
+                        // Phase3 Public channel (table): post/poll sim, Extreme gate.
+                        if (EXTREME_MODE) { Toast.makeText(this, "EXTREME: Public channels disabled.", Toast.LENGTH_LONG).show(); return@setItems }
+                        Toast.makeText(this, "Phase3 Channel: post to public (DHT/relay). Poll stub.", Toast.LENGTH_SHORT).show()
+                        // Feed processor for demo.
+                        generalMessageQueue.put("CHANNEL-PUBLIC-DEMO".toByteArray())
+                        HashChatNative.feedReceivedData("CHANNEL-PUBLIC-DEMO".toByteArray())
                     }
                 }
             }
