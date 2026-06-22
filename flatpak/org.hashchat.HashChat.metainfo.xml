@@ -69,13 +69,15 @@
     - Submit Flatpak to Flathub (Fedora uses it); update for other distros via AppStream.
   -->
   <screenshots>
+    <!-- Real screenshots needed for v0.2/Flathub. Capture on Tails + Fedora/Qubes using HASHCHAT_DEMO=1 ./run-tui for clean demos.
+         Upload to codeberg raw/branch/main/screenshots/ and use URLs below. Theme black+gold. -->
     <screenshot type="default">
       <caption>Desktop TUI main chat (Fedora) with live Security Posture (MAX PARANOID) in black + #FFD700 gold theme. Demo contacts + explicit Tor v3 / Double Ratchet cues.</caption>
-      <image>https://example.com/screenshots/hashchat-tui-main.png</image>
+      <image>https://codeberg.org/ichbinlucasv/HashChat/raw/branch/main/screenshots/hashchat-tui-main.png</image>
     </screenshot>
     <screenshot>
       <caption>Desktop TUI DYNAMIC POSTURE REFUSAL (voice/group in low env) - key paranoid feature for marketplace credibility.</caption>
-      <image>https://example.com/screenshots/hashchat-tui-posture-refusal.png</image>
+      <image>https://codeberg.org/ichbinlucasv/HashChat/raw/branch/main/screenshots/hashchat-tui-posture-refusal.png</image>
     </screenshot>
     <screenshot>
       <caption>Desktop TUI voice playback + explicit "ratchet key advanced + wiped after playback" (forward secrecy OPSEC visible).</caption>
