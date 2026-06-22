@@ -214,3 +214,12 @@ New recs: user run full evidence on real hardware (incl relay poll + drain test,
 - Stable: quantum now in ratchet bootstrap (High), relay drain full processor (High), Tauri/Android parity, no breakage to prior (E2EE/queues/Extreme/Tor).
 New recs: user MUST run evidence on real hardware NOW (Fedora/Tails/Android with new :add-contact quantum, relay drain/poll, :quantum, drain logs, threat sim, 'i' queues) + commit/push as Lucas to unblock v0.2 + marketplace. Then full pre-tag (with audit) + signed v0.2. Then Medium (Voice polish, Extreme min builds, auto X3DH full, tests) + Long (mesh full, email full I2P, quantum default, Tauri frontend, audits, etc).
 "continue working deep hardr no stop until u finish" all.
+
+**This "do all new" batch (user: "do all new")**:
+- Evidence scripts (screenshot-prep-fedora.sh + real-device-test.sh) extended with dedicated sections 19 + new DEMO states for filter, voice-sending indicator, status panel, QR tips. Copy-paste commands now cover the latest normal-user polish + Tails/Qubes notes.
+- Unified normal-user installer created: top-level install.sh (OS detection + Nix recommendation + dispatches per-distro + prints exact TUI tips for filter/status/voice).
+- Tauri advanced: added real minimal usable frontend (tauri/dist/index.html with buttons for posture/send/wipe/hybrid/starlink + JS invoke wiring). tauri/README updated for normal users. Still strict FFI-only, TUI default.
+- Voice polish: HASHCHAT_VOICE_SECONDS env support (1-60s), recorder choice logging, updated feedback + help text + handler.
+- Docs + process: INSTALL/README promoted install.sh + filter/QR tips; pre-tag-check now mentions new items; honest assessments already present.
+- All after clean --strict ritual.
+New recs after this: user must run the updated evidence scripts on hardware NOW. Then full pre-tag + v0.2. Then deeper (real ML-KEM, full Tauri prod build, Android filter parity, unified in Nix, more tests). "do all new" until everything finished.

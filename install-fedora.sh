@@ -4,6 +4,7 @@
 # (Also useful as reference for Ubuntu/Arch users — adapt package names)
 #
 # For normal users on other distros:
+# - Prefer the unified: chmod +x install.sh && ./install.sh   (detects + recommends Nix)
 # - Ubuntu: See INSTALL.md "Normal User Quick Path" + the new audio one-liners
 # - Arch:   Prefer Nix or adapt this script (pacman equivalents)
 # - Tails/Qubes: Use the dedicated qubes-build.sh or copy a pre-built Flatpak

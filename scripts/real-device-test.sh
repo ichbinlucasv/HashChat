@@ -176,6 +176,24 @@ cat > "$LOG_FILE" << EOF
   While running the tests below, also run the grim captures listed there.
 - Observations (builds, binary, failover logs, UI cmds, Tauri notes) - LOG DATES + ENV + "ran on real Fedora/Tails + physical Android" FOR v0.2 BLOCKER UNBLOCK
 
+### 19. NEW Normal User Polish (from latest "do all new" recs - filter/search, voice UX, status, QR)
+- [ ] Contact filter/search: type :filter alice (or / to clear); list narrows; verify works in main TUI view + 'i' help
+- [ ] Voice sending indicator: press 'v' on a contact; observe [SENDING VOICE to XXX ...] banner + in the contact list row itself
+- [ ] :status (or :s) panel: shows Profile, Proxy, Voice recorder (pw/parec/arec or placeholder), Posture live
+- [ ] Always-visible status lines in TUI (Proxy= | Voice= | Posture= | Clean ritual note)
+- [ ] QR for normal users: :my-contact prints full link + "use qrencode ..." tip; test external QR gen if possible
+- [ ] Group QR tips and filter in groups context
+- [ ] Run on Tails/Qubes: confirm filter + voice sending + :status work in constrained envs (arecord fallback)
+- [ ] Android notes: verify equivalent (contact list filter/search UI, voice sending feedback) parity if testing
+- Observations / screenshots taken (use grim or device capture + attach to this log):
+
+- Exact cmds tested:
+  HASHCHAT_DEMO=filter ./run-tui ; :filter bob ; observe narrow
+  HASHCHAT_DEMO=voice-sending ./run-tui ; 'v' ; see sending banner + contact row indicator
+  :status
+  :my-contact   (then qrencode -o /tmp/qr.png 'the-link' if installed)
+  /   (to clear filter)
+
 ---
 
 ## Overall Result

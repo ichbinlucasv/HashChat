@@ -51,6 +51,17 @@
             echo "Run with: ./run-tui"
           '';
 
+          # Unified normal-user installer (new rec). Promotes ./install.sh + Nix.
+          hashchat-install = pkgs.writeShellScriptBin "hashchat-install" ''
+            set -euo pipefail
+            echo "HashChat unified normal user installer (via Nix flake)"
+            echo "Recommended: nix build .#hashchat-flatpak ; flatpak install ..."
+            echo "Or run the script directly for your distro:"
+            chmod +x ./install.sh
+            ./install.sh
+            echo "Then: ./run-tui (shows audio/Tor, supports :filter, voice, status)"
+          '';
+
           # Pure-Nix reproducible Flatpak derivation (no external build-flatpak.sh dependency in the final artifact)
           # Builds the complete installable .flatpak bundle inside the Nix sandbox using pinned flatpak-builder.
           # This is the hardened, auditable path for Qubes/Tails/Fedora users.

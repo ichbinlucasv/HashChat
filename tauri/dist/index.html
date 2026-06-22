@@ -12,8 +12,10 @@
   </style>
 </head>
 <body>
-  <h1>HashChat — Optional GUI (Phase3 stub)</h1>
-  <p class="warning"><strong>WARNING:</strong> This is a minimal Tauri wrapper for normal-user convenience. <strong>TUI (./run-tui) is the ultra-secure paranoid default</strong>. Extreme mode can/should disable the GUI. All crypto/transport goes through Rust FFI only. No direct network or filesystem from frontend.</p>
+  <h1>HashChat — Optional GUI (Phase3)</h1>
+  <p class="warning"><strong>WARNING:</strong> Minimal Tauri wrapper. <strong>TUI (./run-tui or ./install.sh → ./run-tui) is the ultra-secure default</strong> (black/gold dense, explicit OPSEC, filter, voice sending indicators, posture). Extreme disables GUI. Everything sensitive via Rust FFI (ratchet, Tor, wipe, quantum). No net/fs in webview.</p>
+
+  <div style="font-size:0.9em; margin-bottom:10px;">New normal-user features in TUI: :filter / search, 'v' shows per-contact [SENDING VOICE...], always-visible status panel. This GUI is convenience only.</div>
 
   <div>
     <button onclick="getPosture()">Get Posture</button>
@@ -29,8 +31,14 @@
 
   <h3>Status / Logs (live from core)</h3>
   <pre id="status" class="status">Click buttons above. Posture and results appear here.
-TUI features (filter, voice sending, :status) are primary for normal users.
-See :filter / :status / 'v' in the TUI for best experience.</pre>
+TUI features (filter, voice sending indicator, :status panel) are primary + denser for normal + paranoid users.
+Run ./install.sh then ./run-tui first. This GUI calls same FFI.</pre>
+
+  <h3>Normal User Quick Tools (simulated - real in TUI)</h3>
+  <button onclick="simulateFilter()">Simulate :filter alice</button>
+  <button onclick="simulateVoiceSend()">Simulate 'v' voice send (per-contact indicator)</button>
+  <button onclick="simulateStatus()">Show :status panel</button>
+  <button onclick="simulateQR()">:my-contact (QR link + tip)</button>
 
   <script>
     // Minimal Tauri invoke (works in tauri dev/build when window.__TAURI__ is injected)
@@ -75,6 +83,20 @@ See :filter / :status / 'v' in the TUI for best experience.</pre>
       getPosture().catch(() => {});
       document.getElementById('status').textContent += '\n\nTips for normal users:\n- Use TUI for daily (filter, voice sending indicator, status panel).\n- This GUI is optional thin layer.\n- Always run clean-security.sh --strict.';
     };
+
+    function simulateFilter() {
+      const term = prompt("Enter filter term (like :filter alice)", "alice");
+      if (term) document.getElementById('status').textContent = `[UI] Contact filter applied: "${term}"\n(Real narrowing happens in TUI contact list. Use / to clear.)`;
+    }
+    function simulateVoiceSend() {
+      document.getElementById('status').textContent = `[VOICE] Recording... sent to current contact\n[SENDING VOICE to Alice ... (ratchet + proxy + wipe after)]\nSee TUI for live per-contact row indicator + banner.`;
+    }
+    function simulateStatus() {
+      document.getElementById('status').textContent = `=== Desktop Status (normal users) ===\nProfile: Demo\nProxy: 127.0.0.1:9050 (per-profile)\nVoice recorder: ready (pw-record)\nPosture: MAX PARANOID (live)\nLast clean ritual: run clean-security.sh\nUse :my-contact, :set-proxy, 'v' for voice.`;
+    }
+    function simulateQR() {
+      document.getElementById('status').textContent = `hashchat://contact/v1/... (copy this)\nTIP: Use qrencode -o qr.png 'thelink' or phone app.\n(Real from :my-contact using long-term identity.)`;
+    }
   </script>
 </body>
 </html>

@@ -2,6 +2,7 @@
 #
 # HashChat - Easy installation script for Ubuntu (22.04+ / 24.04+ recommended)
 # Adapted for normal users. See INSTALL.md for Tails/Qubes/Arch/Fedora notes.
+# Unified entry: chmod +x ../install.sh && ../install.sh  (from repo root)
 #
 # Usage:
 #   chmod +x install-ubuntu.sh

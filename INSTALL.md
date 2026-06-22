@@ -20,13 +20,20 @@ You do **not** need to be an expert.
    cd HashChat
    ```
 
-2. Run the improved launcher:
+2. Run the **unified installer** (new rec - detects OS and recommends the right path):
+   ```bash
+   chmod +x install.sh
+   ./install.sh
+   ```
+   (It promotes Nix/Flatpak for repro, runs install-*.sh for your distro, prints audio one-liners.)
+
+3. Run the launcher (always gives diagnostics):
    ```bash
    ./run-tui
    ```
    It will tell you exactly what audio backends and Tor status you have.
 
-3. Inside the TUI:
+4. Inside the TUI:
    - Press `n` → create a burner profile
    - Press `v` → test real voice recording (works on modern Fedora/Ubuntu/Arch via PipeWire)
    - Use `:filter alice` or `/` (clear) to search your contacts

@@ -397,7 +397,7 @@ drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll
   , withAttr (attrName "encrypted") $ str "All messages use per-contact Double Ratchet + AES-256-GCM."
   , withAttr (attrName "encrypted") $ str "Ciphertext size shown in message list (ct:XXB)."
   , str "Plausible deniability: Decoy profiles + hidden volume concept (see docs)."
-  , str "v              → Record/play voice (real mic via pw-record/parecord/arecord + ratchet + wipe; best on Fedora/Ubuntu/Arch, works on Tails/Qubes with audio enabled)"
+  , str "v              → Record/play voice (real mic via pw-record/parecord/arecord + ratchet + wipe; HASHCHAT_VOICE_SECONDS=10 for longer; best on Fedora/Ubuntu/Arch, works on Tails/Qubes with audio enabled)"
   , str "f              → Send/receive file (chunked ratchet streaming - started)"
   ]
 
@@ -1345,22 +1345,26 @@ recordVoiceChunkDesktop = do
   -- 1. PipeWire native (pw-record) - best on recent Fedora/Ubuntu/Arch
   -- 2. PulseAudio compatibility (parecord)
   -- 3. ALSA direct (arecord) - fallback for minimal Tails/Qubes templates
+  durationSeconds <- do
+    envD <- lookupEnv "HASHCHAT_VOICE_SECONDS"
+    pure $ case envD of
+      Just s | [(d, "")] <- reads s, d > 0, d <= 60 -> d
+      _ -> 5
+  let durStr = show durationSeconds
   let recorders =
-        [ ("pw-record", ["--format=s16le", "--rate=16000", "--channels=1", "--duration=5"])  -- produces WAV by default
-        , ("parecord",  ["--format=s16le", "--rate=16000", "--channels=1", "--duration=5"])  -- WAV
-        , ("arecord",   ["-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "wav", "-d", "5"])  -- WAV
+        [ ("pw-record", ["--format=s16le", "--rate=16000", "--channels=1", "--duration=" ++ durStr])
+        , ("parecord",  ["--format=s16le", "--rate=16000", "--channels=1", "--duration=" ++ durStr])
+        , ("arecord",   ["-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "wav", "-d", durStr])
         ]
-  tryRecorders recorders 0
+  tryRecorders durationSeconds recorders 0
   where
-    durationSeconds = 5
-
-    tryRecorders [] attempt = do
-      putStrLn "[VOICE] No working audio recorder found (tried parecord + arecord)."
+    tryRecorders _ [] attempt = do
+      putStrLn "[VOICE] No working audio recorder found (tried pw-record / parecord / arecord)."
       putStrLn "[VOICE] Falling back to placeholder audio (keeps attack surface minimal)."
       pure Nothing
 
-    tryRecorders ((cmd, baseArgs):rest) attempt = do
-      putStrLn $ "[VOICE] Attempting recording with " ++ cmd ++ " (" ++ show durationSeconds ++ "s)..."
+    tryRecorders secs ((cmd, baseArgs):rest) attempt = do
+      putStrLn $ "[VOICE] Attempting recording with " ++ cmd ++ " (" ++ show secs ++ "s)..."
       putStrLn   "[VOICE] ● Recording real mic audio (desktop)..."
 
       (tmpPath, h) <- openTempFile "/tmp" "hashchat_rec_XXXX.wav"
@@ -1391,14 +1395,14 @@ recordVoiceChunkDesktop = do
               putStrLn "[VOICE] All recorders exhausted. Using placeholder."
               pure Nothing
             else
-              tryRecorders rest (attempt + 1)
+              tryRecorders secs rest (attempt + 1)
 
 -- Voice record/playback (end-to-end ratchet streaming)
--- C (1-5 completed in this wave):
--- 1. Duration: --duration=5 on recorders (configurable later).
+-- C (1-5 + polish):
+-- 1. Duration: --duration via HASHCHAT_VOICE_SECONDS env (default 5s, 1-60 supported).
 -- 2. Error handling: exit codes, missing commands, empty files, fallback chain.
--- 3. Ratchet integration: real audio is now captured and ready; sending path TODO noted in handler.
--- 4. Visual indicator: "● Recording..." + countdown messages printed.
+-- 3. Ratchet integration: real audio is now captured and ready; sending path with per-contact indicator.
+-- 4. Visual indicator: "● Recording..." + chosen recorder + "SENDING VOICE to X" in list + banner.
 -- 5. Clear fallback: explicit messages when no recorder or all fail.
 --
 -- Voice end-to-end on desktop (recording + sending) is functional:
@@ -1428,6 +1432,7 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
 
       let status = if isJust mAudio then "real desktop mic (WAV audio)" else "placeholder (no recorder available)"
       liftIO $ putStrLn $ "[VOICE] Voice chunk processed with ratchet streaming (" ++ status ++ ")."
+      liftIO $ putStrLn "  Tip: HASHCHAT_VOICE_SECONDS=10 ./run-tui  to record longer clips (5s default, max 60)."
 
       -- Item 1: Visual "sending voice..." UX polish + per-contact feedback
       when (currentContact s /= "") $ do

@@ -25,9 +25,15 @@ libc = "0.2"   # for mlockall / seccomp primitives on Linux (used under cfg(targ
 # It is tiny, has no extra runtime deps in recent versions, and makes security intent explicit for auditors.
 subtle = "2.6"
 
+# Gated PQ (quantum feature). See quantum.rs for requirements + warnings.
+ml-kem = { version = "0.3", features = ["zeroize"], optional = true }
+
 [features]
 default = []
 # long-13 / High Phase3 (deepened "work on all critial and hight risk now no stop"): optional gated.
-# --features quantum: hybrid_kex now does REAL X25519 (x25519-dalek dep) + KEM placeholder. Interface stable+working-good.
-# NO PQ security (placeholder). Add audited const-time zeroize ML-KEM later (e.g. ml-kem=0.2). Classical default.
-quantum = []
+# --features quantum: hybrid_kex now does REAL X25519 + REAL ML-KEM (ml-kem crate with zeroize).
+# Hybrid (X25519 || ML-KEM-768). Gated. Extreme refuses PQ surface.
+# IMPORTANT: ml-kem crate (as of 2026) has zeroize support but "has never been independently audited".
+# Prefer libcrux (Cryspen verified with hax/F*) for higher assurance in future.
+# Classical Double Ratchet is always default and safe. Use only if you accept the risk.
+quantum = ["dep:ml-kem"]

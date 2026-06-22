@@ -15,6 +15,9 @@ import java.io.File
 
 // === Real JNI bridge to the paranoid Rust core (Double Ratchet + AES-GCM + wipe + Tor framing) ===
 // This completes the Android send/receive loop matching the desktop TUI exactly.
+// New normal-user parity needed (from "do all new"): contact list filter/search, voice sending indicator feedback,
+// always-visible status (Proxy/Voice/Posture). Add RecyclerView filter + top bar status updates in future Android wave.
+// TUI is primary; Android should match UX where possible without increasing surface.
 object HashChatNative {
     init {
         System.loadLibrary("hashchat_android")   // built from android/src/main/rust/

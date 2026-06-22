@@ -22,6 +22,8 @@ echo "================================================================"
 echo "   HashChat PRE-TAG VERIFICATION SCRIPT (OPSEC Edition)"
 echo "================================================================"
 echo "Strict mode: $STRICT"
+echo "Must include: real Fedora/Tails/Qubes evidence photos + logs (see screenshot-prep + real-device-test)"
+echo "New normal-user items covered: install.sh unified, contact filter, voice sending indicator, Tauri minimal frontend, voice duration env."
 echo ""
 
 fail() {

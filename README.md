@@ -17,12 +17,13 @@ All new development, issues, releases, and CI now happen on **Codeberg**. GitHub
 
 You don't need to be a security researcher to use this.
 
-Quick start:
+Quick start (Normal User):
 1. `git clone https://codeberg.org/ichbinlucasv/HashChat.git`
-2. `./run-tui` (it will guide you on audio and Tor)
-3. Press `n` for a burner profile
-4. Press `v` to test voice recording (real mic on most modern desktops)
-5. Use `:set-proxy` if you're in Qubes or behind a VPN
+2. `chmod +x install.sh && ./install.sh`   # unified (detects OS, recommends Nix, runs per-distro)
+3. `./run-tui` (it will guide you on audio and Tor)
+4. Press `n` for a burner profile
+5. Press `v` to test voice recording (real mic on most modern desktops)
+6. Use `:filter term` or `/` (clear), `:status`, `:my-contact` (QR link)
 
 The TUI is text-based but deliberately designed to be usable by normal people on the 5 recommended OSes while keeping the paranoid security model. Full GUI is not planned unless it can be done without increasing attack surface.
 
