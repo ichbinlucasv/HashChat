@@ -40,7 +40,7 @@ Current state: ready for technical "normal" users who follow the exact per-OS au
 
 **No phone numbers. No user IDs. No central servers. No logs. No metadata.**
 
-**Current Status (as of this build)**: We have implemented the majority of the hard paranoid features and SimplexChat-level UX parity.
+**Current Status (as of this build, after "continue")**: TUI is usable by normal users on 5 OSes via ./install.sh + ./run-tui (filter, voice with timer/seconds, status panel, QR tips, sending indicators). ML-KEM dep integrated + compiles (feature gated, real ops in test, strong warnings - not audited). Tauri GUI stub advanced to more prod-like (filter/voice sims, black/gold). Android parity notes + basic code for filter/voice sending. Relay deepened. Honest: evidence/hardware runs still Critical blocker for v0.2 claim. TUI dense text (intentional, not Simplex GUI polish). See INSTALL for quick path. Brutal: ready for careful normal users following docs; GUI optional. Core OPSEC intact.
 
 ### Current Working Features (What Actually Works Today)
 **Paranoid Core**

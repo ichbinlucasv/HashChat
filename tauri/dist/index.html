@@ -35,12 +35,11 @@ TUI features (filter, voice sending indicator, :status panel) are primary + dens
 Run ./install.sh then ./run-tui first. This GUI calls same FFI.</pre>
 
   <h3>Normal User Quick Tools (simulated - real in TUI; black/gold theme)</h3>
-  <input id="filterInput" placeholder="filter term (real :filter in TUI)" style="width:200px;">
-  <button onclick="simulateFilter()">:filter</button>
-  <button onclick="simulateVoiceSend()">Record/Send Voice (shows sending indicator)</button>
+  <input id="filterInput" placeholder="filter term (real :filter in TUI)" oninput="liveFilter()" style="width:200px; background:#000; color:#FFD700; border:1px solid #FFD700;">
+  <button onclick="simulateVoiceSend()">Record/Send Voice (shows [SENDING VOICE...])</button>
   <button onclick="simulateStatus()">:status</button>
   <button onclick="simulateQR()">:my-contact + qr tip</button>
-  <div id="contactList" style="border:1px solid #FFD700; padding:5px; margin-top:10px; font-size:12px;">Contacts (filter demo): Alice, Bob, Support</div>
+  <div id="contactList" style="border:1px solid #FFD700; padding:5px; margin-top:10px; font-size:12px; background:#000;">Contacts (live filter demo): Alice, Bob, Support</div>
 
   <script>
     // Minimal Tauri invoke (works in tauri dev/build when window.__TAURI__ is injected)
@@ -100,11 +99,19 @@ Run ./install.sh then ./run-tui first. This GUI calls same FFI.</pre>
       document.getElementById('status').textContent = `hashchat://contact/v1/... (copy this)\nTIP: Use qrencode -o qr.png 'thelink' or phone app.\n(Real from :my-contact using long-term identity.)`;
     }
 
+    function liveFilter() {
+      const term = (document.getElementById('filterInput').value || '').toLowerCase();
+      const list = document.getElementById('contactList');
+      const contacts = ['Alice', 'Bob', 'Support'];
+      const filtered = contacts.filter(c => c.toLowerCase().includes(term)).join(', ');
+      list.innerHTML = `Contacts (live filter demo - matches TUI :filter): ${filtered || '(no match)'}`;
+    }
+
+    // Keep old simulate for buttons
     function simulateFilter() {
       const term = document.getElementById('filterInput').value || 'alice';
-      const list = document.getElementById('contactList');
-      list.textContent = `Filtered contacts containing "${term}": Alice, Bob (real narrowing + dynamic list in TUI)`;
-      document.getElementById('status').textContent = `[UI] Filter applied: ${term} (see TUI contact pane for live effect)`;
+      liveFilter();
+      document.getElementById('status').textContent = `[UI] :filter ${term} (real in TUI narrows left pane)`;
     }
   </script>
 </body>

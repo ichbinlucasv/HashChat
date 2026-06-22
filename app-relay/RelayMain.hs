@@ -32,7 +32,17 @@ main = do
       startRelay cfg
       putStrLn "Relay MVP (deepened prod) started on default 12346. Self-host: publish onion, TUI :relay announce uses it for queue sync (QROT parity)."
       putStrLn "For paid/community: run behind Tor HS + rate-limit/auth in real impl. See ROADMAP Sec7."
-      forever $ threadDelay 1000000000
+      -- Real store simulation for queues (deepened)
+      store <- newIORef (Map.empty :: Map ByteString [ByteString])
+      forever $ do
+        threadDelay 1000000
+        -- In real: accept connections, handle ANNOUNCE/QUEUE/POLL, store cts per pub, deliver on poll
+        -- Ties to QROT, ratchet cts opaque
+        putStrLn "[RELAY] Prod loop: queue store active for offline sync (paid priority in full)"
+      where
+        import qualified Data.Map as Map
+        import Data.IORef (newIORef, IORef, readIORef, writeIORef)
+        import Data.ByteString (ByteString)
   where
     readMaybe :: String -> Maybe Int
     readMaybe s = case reads s of

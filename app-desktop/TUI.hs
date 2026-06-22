@@ -1421,6 +1421,11 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
       modify $ \st -> st { securityPosture = currentP }
     else do
       liftIO $ putStrLn "[VOICE] Recording voice chunk (ratchet key advanced + will be wiped post-send)."
+      -- Live timer for normal user feedback (deepened)
+      liftIO $ forkIO $ do
+        forM_ [1..5] $ \s -> do
+          putStrLn $ "[VOICE] Recording... " ++ show s ++ "s / " ++ show (fromMaybe 5 (readMaybe (fromMaybe "5" (lookupEnv "HASHCHAT_VOICE_SECONDS")))) ++ "s"
+          threadDelay 1000000
       mAudio <- liftIO recordVoiceChunkDesktop
       let voiceAudio = case mAudio of
             Just realAudio -> realAudio

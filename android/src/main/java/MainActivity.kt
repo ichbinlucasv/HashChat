@@ -18,6 +18,33 @@ import java.io.File
 // New normal-user parity needed (from "do all new"): contact list filter/search, voice sending indicator feedback,
 // always-visible status (Proxy/Voice/Posture). Add RecyclerView filter + top bar status updates in future Android wave.
 // TUI is primary; Android should match UX where possible without increasing surface.
+
+// Basic normal-user parity implementation (filter + voice sending indicator)
+private var allContacts = mutableListOf<String>()
+private lateinit var contactAdapter: ArrayAdapter<String>
+private var isSendingVoice = false
+
+fun filterContacts(query: String) {
+    val filtered = allContacts.filter { it.contains(query, ignoreCase = true) }
+    contactAdapter.clear()
+    contactAdapter.addAll(filtered)
+    contactAdapter.notifyDataSetChanged()
+}
+
+fun showVoiceSendingIndicator(contact: String) {
+    isSendingVoice = true
+    runOnUiThread {
+        val status = findViewById<TextView>(R.id.statusText) // assume added in layout
+        status?.text = "[SENDING VOICE to $contact ... (ratchet + proxy + wipe after)]"
+        // Match TUI: per-contact feedback
+    }
+    // Reset after simulated send (real would be after ratchet send)
+    Thread {
+        Thread.sleep(3000)
+        isSendingVoice = false
+        runOnUiThread { /* clear */ }
+    }.start()
+}
 object HashChatNative {
     init {
         System.loadLibrary("hashchat_android")   // built from android/src/main/rust/
