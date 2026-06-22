@@ -1,6 +1,6 @@
 # HashChat Screenshot Guidelines for v0.2 / Flathub
 
-**Critical**: Real screenshots are a v0.2 blocking item. The metainfo.xml currently uses example.com placeholders. Replace before any public release or Flathub submission.
+**Critical**: Real screenshots are a v0.2 blocking item. The metainfo.xml currently uses placeholders. Capture on Tails + Fedora/Qubes per instructions below, then replace. Use Codeberg raw for assets if possible (or GitHub mirror for compatibility). Theme black (#000000) + gold (#FFD700).
 
 ## Theme & Style (Mandatory for Consistency)
 - Black background (#000000)

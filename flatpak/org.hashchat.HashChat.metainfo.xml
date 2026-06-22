@@ -36,6 +36,8 @@
   <url type="vcs-browser">https://github.com/ichbinlucasv/HashChat</url>
   -->
 
+  <!-- Screenshots will be added from real captures (Tails + Fedora/Qubes) per SCREENSHOTS.md. Theme: black + gold. -->
+
   <developer id="org.hashchat">
     <name>ichbinlucasv</name>
   </developer>

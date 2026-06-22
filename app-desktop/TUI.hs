@@ -96,6 +96,7 @@ data AppState = AppState
   -- D: Per-profile proxy store (Wave 9 skeleton now being wired)
   , proxies         :: ProfileProxyStore                    -- profile -> SOCKS5/I2P/VPN config
   , contactQueues   :: Map String Q.ContactQueues           -- Phase 1 Roadmap: per-contact unidirectional send/recv queues for simplex-style rotation/decoy
+  , sendingVoiceTo  :: Maybe String                         -- rec1: visual "sending voice..." indicator
   }
 
 initialState :: AppState
@@ -154,6 +155,7 @@ initialState =
                         sq <- Q.newContactQueues "Support"
                         pure $ Map.fromList [("Alice", aq), ("Bob", bq), ("Support", sq)]
                       else Map.empty
+  , sendingVoiceTo  = Nothing
   }
 
 -- === Real Encrypted Ratchet Persistence (Argon2id + AES-GCM) ===
@@ -323,6 +325,10 @@ drawMain st = vBox
   , str " "  -- extra visual separation for posture status block (med-8 / polish-3)
   -- Additional status indicators for consistency with Android top-bar (voice wipe ready, OPSEC ritual)
   , withAttr (attrName "title") $ str "[Voice: real mic capture (pw-record/parecord/arecord on desktop + Android) | Per-chunk ratchet + explicit wipe post-playback | OPSEC: clean-security enforced]"
+
+  , case sendingVoiceTo st of
+      Just c -> withAttr (attrName "danger") $ str $ "[SENDING VOICE to " ++ c ++ " ... (ratchet + proxy + wipe after)]"
+      Nothing -> str ""
 
   , if isJust (currentGroup st) then
       borderWithLabel (withAttr (attrName "highlight") $ str " Group Members (sender-key ratchets) ") $
@@ -696,6 +702,21 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
             liftIO $ putStrLn "  Example Tor: :set-proxy 127.0.0.1 9050"
             liftIO $ putStrLn "  Example I2P (after i2pd running): :set-proxy 127.0.0.1 4444  (High #5 actual I2P start / Phase 1 Roadmap: see launchI2pdIfNeeded in Tor.hs for garlic + multi-path Tor+I2P notes. Extreme refuses custom.)"
             modify $ \st -> st { input = "" }
+      else if ":status" `isInfixOf` inputStr || inputStr == ":s"
+      then do
+        -- rec3: Simple status/onboarding view for normal users
+        let prof = currentProfile s
+        let currentProxy = Map.findWithDefault Tor.defaultProxyForProfile prof (proxies s)
+        let proxyStr = case currentProxy of Tor.Socks5Proxy h p -> h ++ ":" ++ show p; _ -> "default (Tor 9050)"
+        let vStatus = if unsafePerformIO (do { m <- recordVoiceChunkDesktop; pure (isJust m) }) then "available (pw/parec/arec)" else "placeholder (no mic)"
+        liftIO $ putStrLn "=== Desktop Status (for normal users) ==="
+        liftIO $ putStrLn $ "Profile: " ++ prof
+        liftIO $ putStrLn $ "Proxy: " ++ proxyStr ++ " (per-profile, affects send)"
+        liftIO $ putStrLn $ "Voice recorder: " ++ vStatus
+        liftIO $ putStrLn $ "Posture: " ++ securityPosture s ++ " (live)"
+        liftIO $ putStrLn "Last clean ritual: see pre-tag logs or run clean-security.sh"
+        liftIO $ putStrLn "Use :my-contact to share, :set-proxy for transport, 'v' for voice."
+        modify $ \st -> st { input = "" }
       else if ":discover" `isInfixOf` inputStr
       then do
         liftIO $ putStrLn "[DISCOVERY] Decentralized discovery stub (Medium item). Future: concrete protocol + message formats for finding contacts without leaking metadata (no central servers)."
@@ -1373,6 +1394,7 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
       -- Item 1: Visual "sending voice..." UX polish + per-contact feedback
       when (currentContact s /= "") $ do
         let contact = currentContact s
+        modify $ \st -> st { sendingVoiceTo = Just contact }
         liftIO $ putStrLn $ "[VOICE] Sending voice to " ++ contact ++ " ... (using per-profile proxy)"
         let prof    = currentProfile s
         let pass    = passForSession s
@@ -1434,6 +1456,7 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
             liftIO $ putStrLn "[QUEUE] Voice: decoy sent"
         liftIO $ putStrLn $ "[VOICE] ✓ All voice chunks sent to " ++ contact ++ " (per-chunk ratchet + decoys)."
         liftIO Tor.syncMeshQueues  -- Phase2: sync mesh after voice for local peers.
+        modify $ \st -> st { sendingVoiceTo = Nothing }
 
 -- Full multi-member group UI + sender keys (Simplex-style) — 'g' key opens menu
 handleEvent (VtyEvent (V.EvKey (V.KChar 'g') [])) = do
