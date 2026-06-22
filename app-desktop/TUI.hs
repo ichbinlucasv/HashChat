@@ -304,7 +304,7 @@ drawMain st = vBox
   [ withAttr (attrName "title") $ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ (maybe "" (" | Group: " ++) (currentGroup st)) ++ (if unsafePerformIO isExtremeMode then " [EXTREME]" else "") ++ (case Map.lookup (currentProfile st) (proxies st) of Just (Tor.Socks5Proxy h p) -> " | Proxy: " ++ h ++ ":" ++ show p; _ -> "") ++ "  [p=burner n=new D=decoy g=group w=wipe a=actions] (TOR-ONLY | Double Ratchet + Tor v3 + Sender Keys) Security: " ++ securityPosture st ++ (if actionPending st then " [ACTIONS MENU ACTIVE]" else "") ++ " [posture live]"  -- med-8 desktop parity note
   , hBox
       [ borderWithLabel (withAttr (attrName "highlight") $ str " Contacts (Simplex-style: long-press equiv = 'a') | Groups: g") $
-          vBox (map (str . showContact (blockedContacts st)) ["Alice", "Bob", "Support"])
+          vBox (map (str . showContact (blockedContacts st) . Contact.contactId) (contacts st))
       , borderWithLabel (withAttr (attrName "highlight") $ str $ " " ++ currentContact st ++ (maybe "" (" | " ++) (currentGroup st)) ) $
           vBox (map (str . showMsg) (Map.findWithDefault [] (currentContact st) (messages st))) <+> fill ' '
       ]
