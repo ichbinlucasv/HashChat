@@ -34,11 +34,13 @@
 TUI features (filter, voice sending indicator, :status panel) are primary + denser for normal + paranoid users.
 Run ./install.sh then ./run-tui first. This GUI calls same FFI.</pre>
 
-  <h3>Normal User Quick Tools (simulated - real in TUI)</h3>
-  <button onclick="simulateFilter()">Simulate :filter alice</button>
-  <button onclick="simulateVoiceSend()">Simulate 'v' voice send (per-contact indicator)</button>
-  <button onclick="simulateStatus()">Show :status panel</button>
-  <button onclick="simulateQR()">:my-contact (QR link + tip)</button>
+  <h3>Normal User Quick Tools (simulated - real in TUI; black/gold theme)</h3>
+  <input id="filterInput" placeholder="filter term (real :filter in TUI)" style="width:200px;">
+  <button onclick="simulateFilter()">:filter</button>
+  <button onclick="simulateVoiceSend()">Record/Send Voice (shows sending indicator)</button>
+  <button onclick="simulateStatus()">:status</button>
+  <button onclick="simulateQR()">:my-contact + qr tip</button>
+  <div id="contactList" style="border:1px solid #FFD700; padding:5px; margin-top:10px; font-size:12px;">Contacts (filter demo): Alice, Bob, Support</div>
 
   <script>
     // Minimal Tauri invoke (works in tauri dev/build when window.__TAURI__ is injected)
@@ -96,6 +98,13 @@ Run ./install.sh then ./run-tui first. This GUI calls same FFI.</pre>
     }
     function simulateQR() {
       document.getElementById('status').textContent = `hashchat://contact/v1/... (copy this)\nTIP: Use qrencode -o qr.png 'thelink' or phone app.\n(Real from :my-contact using long-term identity.)`;
+    }
+
+    function simulateFilter() {
+      const term = document.getElementById('filterInput').value || 'alice';
+      const list = document.getElementById('contactList');
+      list.textContent = `Filtered contacts containing "${term}": Alice, Bob (real narrowing + dynamic list in TUI)`;
+      document.getElementById('status').textContent = `[UI] Filter applied: ${term} (see TUI contact pane for live effect)`;
     }
   </script>
 </body>

@@ -1433,6 +1433,7 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
       let status = if isJust mAudio then "real desktop mic (WAV audio)" else "placeholder (no recorder available)"
       liftIO $ putStrLn $ "[VOICE] Voice chunk processed with ratchet streaming (" ++ status ++ ")."
       liftIO $ putStrLn "  Tip: HASHCHAT_VOICE_SECONDS=10 ./run-tui  to record longer clips (5s default, max 60)."
+      liftIO $ putStrLn "  [VOICE] Live timer example during record: 0s..5s (real countdown would use thread in full polish)."
 
       -- Item 1: Visual "sending voice..." UX polish + per-contact feedback
       when (currentContact s /= "") $ do
