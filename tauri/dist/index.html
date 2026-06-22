@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>HashChat (optional Tauri GUI - TUI remains default)</title>
+  <style>
+    body { font-family: monospace; background: #000; color: #FFD700; padding: 20px; }
+    button { background: #111; color: #FFD700; border: 1px solid #FFD700; padding: 8px 12px; margin: 4px; cursor: pointer; }
+    input, textarea { background: #111; color: #fff; border: 1px solid #FFD700; width: 100%; box-sizing: border-box; }
+    .status { white-space: pre; background: #111; padding: 10px; margin: 10px 0; border: 1px solid #FFD700; }
+    .warning { color: #f55; }
+  </style>
+</head>
+<body>
+  <h1>HashChat — Optional GUI (Phase3 stub)</h1>
+  <p class="warning"><strong>WARNING:</strong> This is a minimal Tauri wrapper for normal-user convenience. <strong>TUI (./run-tui) is the ultra-secure paranoid default</strong>. Extreme mode can/should disable the GUI. All crypto/transport goes through Rust FFI only. No direct network or filesystem from frontend.</p>
+
+  <div>
+    <button onclick="getPosture()">Get Posture</button>
+    <button onclick="doWipe()">NUCLEAR WIPE</button>
+    <button onclick="testHybrid()">Test Quantum Hybrid (stub)</button>
+    <button onclick="testStarlink()">Starlink Detect</button>
+  </div>
+
+  <h3>Send (uses FFI ratchet + proxy/queues/Tor)</h3>
+  <input id="contact" placeholder="contact name or onion hint" value="Alice">
+  <textarea id="msg" rows="3" placeholder="message (E2EE via Rust Double Ratchet)"></textarea>
+  <button onclick="sendMsg()">Send Encrypted</button>
+
+  <h3>Status / Logs (live from core)</h3>
+  <pre id="status" class="status">Click buttons above. Posture and results appear here.
+TUI features (filter, voice sending, :status) are primary for normal users.
+See :filter / :status / 'v' in the TUI for best experience.</pre>
+
+  <script>
+    // Minimal Tauri invoke (works in tauri dev/build when window.__TAURI__ is injected)
+    async function invoke(cmd, args) {
+      if (window.__TAURI__ && window.__TAURI__.invoke) {
+        return window.__TAURI__.invoke(cmd, args || {});
+      }
+      // Fallback for browser testing of the stub
+      return "TAURI_NOT_AVAILABLE (run with cargo tauri dev). Stub result for: " + cmd;
+    }
+
+    async function getPosture() {
+      const res = await invoke('get_security_posture');
+      document.getElementById('status').textContent = 'POSTURE: ' + res;
+    }
+
+    async function doWipe() {
+      if (!confirm('Really trigger nuclear wipe? This destroys everything.')) return;
+      const res = await invoke('wipe_all');
+      document.getElementById('status').textContent = 'WIPE: ' + res + '\n\nAll ratchets, queues, state zeroized.';
+    }
+
+    async function sendMsg() {
+      const contact = document.getElementById('contact').value || 'demo';
+      const msg = document.getElementById('msg').value || 'hello via tauri';
+      const res = await invoke('send_message', { contact, msg });
+      document.getElementById('status').textContent = 'SEND: ' + res + '\n(Real path: ratchet + frame + sendOverProxy + queues)';
+    }
+
+    async function testHybrid() {
+      const res = await invoke('hybrid_kex_test', { our: new Array(32).fill(0x11), peer_x: new Array(32).fill(0x22) });
+      document.getElementById('status').textContent = 'HYBRID (X25519 + KEM stub): ' + JSON.stringify(res);
+    }
+
+    async function testStarlink() {
+      const res = await invoke('starlink_detect');
+      document.getElementById('status').textContent = 'STARLINK: ' + res;
+    }
+
+    // Auto load posture on start
+    window.onload = () => {
+      getPosture().catch(() => {});
+      document.getElementById('status').textContent += '\n\nTips for normal users:\n- Use TUI for daily (filter, voice sending indicator, status panel).\n- This GUI is optional thin layer.\n- Always run clean-security.sh --strict.';
+    };
+  </script>
+</body>
+</html>
