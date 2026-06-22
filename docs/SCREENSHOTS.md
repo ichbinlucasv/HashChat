@@ -13,10 +13,11 @@
 
 ### 1. Main view (default screenshot)
 - Terminal: 120x40 or wider, clean black
-- Show active contact with 3-4 messages (mix sent/received)
+- Show active contact with 3-4 messages (mix sent/received); use contacts filter e.g. :filter ali if many (new normal-user feature)
 - Visible in title or status block: "Security Posture: MAX PARANOID (Tails/Qubes + Tor recommended)"
 - Gold "HC" or project branding
 - Input bar at bottom with hint text
+- Voice sending indicator "[SENDING VOICE to X...]" if testing 'v'
 - No sensitive real data (use burner profile "Demo")
 
 ### 2. Posture refusal

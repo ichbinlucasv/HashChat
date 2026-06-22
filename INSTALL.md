@@ -29,9 +29,19 @@ You do **not** need to be an expert.
 3. Inside the TUI:
    - Press `n` → create a burner profile
    - Press `v` → test real voice recording (works on modern Fedora/Ubuntu/Arch via PipeWire)
+   - Use `:filter alice` or `/` (clear) to search your contacts
    - Use `:set-proxy 127.0.0.1 9050` if needed (very useful in Qubes)
+   - Use `:status` and `?` for guidance; `:my-contact` for shareable link (generate QR with qrencode)
 
 See the big "Desktop Runtime Notes per OS" section below for your specific operating system.
+
+**Honest Assessment vs SimplexChat GUI + Readiness for Normal Users**:
+- What works now for normal users on Fedora/Ubuntu/Arch/Tails/Qubes: ./run-tui gives diagnostics, one-liners for audio (pw-record etc), Tor, install-*.sh, 'n' profile, 'v' real voice (per-chunk ratchet + wipe), :set-proxy, :filter search, :status panel always visible, :my-contact for share (QR via external), dynamic contacts, groups, full E2EE+Tor core + posture + wipe.
+- Visual: Black/gold dense TUI. Explicit "SENDING VOICE...", posture banners, status lines, ratchet wipes logged. Functional but text-heavy and keyboard only. Not the modern polished GUI experience of SimplexChat desktop (bubbles, nice icons, mouse friendly).
+- By design: Minimal attack surface (no webview/GUI libs by default, Tauri optional future with strict caps). Preserves paranoid OPSEC core.
+- Recommendation: If your threat model allows a GUI and you prefer polish, consider SimplexChat for daily. Use HashChat TUI when you specifically need the extra OPSEC (Extreme, nuclear wipe live, explicit posture, Tor mandatory + proxy per profile, voice ratchet FS visible).
+- Readiness: Good for users comfortable with terminal + following one-liners. "Even the most normal user" path exists in docs/scripts now. Full production claim waits on your real-device evidence runs (screenshot-prep + real-device-test on hardware) + v0.2 pre-tag.
+- Tauri GUI: stub ready but not primary. TUI will stay the paranoid default.
 
 ## For Fedora (Recommended Easy Method)
 
@@ -153,8 +163,8 @@ For maximum security on any of these OSes, combine with the dynamic posture chec
 - **Fedora**: `sudo dnf install pipewire-utils alsa-utils && systemctl --user restart pipewire`
 - **Ubuntu 22.04+**: `sudo apt install pipewire pipewire-pulse wireplumber alsa-utils && systemctl --user restart pipewire`
 - **Arch**: `sudo pacman -S pipewire pipewire-pulse wireplumber alsa-utils && systemctl --user enable --now pipewire`
-- **Tails**: Audio is usually available; if not, use the "Configure" screen in Tails to enable it.
-- **Qubes**: In the template (preferably Fedora), run `sudo dnf install pipewire-utils alsa-utils`. Then in the HashChat qube: `qvm-service --enable <qube> audio`. Disposables need audio enabled in the template first.
+- **Tails**: Audio is usually available; if not, use the "Configure" screen in Tails to enable it. Use arecord fallback.
+- **Qubes**: In the template (preferably Fedora), run `sudo dnf install pipewire-utils alsa-utils`. Then in the HashChat qube: `qvm-service --enable <qube> audio`. Disposables need audio enabled in the template first. Use :set-proxy to sys-whonix.
 
 After enabling audio, run `./run-tui` — it will now clearly tell you which recorder is available.
 

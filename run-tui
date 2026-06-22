@@ -54,7 +54,7 @@ fi
 
 echo "Starting HashChat TUI (Double Ratchet + Tor v3 + encrypted persistence)..."
 echo "LD_LIBRARY_PATH: $LIB_DIR"
-echo "Tip: Press '?' for help, 'w' for nuclear wipe, 'v' for voice (real mic via PipeWire/Pulse/ALSA on desktop)."
+echo "Tip: Press '?' for help, 'w' for nuclear wipe, 'v' for voice (real mic), / or :filter to search contacts, :status for quick view."
 
 # Prefer cabal run for the tui target
 if command -v cabal >/dev/null 2>&1; then

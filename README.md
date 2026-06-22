@@ -32,6 +32,11 @@ See the expanded "Desktop Runtime Notes" section in INSTALL.md for your specific
 
 Note on "look": The desktop version is a powerful text-based TUI (black + gold theme, dense security information, explicit OPSEC cues). It prioritizes minimal attack surface and information density over graphical polish. It does not look like a modern GUI messenger (e.g. SimplexChat desktop). This is intentional for the threat model.
 
+**Honest Readiness Assessment for Normal Users (Fedora/Ubuntu/Arch/Tails/Qubes)**: 
+The TUI + scripts + INSTALL.md one-liners now make it usable by careful non-experts on these 5 OSes: run ./run-tui (diagnostics for audio/Tor), n for burner, v for voice (PipeWire best), :filter/:status/:set-proxy/:my-contact (QR link + use qrencode for scan). All core paranoid features (Tor v3 mandatory, real ratchet E2EE per chunk/voice/msg, posture gates, nuclear wipe, encrypted persistence, queues) are working. 
+However, this is a *dense terminal UI*, not a polished GUI app like SimplexChat. No mouse, no pretty bubbles beyond text, explicit logs everywhere for transparency. Tauri GUI stub exists as optional future thin wrapper (still FFI-only to core for no surface increase) but TUI is and will remain the primary secure default. 
+Current state: ready for technical "normal" users who follow the exact per-OS audio/Tor/install notes and run clean-security. Not "download and click" for absolute beginners. Real hardware evidence (screenshots/logs on Fedora + Tails/Qubes) still required for v0.2 claim of "production for paranoid normal users". See INSTALL.md for the one-liners and Quick Path. Brutal truth: if you want Simplex-like GUI today, use Simplex; if you want stronger endpoint OPSEC + explicit controls on desktop, this is deeper.
+
 **No phone numbers. No user IDs. No central servers. No logs. No metadata.**
 
 **Current Status (as of this build)**: We have implemented the majority of the hard paranoid features and SimplexChat-level UX parity.

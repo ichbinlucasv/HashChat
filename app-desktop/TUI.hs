@@ -97,6 +97,7 @@ data AppState = AppState
   , proxies         :: ProfileProxyStore                    -- profile -> SOCKS5/I2P/VPN config
   , contactQueues   :: Map String Q.ContactQueues           -- Phase 1 Roadmap: per-contact unidirectional send/recv queues for simplex-style rotation/decoy
   , sendingVoiceTo  :: Maybe String                         -- rec1: visual "sending voice..." indicator
+  , contactFilter   :: Text                                     -- rec for normal users: live filter on contact list (use :filter or / )
   }
 
 initialState :: AppState
@@ -156,6 +157,7 @@ initialState =
                         pure $ Map.fromList [("Alice", aq), ("Bob", bq), ("Support", sq)]
                       else Map.empty
   , sendingVoiceTo  = Nothing
+  , contactFilter   = ""
   }
 
 -- === Real Encrypted Ratchet Persistence (Argon2id + AES-GCM) ===
@@ -305,13 +307,20 @@ drawMain :: AppState -> Widget Name
 drawMain st = vBox
   [ withAttr (attrName "title") $ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ (maybe "" (" | Group: " ++) (currentGroup st)) ++ (if unsafePerformIO isExtremeMode then " [EXTREME]" else "") ++ (case Map.lookup (currentProfile st) (proxies st) of Just (Tor.Socks5Proxy h p) -> " | Proxy: " ++ h ++ ":" ++ show p; _ -> "") ++ "  [p=burner n=new D=decoy g=group w=wipe a=actions] (TOR-ONLY | Double Ratchet + Tor v3 + Sender Keys) Security: " ++ securityPosture st ++ (if actionPending st then " [ACTIONS MENU ACTIVE]" else "") ++ " [posture live]"  -- med-8 desktop parity note
   , hBox
-      [ borderWithLabel (withAttr (attrName "highlight") $ str " Contacts (Simplex-style: long-press equiv = 'a') | Groups: g") $
-          vBox (map (str . showContact (blockedContacts st) . Contact.contactId) (contacts st))
+      [ borderWithLabel (withAttr (attrName "highlight") $ str $ " Contacts (Simplex-style: long-press equiv = 'a' | /filter or :filter term) | Groups: g" ++ (if T.null (contactFilter st) then "" else " [FILTER:" ++ T.unpack (contactFilter st) ++ "]")) $
+          let cf = T.toLower (contactFilter st)
+              filtered = if T.null cf
+                         then contacts st
+                         else filter (\c -> T.isInfixOf cf (T.toLower (T.pack (Contact.contactId c)))) (contacts st)
+          in vBox (map (str . showContact (blockedContacts st) (sendingVoiceTo st) . Contact.contactId) filtered)
       , borderWithLabel (withAttr (attrName "highlight") $ str $ " " ++ currentContact st ++ (maybe "" (" | " ++) (currentGroup st)) ) $
           vBox (map (str . showMsg) (Map.findWithDefault [] (currentContact st) (messages st))) <+> fill ' '
       ]
   , borderWithLabel (withAttr (attrName "title") $ str " Message (encrypted on send) ") $ str (T.unpack (input st) ++ "█")
   , withAttr (attrName "highlight") $ str $ "Security Posture: " ++ securityPosture st ++ "  [live - re-evaluated on events]"
+  , str " "
+  -- rec3: Lightweight status panel for normal users (proxy, voice, posture summary)
+  , withAttr (attrName "highlight") $ str $ "Status: Proxy=" ++ (case Map.findWithDefault Tor.defaultProxyForProfile (currentProfile st) (proxies st) of Tor.Socks5Proxy h p -> h++":"++show p; _ -> "default") ++ " | Voice=" ++ (if unsafePerformIO (fmap isJust recordVoiceChunkDesktop) then "ready" else "placeholder") ++ " | Clean ritual: run clean-security.sh regularly"
   , str " "
   , let currentProxy = Map.findWithDefault Tor.defaultProxyForProfile (currentProfile st) (proxies st)
         proxyStr = case currentProxy of Tor.Socks5Proxy h p -> " | Proxy: " ++ h ++ ":" ++ show p; _ -> ""
@@ -330,6 +339,9 @@ drawMain st = vBox
       Just c -> withAttr (attrName "danger") $ str $ "[SENDING VOICE to " ++ c ++ " ... (ratchet + proxy + wipe after)]"
       Nothing -> str ""
 
+  -- rec3: Lightweight onboarding/status panel for normal users (visible always, ? for more)
+  , withAttr (attrName "highlight") $ str $ "Desktop Status: Proxy=" ++ (let p = Map.findWithDefault Tor.defaultProxyForProfile (currentProfile st) (proxies st) in case p of Tor.Socks5Proxy h pr -> h++":"++show pr; _ -> "default") ++ " | Voice=" ++ (if unsafePerformIO (fmap isJust recordVoiceChunkDesktop) then "ready (pw/parec/arec)" else "placeholder") ++ " | Posture: " ++ securityPosture st ++ " | Ritual: last clean before edits"
+
   , if isJust (currentGroup st) then
       borderWithLabel (withAttr (attrName "highlight") $ str " Group Members (sender-key ratchets) ") $
         vBox (map str (showGroupMembers st))
@@ -344,11 +356,13 @@ showMsg m =
       preview = take 40 (show (content m))
   in d ++ "[" ++ show (ratchetStep m) ++ "] " ++ preview ++ ctBadge ++ ts
 
-showContact :: [String] -> String -> String
-showContact blocked c =
-  if c `elem` blocked
-  then c ++ " [BLOCKED]"
-  else c
+showContact :: [String] -> Maybe String -> String -> String
+showContact blocked sendingTo c =
+  let base = if c `elem` blocked then c ++ " [BLOCKED]" else c
+      voice = case sendingTo of
+                Just t | t == c -> " [SENDING VOICE...]"
+                _               -> ""
+  in base ++ voice
 
 showGroupMembers :: AppState -> [String]
 showGroupMembers st = case currentGroup st of
@@ -367,7 +381,7 @@ drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll
   , str "1. Run ./run-tui  → it shows your audio backends and Tor status"
   , str "2. Press 'n' to create a burner profile"
   , str "3. Press 'v' to test voice (real desktop mic via pw-record/parecord/arecord or Android; per-chunk ratchet E2EE + wipe)"
-  , str "4. Use :set-proxy 127.0.0.1 9050 (Tor) or 4444 (I2P after i2pd) for per-profile transport (High #5 / Phase 1 Roadmap hybrid). Run launchI2pdIfNeeded or see Tor.hs for garlic/multi-path + simplex queues. :file now does real ratchet-chunked XFTP E2EE (Phase 1). :discover for decentralized (Medium). :screenshot for marketplace. :export stub. :relay for Phase3 self-host relay (announce/discover/queue sync). :channel for Phase3 public channels (create/post/poll). :quantum for Phase3 hybrid kex test (real X25519 + FFI). Starlink detect in Tor for resilience."
+  , str "4. :filter alice or use / to clear → search/filter contact list for normal users. :set-proxy 127.0.0.1 9050 (Tor) or 4444 (I2P after i2pd) for per-profile transport (High #5 / Phase 1 Roadmap hybrid). Run launchI2pdIfNeeded or see Tor.hs for garlic/multi-path + simplex queues. :file now does real ratchet-chunked XFTP E2EE (Phase 1). :discover for decentralized (Medium). :screenshot for marketplace. :export stub. :relay for Phase3 self-host relay (announce/discover/queue sync). :channel for Phase3 public channels (create/post/poll). :quantum for Phase3 hybrid kex test (real X25519 + FFI). Starlink detect in Tor for resilience."
   , str "5. '?' toggles this help. 'w' is the nuclear wipe (use it!)"
   , str ""
   , str "Enter          → Send encrypted message (real ratchet + AES-GCM)"
@@ -378,6 +392,7 @@ drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll
   , str "p / n          → Burner profile switch / new (dynamic posture gated)"
   , str "D              → Toggle decoy (plausible deniability) profile (posture gated + visual feedback)"
   , str "a              → Contact actions (block/mute/delete/report/disappear)"
+  , str "/              → Clear contact filter (use :filter alice to narrow list)"
   , str ""
   , withAttr (attrName "encrypted") $ str "All messages use per-contact Double Ratchet + AES-256-GCM."
   , withAttr (attrName "encrypted") $ str "Ciphertext size shown in message list (ct:XXB)."
@@ -389,6 +404,15 @@ drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll
 handleEvent :: BrickEvent Name () -> EventM Name AppState ()
 handleEvent (VtyEvent (V.EvKey (V.KChar 'q') [])) = halt
 handleEvent (VtyEvent (V.EvKey (V.KChar '?') [])) = modify $ \s -> s { showHelp = not (showHelp s) }
+
+-- Quick filter toggle for normal users ( / clears current filter; use :filter <term> to set )
+handleEvent (VtyEvent (V.EvKey (V.KChar '/') [])) = do
+  s <- get
+  if T.null (contactFilter s)
+    then liftIO $ putStrLn "[UI] Use :filter <term> to search contacts (e.g. :filter alice). / clears."
+    else do
+      liftIO $ putStrLn "[UI] Contact filter cleared."
+      modify $ \st -> st { contactFilter = "" }
 
 -- Drain the Tor incoming queue and turn ciphertext into real decrypted Messages using the ratchets.
 -- Now uses proper unframing + sender hint for reliable peer identification (no more blind brute force).
@@ -609,6 +633,8 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
             let addr = createContactAddress demoOnion edPub xPub
             let link = contactAddressToLink addr
             liftIO $ putStrLn $ "hashchat://contact link (copy or QR this): " ++ link
+            liftIO $ putStrLn "TIP for normal users: Copy the link above. Use any QR generator (e.g. qrencode -o contact.png 'thelink' on Fedora) or phone camera app to make scannable QR."
+            liftIO $ putStrLn "After share, friend uses :add-contact <paste-link> or scans. Then send first message to bootstrap ratchet (X3DH)."
             liftIO $ putStrLn "============================================================"
             modify $ \st -> st { input = "", inputHistory = inputHistory st ++ [txt] }
       else if ":add-contact " `Data.List.isPrefixOf` inputStr
@@ -715,8 +741,20 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
         liftIO $ putStrLn $ "Voice recorder: " ++ vStatus
         liftIO $ putStrLn $ "Posture: " ++ securityPosture s ++ " (live)"
         liftIO $ putStrLn "Last clean ritual: see pre-tag logs or run clean-security.sh"
-        liftIO $ putStrLn "Use :my-contact to share, :set-proxy for transport, 'v' for voice."
+        liftIO $ putStrLn "Use :my-contact (copy link + qrencode for QR) to share, :set-proxy for transport, 'v' for voice."
         modify $ \st -> st { input = "" }
+      else if ":filter" `isPrefixOf` inputStr || inputStr == "/filter"
+      then do
+        -- Normal user rec: live contact list filter/search
+        let parts = words inputStr
+        let term = if length parts > 1 then unwords (drop 1 parts) else ""
+        if null term
+          then do
+            liftIO $ putStrLn "[UI] Contact filter cleared. Showing all."
+            modify $ \st -> st { input = "", contactFilter = "" }
+          else do
+            liftIO $ putStrLn $ "[UI] Filtering contacts to: " ++ term
+            modify $ \st -> st { input = "", contactFilter = T.pack term }
       else if ":discover" `isInfixOf` inputStr
       then do
         liftIO $ putStrLn "[DISCOVERY] Decentralized discovery stub (Medium item). Future: concrete protocol + message formats for finding contacts without leaking metadata (no central servers)."
@@ -1509,6 +1547,7 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'A') [])) = do
       let updatedRats = newRid : Map.findWithDefault [] gname (groups s)
       liftIO $ putStrLn $ "[GROUP] Added new member to " ++ gname ++ ". QR/link for join:"
       liftIO $ putStrLn $ generateGroupQR gname
+      liftIO $ putStrLn "Normal user tip: copy link, generate QR with qrencode or online tool for easy share (same as contact :my-contact)."
       liftIO $ saveEncryptedMessages "hashchat_data" (currentProfile s) ("group-" ++ gname) (sessionPass s) []
       modify $ \st -> st { groups = Map.insert gname updatedRats (groups st) }
 
@@ -1715,7 +1754,7 @@ main = do
   putStrLn "  → Just run: ./run-tui"
   putStrLn "  → It will tell you your audio backends and Tor status"
   putStrLn "  → Press 'n' for a burner profile, 'v' to test voice"
-  putStrLn "  → Type :set-proxy <host> <port> for per-profile (e.g. 127.0.0.1 4444 for I2P after starting i2pd); :discover for decentralized (Medium); :screenshot for marketplace photo instructions (your Fedora photos); :file for streaming file stub (Long-term); :export for cross-device ratchet export stub (Long-term)."
+  putStrLn "  → :filter <term> or / (clear) to search contacts; Type :set-proxy <host> <port> for per-profile (e.g. 127.0.0.1 4444 for I2P after starting i2pd); :discover for decentralized (Medium); :screenshot for marketplace photo instructions (your Fedora photos); :file for streaming file stub (Long-term); :export for cross-device ratchet export stub (Long-term)."
   putStrLn "  → Press '?' for full help anytime"
   putStrLn ""
   putStrLn "Full 'Normal User Quick Path' + per-OS audio/proxy one-liners are in INSTALL.md"

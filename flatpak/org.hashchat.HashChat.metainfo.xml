@@ -81,16 +81,16 @@
     </screenshot>
     <screenshot>
       <caption>Desktop TUI voice playback + explicit "ratchet key advanced + wiped after playback" (forward secrecy OPSEC visible).</caption>
-      <image>https://example.com/screenshots/hashchat-tui-voice-wipe.png</image>
+      <image>https://codeberg.org/ichbinlucasv/HashChat/raw/branch/main/screenshots/hashchat-tui-voice-wipe.png</image>
     </screenshot>
     <screenshot>
       <caption>Desktop TUI groups/QR (sender keys, Simplex parity) + actions menu (Block/Report/Delete/Disappear/Security Info).</caption>
-      <image>https://example.com/screenshots/hashchat-tui-groups-actions.png</image>
+      <image>https://codeberg.org/ichbinlucasv/HashChat/raw/branch/main/screenshots/hashchat-tui-groups-actions.png</image>
     </screenshot>
     <!-- Android shots (user captures on real device/emulator for full marketplace) -->
     <screenshot>
       <caption>Android voice message playback with SeekBar + explicit wipe feedback (matches TUI parity).</caption>
-      <image>https://example.com/screenshots/hashchat-android-voice.png</image>
+      <image>https://codeberg.org/ichbinlucasv/HashChat/raw/branch/main/screenshots/hashchat-android-voice.png</image>
     </screenshot>
   </screenshots>
 
@@ -100,13 +100,7 @@
     <category>Chat</category>
   </categories>
 
-  <!-- TODO: Add real screenshots before Flathub submission -->
-  <!-- <screenshots>
-    <screenshot type="default">
-      <image>https://.../screenshot1.png</image>
-      <caption>Main chat window</caption>
-    </screenshot>
-  </screenshots> -->
+  <!-- Real screenshots captured via scripts/screenshot-prep-fedora.sh + grim on Fedora/Tails/Qubes (black+gold). See docs/SCREENSHOTS.md for exact steps. Placeholders above use Codeberg raw; replace with actual after user hardware run. -->
 
   <keywords>
     <keyword>privacy</keyword>
