@@ -681,7 +681,7 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
                   Just blob -> do
                     createDirectoryIfMissing True (takeDirectory (getProxyPath prof))
                     BS.writeFile (getProxyPath prof) blob
-                    liftIO $ putStrLn $ "[D] Proxy for profile '" ++ prof ++ "' set to " ++ show newCfg ++ " (persisted encrypted per-profile)"
+                    liftIO $ putStrLn $ "[D] ✓ Proxy for profile '" ++ prof ++ "' set to " ++ show newCfg ++ " (persisted encrypted per-profile). Affects next sends."
                     -- Phase 1 I2P: if 4444, call launch helper (prints user steps + best-effort future spawn)
                     when (p == 4444) $ liftIO Tor.launchI2pdIfNeeded
                     -- Phase3 Starlink: detect for offline-first prioritize (Tor primary, Starlink failover when available)
