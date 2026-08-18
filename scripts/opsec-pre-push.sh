@@ -29,8 +29,9 @@ done
 echo "  no HS keys / rust-lib / hashchat_data"
 
 # 4. No private-key armor or obvious tokens in staged+tracked source
-if git grep -I -n -E 'BEGIN (OPENSSH|RSA|EC) PRIVATE|ghp_[A-Za-z0-9]{20,}|github_pat_|AKIA[0-9A-Z]{16}' \
-    -- ':!sbom/**' ':!Cargo.lock' >/dev/null 2>&1; then
+# Pattern is split so this file does not match itself.
+pat='BEGIN (OPENSSH|RSA|EC) PRIVATE|ghp_[A-Za-z0-9]{20,}|github''_pat_|AKIA[0-9A-Z]{16}'
+if git grep -I -n -E "$pat" -- ':!sbom/**' ':!Cargo.lock' >/dev/null 2>&1; then
   fail "possible secret string in tree"
 fi
 echo "  no private-key / token strings"
