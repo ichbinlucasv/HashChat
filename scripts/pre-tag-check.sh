@@ -87,7 +87,7 @@ if ! echo "$RECENT_DOCS" | grep -q "THREATMODEL.md"; then
 fi
 
 # No new TODO/FIXME in security-critical files since last tag (or in working tree for dev)
-CRITICAL_FILES="android/src/main/rust/src/lib.rs android/src/main/java/MainActivity.kt scripts/clean-security.sh scripts/pre-tag-check.sh src/rust/*.rs src/haskell/HashChat/Group.hs"
+CRITICAL_FILES="src/rust/android_jni.rs android/src/main/java/MainActivity.kt scripts/clean-security.sh scripts/pre-tag-check.sh src/rust/*.rs src/haskell/HashChat/Group.hs"
 NEW_TODOS=$(git diff --name-only HEAD~5 -- $CRITICAL_FILES 2>/dev/null | xargs -I{} git diff HEAD~5 -- {} 2>/dev/null | grep -E '^\+.*(TODO|FIXME|XXX|HACK)' | grep -v 'TODO (deep ongoing work)' || true)
 if [ -n "$NEW_TODOS" ]; then
     echo "  HARD FAIL (Deep Wave): New TODO/FIXME added in security-critical files since recent commits:"
@@ -220,7 +220,7 @@ fi
 if grep -q "relayStore\|readIORef relayStore\|writeIORef relayStore" src/haskell/HashChat/Relay.hs ; then
     echo "  -> Relay store used in send/receive/poll (demo queue roundtrip for local tests + QROT)."
 fi
-if grep -q "rustQuantumHybridKexTest\|Java_chat_hashchat_HashChatNative_rustQuantumHybridKexTest" android/src/main/rust/src/lib.rs ; then
+if grep -q "rustQuantumHybridKexTest\|Java_chat_hashchat_HashChatNative_rustQuantumHybridKexTest" src/rust/android_jni.rs ; then
     echo "  -> Android quantum kex test FFI present (High parity)."
 fi
 if grep -q "relayCts\|RELAY-DRAIN\|relayReceive.*drain\|processRelayIncoming" app-desktop/TUI.hs ; then
@@ -318,7 +318,7 @@ fi
 
 # Extreme mode checks (from decision: scoped impl - full TUI + Android + Rust)
 echo "[11/12] Checking Extreme mode implementation (full per design)..."
-if grep -q "isExtremeMode\|EXTREME_MODE\|setExtremeMode\|rust_set_extreme_mode" app-desktop/TUI.hs android/src/main/java/MainActivity.kt src/haskell/HashChat/Core.hs src/rust/lib.rs android/src/main/rust/src/lib.rs ; then
+if grep -q "isExtremeMode\|EXTREME_MODE\|setExtremeMode\|rust_set_extreme_mode" app-desktop/TUI.hs android/src/main/java/MainActivity.kt src/haskell/HashChat/Core.hs src/rust/lib.rs src/rust/android_jni.rs ; then
     echo "  -> Extreme flag, setters, FFI, and gates present in TUI/Android/Rust."
 else
     echo "  >>> WARNING: Extreme mode not fully wired across layers."

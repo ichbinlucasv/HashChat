@@ -1,12 +1,7 @@
-// Android JNI bridge for HashChat — real Double Ratchet + AES-GCM + Tor framing to Kotlin.
-// Mirrors the desktop FFI so the phone side has the exact same paranoid crypto.
-//
-// Long-term direction (recommendation #4):
-// We are deliberately tightening the Android backend toward Rust over time.
-// More logic (voice processing, persistence helpers, posture signals, framing)
-// should move into this crate. The JNI surface should stay thin and stable.
-// This is the correct architecture for maximum security on Android.
-#![allow(static_mut_refs)]  // Same FFI global ratchet store pattern as desktop src/rust/lib.rs (safe under our usage model)
+// Android JNI for HashChat. Same crate as the desktop FFI (`hashchat-rust`).
+// Compiled only with `--features android`. Crypto types come from crate::ratchet
+// and crate::longterm_identity — there is no second copy of the Double Ratchet.
+#![allow(static_mut_refs)] // leftover queue/voice maps; ratchet/identity use crate Mutex stores
 
 use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass};
@@ -22,11 +17,7 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use zeroize::Zeroize; // Required for explicit zeroize() on local chunk keys in VoiceStream (Wave 3)
 
-// quantum (High Phase3 parity with desktop): gated, reexport for FFI when feature on.
-#[cfg(feature = "quantum")]
-mod quantum;
-#[cfg(feature = "quantum")]
-pub use quantum::{hybrid_ratchet_new, QuantumHybridRatchet, hybrid_kex, hybrid_decaps};
+// Quantum symbols live in crate::quantum (shared module).
 
 /// Helper: wrap a raw jbyteArray (from Java native) into a high-level JByteArray for jni 0.21+.
 #[inline]
@@ -43,14 +34,7 @@ fn vec_to_java_byte_array(env: &mut JNIEnv, data: &[u8]) -> jbyteArray {
     }
 }
 
-// Android gets its own verified copy of the full DoubleRatchet (see ratchet.rs in this dir).
-// This achieves high-4: real skipped_keys, zeroization, to_bytes/from_bytes, full parity
-// with desktop for groups, cross-device export, and disappearing message key wiping.
-mod ratchet;
-mod longterm_identity;
-
-static mut ANDROID_RATCHET_STORE: Vec<ratchet::DoubleRatchet> = Vec::new();
-static mut EXTREME_MODE: bool = false;  // Extreme profile flag for Rust-level gates (Wave 10 full impl)
+// JNI-side handles use the shared crate stores (Mutex in lib.rs).
 
 // Phase 1 Roadmap: Proxy + Queue + File FFI parity with desktop TUI
 // Per-profile proxy for I2P (SOCKS), per-contact queues for simplex rotation/decoy/QROT
@@ -103,12 +87,10 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_init(_env: JNIEnv, _class: J
 // ============================================================================
 #[cfg(target_os = "android")]
 fn mlock_android_ratchet_store() {
-    unsafe {
-        let ptr = ANDROID_RATCHET_STORE.as_ptr() as *const libc::c_void;
-        let len = std::mem::size_of_val(&ANDROID_RATCHET_STORE);
-        // Best-effort only — ignore result. No panic on failure (would break init on many devices).
+    if let Ok(store) = crate::ratchet_store().lock() {
+        let ptr = store.as_ptr() as *const libc::c_void;
+        let len = std::mem::size_of_val(&*store);
         let _ = libc::mlock(ptr, len);
-        // Future: pair with munlock on explicit wipe paths + madvise(MADV_DONTNEED).
     }
 }
 
@@ -133,9 +115,9 @@ fn mlock_android_voice_store() {}
 // Best-effort mlock for LongTermIdentity store (High #3 + Contact long-term + Extreme)
 #[cfg(target_os = "android")]
 fn mlock_android_longterm_store() {
-    unsafe {
-        let ptr = ANDROID_LONGTERM_STORE.as_ptr() as *const libc::c_void;
-        let len = std::mem::size_of_val(&ANDROID_LONGTERM_STORE);
+    if let Ok(store) = crate::longterm_store().lock() {
+        let ptr = store.as_ptr() as *const libc::c_void;
+        let len = std::mem::size_of_val(&*store);
         let _ = libc::mlock(ptr, len);
     }
 }
@@ -272,19 +254,17 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_getSecurityPosture(
 
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_wipeAll(_env: JNIEnv, _class: JClass) {
-    unsafe { ANDROID_RATCHET_STORE.clear(); }
+    crate::wipe_crypto_stores();
+    crate::rust_wipe_files();
 }
 
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_ratchetNew(_env: JNIEnv, _class: JClass) -> jint {
-    unsafe {
-        if EXTREME_MODE {
-            // Extreme: refuse new ratchets for groups (per design: groups disabled)
-            return -1;  // signal error to Kotlin
-        }
-        let id = ANDROID_RATCHET_STORE.len() as jint;
-        ANDROID_RATCHET_STORE.push(ratchet::DoubleRatchet::new());
-        id
+    let id = crate::rust_ratchet_new();
+    if id == u32::MAX {
+        -1
+    } else {
+        id as jint
     }
 }
 
@@ -374,28 +354,29 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_ratchetExportEncrypted(
     state_id: jint,
     passphrase: jbyteArray,
 ) -> jbyteArray {
-    unsafe {
-        if (state_id as usize) < ANDROID_RATCHET_STORE.len() {
-            let ratchet = &ANDROID_RATCHET_STORE[state_id as usize];
-            let serialized = ratchet.to_bytes();
-
-            // v2: real Argon2id + AES-256-GCM envelope
-            let pass_jba = unsafe { wrap_byte_array(passphrase) };
-            let pass_len = _env.get_array_length(&pass_jba).unwrap_or(0) as usize;
-            let mut pass_bytes = vec![0u8; pass_len];
-            if pass_len > 0 {
-                let mut p_i8 = vec![0i8; pass_len];
-                let _ = _env.get_byte_array_region(&pass_jba, 0, &mut p_i8);
-                pass_bytes = p_i8.into_iter().map(|b| b as u8).collect();
-            }
-
-            match wrap_ratchet_blob(&serialized, &pass_bytes) {
-                Ok(protected) => return vec_to_java_byte_array(&mut _env, &protected),
-                Err(_) => return vec_to_java_byte_array(&mut _env, &[]),
-            }
+    let serialized = {
+        let Ok(store) = crate::ratchet_store().lock() else {
+            return vec_to_java_byte_array(&mut _env, &[]);
+        };
+        match store.get(state_id as usize) {
+            Some(r) => r.to_bytes(),
+            None => return vec_to_java_byte_array(&mut _env, &[]),
         }
+    };
+
+    let pass_jba = unsafe { wrap_byte_array(passphrase) };
+    let pass_len = _env.get_array_length(&pass_jba).unwrap_or(0) as usize;
+    let mut pass_bytes = vec![0u8; pass_len];
+    if pass_len > 0 {
+        let mut p_i8 = vec![0i8; pass_len];
+        let _ = _env.get_byte_array_region(&pass_jba, 0, &mut p_i8);
+        pass_bytes = p_i8.into_iter().map(|b| b as u8).collect();
     }
-    vec_to_java_byte_array(&mut _env, &[])
+
+    match wrap_ratchet_blob(&serialized, &pass_bytes) {
+        Ok(protected) => vec_to_java_byte_array(&mut _env, &protected),
+        Err(_) => vec_to_java_byte_array(&mut _env, &[]),
+    }
 }
 
 #[no_mangle]
@@ -430,23 +411,10 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_ratchetImportEncrypted(
         Err(_) => return false as jboolean,
     };
 
-    unsafe {
-        if (state_id as usize) < ANDROID_RATCHET_STORE.len() {
-            if let Ok(restored) = ratchet::DoubleRatchet::from_bytes(&serialized) {
-                ANDROID_RATCHET_STORE[state_id as usize] = restored;
-                return true as jboolean;
-            }
-        } else {
-            if let Ok(restored) = ratchet::DoubleRatchet::from_bytes(&serialized) {
-                while ANDROID_RATCHET_STORE.len() <= state_id as usize {
-                    ANDROID_RATCHET_STORE.push(ratchet::DoubleRatchet::new());
-                }
-                ANDROID_RATCHET_STORE[state_id as usize] = restored;
-                return true as jboolean;
-            }
-        }
+    match crate::ratchet::DoubleRatchet::from_bytes(&serialized) {
+        Ok(restored) => crate::store_put(state_id as u32, restored) as jboolean,
+        Err(_) => false as jboolean,
     }
-    false as jboolean
 }
 
 // === Strong Argon2id + AES-256-GCM envelope for ratchet blobs (high-4 OPSEC) ===
@@ -549,6 +517,15 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_startTorReceiver(_env: JNIEn
 }
 
 #[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_pushReceivedVoiceChunk(
+    env: JNIEnv,
+    class: JClass,
+    data: jbyteArray,
+) {
+    Java_chat_hashchat_HashChatNative_feedReceivedData(env, class, data);
+}
+
+#[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_feedReceivedData(
     _env: JNIEnv,
     _class: JClass,
@@ -605,7 +582,7 @@ struct VoiceStream {
 impl VoiceStream {
     fn new(id: u32) -> Self {
         unsafe {
-            if EXTREME_MODE {
+            if crate::is_extreme() {
                 // Extreme: refuse voice streams entirely (per design: voice disabled for minimal surface)
                 panic!("EXTREME MODE: VoiceStream creation refused");
             }
@@ -653,7 +630,7 @@ impl VoiceStream {
         self.chain_key = next_chain;
 
         // Decrypt using the derived per-chunk key (real ratchet output style)
-        let plaintext = ratchet::decrypt_with_key(&chunk_key, encrypted).unwrap_or_default();
+        let plaintext = crate::ratchet::decrypt_with_key(&chunk_key, encrypted).unwrap_or_default();
 
         // Wave 3 improvement: explicit zeroization of the just-used chunk key
         // (zeroize crate is already a dependency for the ratchet work)
@@ -701,7 +678,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_processVoiceChunk(
     // Wave 9/10: Real Extreme / strict gate at the Rust boundary for voice (defense in depth)
     // Even if Kotlin already refused in EXTREME_MODE, the FFI surface must also refuse.
     unsafe {
-        if EXTREME_MODE || !is_environment_strict() {
+        if crate::is_extreme() || !is_environment_strict() {
             let msg = b"STRICT/EXTREME: Voice chunk processing refused in bad environment";
             return vec_to_java_byte_array(&mut env, msg);
         }
@@ -964,7 +941,7 @@ mod tests {
     #[test]
     fn test_ratchet_to_bytes_from_bytes_plus_envelope() {
         // Full ratchet state (with some skipped keys) roundtrips through the strong envelope
-        let mut r = ratchet::DoubleRatchet::new();
+        let mut r = crate::ratchet::DoubleRatchet::new();
         // Simulate some activity
         let _ = r.ratchet_send();
         let _ = r.ratchet_send();
@@ -975,7 +952,7 @@ mod tests {
         let wrapped = wrap_ratchet_blob(&state, pass).unwrap();
         let restored = unwrap_ratchet_blob(&wrapped, pass).unwrap();
 
-        let r2 = ratchet::DoubleRatchet::from_bytes(&restored).expect("from_bytes after envelope must work");
+        let r2 = crate::ratchet::DoubleRatchet::from_bytes(&restored).expect("from_bytes after envelope must work");
         // We can't easily compare private fields, but successful deserialization + no panic is the invariant
         let _ = r2.to_bytes();
     }
@@ -985,7 +962,7 @@ mod tests {
         // Simulates the disappearing message flow: ratchet produces a message key,
         // we store it as a "skipped" key for a moment, then explicitly wipe it.
         // This is the core security property we must preserve.
-        let mut r = ratchet::DoubleRatchet::new();
+        let mut r = crate::ratchet::DoubleRatchet::new();
         let (msg_key, msg_num) = r.ratchet_send();
 
         // Simulate "skipping" this key (as would happen with out-of-order or disappearing messages)
@@ -1002,7 +979,7 @@ mod tests {
     fn test_group_sender_key_style_advance_and_export() {
         // Rough simulation of per-member sender key advancement + export (as used in groups).
         // Real group code lives in Haskell Group.hs + Kotlin, but the ratchet primitives must support it.
-        let mut sender_ratchet = ratchet::DoubleRatchet::new();
+        let mut sender_ratchet = crate::ratchet::DoubleRatchet::new();
 
         // Simulate several sends (advancing the sending chain)
         for _ in 0..5 {
@@ -1016,7 +993,7 @@ mod tests {
         let wrapped = wrap_ratchet_blob(&state_blob, pass).expect("group export envelope must work");
         let restored = unwrap_ratchet_blob(&wrapped, pass).expect("group import must succeed");
 
-        let mut restored_ratchet = ratchet::DoubleRatchet::from_bytes(&restored)
+        let mut restored_ratchet = crate::ratchet::DoubleRatchet::from_bytes(&restored)
             .expect("group sender key ratchet must deserialize after envelope");
 
         // We advanced 5 times before export — the restored ratchet should be usable for further sends
@@ -1041,7 +1018,7 @@ mod tests {
     fn test_posture_simulation_and_export() {
         // Simulates posture affecting whether we allow export of ratchet state.
         // In real usage the Kotlin side calls reEvaluateSecurityPosture before allowing sensitive actions.
-        let mut r = ratchet::DoubleRatchet::new();
+        let mut r = crate::ratchet::DoubleRatchet::new();
         let _ = r.ratchet_send();
 
         let state = r.to_bytes();
@@ -1077,7 +1054,7 @@ mod tests {
     fn test_tui_style_posture_refresh_after_voice() {
         // Mirrors the new TUI 'v' handler behavior: after voice, posture is refreshed and UI updated.
         // Core ratchet + envelope must remain usable post-voice action.
-        let mut r = ratchet::DoubleRatchet::new();
+        let mut r = crate::ratchet::DoubleRatchet::new();
         let _ = r.ratchet_send();
         let state = r.to_bytes();
         let pass = b"tui-voice-posture-pass";
@@ -1092,18 +1069,17 @@ mod tests {
 // Provides stable ed25519/x25519 per-profile identity for QR (instead of random).
 // Encrypted with same envelope as ratchets.
 
-static mut ANDROID_LONGTERM_STORE: Vec<longterm_identity::LongTermIdentity> = Vec::new();
-
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_longtermNew(
     _env: JNIEnv,
     _class: JClass,
 ) -> jint {
-    unsafe {
-        let id = ANDROID_LONGTERM_STORE.len() as jint;
-        ANDROID_LONGTERM_STORE.push(longterm_identity::LongTermIdentity::generate());
-        mlock_android_longterm_store();  // best-effort mlock for long-term store (High #3 + Contact full + Extreme)
-        id
+    let id = crate::rust_longterm_identity_new();
+    if id == u32::MAX {
+        -1
+    } else {
+        mlock_android_longterm_store();
+        id as jint
     }
 }
 
@@ -1113,17 +1089,16 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_longtermGetPublic(
     _class: JClass,
     id: jint,
 ) -> jbyteArray {
-    unsafe {
-        let lid = id as usize;
-        if lid < ANDROID_LONGTERM_STORE.len() {
-            let ident = &ANDROID_LONGTERM_STORE[lid];
-            let ed = ident.ed25519_public().to_bytes();
-            let x = *ident.x25519_public().as_bytes();
-            let mut combined = Vec::with_capacity(64);
-            combined.extend_from_slice(&ed);
-            combined.extend_from_slice(&x);
-            return vec_to_java_byte_array(&mut _env, &combined);
-        }
+    let Ok(store) = crate::longterm_store().lock() else {
+        return vec_to_java_byte_array(&mut _env, &[]);
+    };
+    if let Some(ident) = store.get(id as usize) {
+        let ed = ident.ed25519_public().to_bytes();
+        let x = *ident.x25519_public().as_bytes();
+        let mut combined = Vec::with_capacity(64);
+        combined.extend_from_slice(&ed);
+        combined.extend_from_slice(&x);
+        return vec_to_java_byte_array(&mut _env, &combined);
     }
     vec_to_java_byte_array(&mut _env, &[])
 }
@@ -1134,12 +1109,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_longtermWipe(
     _class: JClass,
     id: jint,
 ) {
-    unsafe {
-        let lid = id as usize;
-        if lid < ANDROID_LONGTERM_STORE.len() {
-            ANDROID_LONGTERM_STORE[lid].wipe();
-        }
-    }
+    crate::rust_longterm_identity_wipe(id as u32);
 }
 
 #[no_mangle]
@@ -1164,9 +1134,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_setExtremeMode(
     _class: JClass,
     enabled: jboolean,
 ) {
-    unsafe {
-        EXTREME_MODE = enabled != 0;
-    }
+    crate::rust_set_extreme_mode(enabled != 0);
 }
 
 // === Phase 1 Roadmap FFI for Android parity: Proxy (I2P), Queues (simplex rotation/decoy/QROT), File chunks ===
@@ -1260,23 +1228,20 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_encryptFileChunk(
     let _ = env.get_byte_array_region(&chunk_jba, 0, &mut chunk_i8);
     let chunk_bytes: Vec<u8> = chunk_i8.into_iter().map(|b| b as u8).collect();
 
-    // Use a simple key from rid for demo (in real flow caller or internal ratchet provides fresh key)
     let mut key = [0u8; 32];
-    // "advance" by mixing rid
-    for (i, b) in key.iter_mut().enumerate() {
-        *b = (rid as u8).wrapping_add(i as u8);
+    if let Ok(mut store) = crate::ratchet_store().lock() {
+        if let Some(r) = store.get_mut(rid as usize) {
+            let (msg_key, _) = r.ratchet_send();
+            key = msg_key;
+        }
     }
-    // Call the existing encrypt path
-    let key_arr = unsafe { std::slice::from_raw_parts(key.as_ptr(), 32) };
-    // Reuse internal encrypt logic or call encryptWithKey FFI style
-    let unbound = UnboundKey::new(&AES_256_GCM, key_arr).unwrap();
-    let lsk = LessSafeKey::new(unbound);
-    let nonce = Nonce::assume_unique_for_key([0u8; 12]);
-    let mut buf = vec![0u8; chunk_bytes.len() + AES_256_GCM.tag_len()];
-    buf[..chunk_bytes.len()].copy_from_slice(&chunk_bytes);
-    if lsk.seal_in_place_append_tag(nonce, Aad::empty(), &mut buf).is_err() {
+    if key.iter().all(|b| *b == 0) {
         return std::ptr::null_mut();
     }
+    let buf = match crate::ratchet::encrypt_with_key(&key, &chunk_bytes) {
+        Ok(b) => b,
+        Err(_) => return std::ptr::null_mut(),
+    };
     // Frame: simple version + hint + ct (match desktop frameForWire minimal)
     let hint_jba = unsafe { wrap_byte_array(hint) };
     let hint_len = env.get_array_length(&hint_jba).unwrap_or(0) as usize;
@@ -1305,11 +1270,24 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_longtermX25519Dh(
     lid: jint,
     peer_x: jni::objects::JByteArray,
 ) -> jbyteArray {
-    // Stub: in full, lookup LONGTERM_STORE or ANDROID_LONGTERM, do dh, return 32B.
-    // For now return zeroed to not crash; real impl mirrors desktop.
-    let mut sh = vec![0u8; 32];
-    // TODO: actual dh using x25519_dalek on the android longterm store.
-    vec_to_java_byte_array(&mut env, &sh)
+    let px = unsafe { wrap_byte_array(peer_x.as_raw()) };
+    let plen = env.get_array_length(&px).unwrap_or(0) as usize;
+    if plen < 32 {
+        return vec_to_java_byte_array(&mut env, &[]);
+    }
+    let mut p_i8 = vec![0i8; 32];
+    let _ = env.get_byte_array_region(&px, 0, &mut p_i8);
+    let mut peer = [0u8; 32];
+    for (i, b) in p_i8.iter().enumerate() {
+        peer[i] = *b as u8;
+    }
+    let mut out = [0u8; 32];
+    let ok = crate::rust_longterm_x25519_dh(lid as u32, peer.as_ptr(), out.as_mut_ptr());
+    if ok {
+        vec_to_java_byte_array(&mut env, &out)
+    } else {
+        vec_to_java_byte_array(&mut env, &[])
+    }
 }
 
 // Phase 1/2 real receive FFI stub for Android processor (rid + framed ct -> ratchet recv + decrypt inside Rust crown jewels).
@@ -1339,7 +1317,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_rustQuantumHybridNew(
     _class: JClass,
 ) -> jint {
     // Returns handle or -1 on err (Extreme or no feature). For demo: always 1 (interface stable).
-    if unsafe { crate::EXTREME_MODE } { return -1; }
+    if crate::is_extreme() { return -1; }
     42  // demo handle; real would Box into store like ratchets.
 }
 

@@ -22,12 +22,12 @@
 
 ## Next Steps (when development starts)
 1. Set up proper Android NDK + Rust + cargo-ndk build.
-2. Implement JNI bindings for the new Rust blob encryption functions (skeleton already started in `android/src/main/rust/`).
+2. Implement JNI bindings for the new Rust blob encryption functions (`src/rust/android_jni.rs`).
 3. Add billing + license validation (keep it minimal and auditable).
 4. Port the TUI concepts to a proper Android UI (Jetpack Compose or XML + RecyclerView for messages).
 5. Implement per-profile isolated encrypted storage using the same Argon2id + AES pattern.
 
-A basic Rust + JNI skeleton now exists under `android/src/main/rust/`.
+JNI lives in the single crate: `src/rust/android_jni.rs` (`cargo build --features android`).
 
 ## Monetization Philosophy (Updated Recommendation - aligns Comprehensive Roadmap Sec7)
 

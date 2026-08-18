@@ -33,7 +33,7 @@
 ./scripts/clean-security.sh
 git status --short
 cargo test --release                    # Must be 9+ tests passing
-(cd android/src/main/rust && cargo test --release)
+cargo test --release --features android
 cabal build hashchat-cli -f-tui
 # Supply chain (arch-3): Run audit + formal SBOM for signed tag + diff review
 cargo install cargo-audit --locked 2>/dev/null || true
@@ -98,7 +98,7 @@ git push --force-with-lease origin --tags
 ## Known Audit Findings & Current Status (updated after high-4 / long-11 / long-13 work)
 
 - Android Rust now has **real full DoubleRatchet parity** (high-4 completed for core): identical to_bytes/from_bytes, skipped_keys BTree/HashMap handling, ZeroizeOnDrop, wipe_skipped_key, ratchet_send/recv_advanced, export/import roundtrips. JNI layer modernized to jni 0.21. The remaining gap is the weak "demo-pass XOR" envelope around the exported blob (documented with prominent audit warning in lib.rs; real Argon2id+AES-GCM via Keystore must still be wired).
-- Nix `hashchat-android-rust` derivation (long-11) hardened: all `touch` / soft echo placeholders removed, explicit fail-hard with clear guidance to the working `./android/build-android.sh` path.
+- Nix `hashchat-android-rust` builds the single crate with `--features android` (libhashchat_rust.so).
 - Quantum (long-13) converted to proper gated module: `src/rust/quantum.rs` behind `#[cfg(feature = "quantum")]`, clean public interface, "not yet implemented" errors everywhere, all constant-time/zeroize/side-channel requirements documented.
 - "demo-pass" strings remain in Kotlin (HashChatKeystore + persistGroups) — intentional visibility for auditors.
 - No mlock/seccomp equivalent on the Android Rust side (high-5 documented gap).
@@ -118,8 +118,8 @@ cargo test --release   # all paranoid-path tests (wipe, disappearing, framing, e
 cabal build hashchat-cli -f-tui
 
 # 3. Reproduce Android Rust (high-4 artifact)
-cd android/src/main/rust && cargo check --release
-# Real .so: cd android && ./build-android.sh   (must emit libhashchat_android.so with real ratchet symbols)
+cargo check --release --features android
+# Real .so: ./build-android.sh   (must emit libhashchat_rust.so)
 
 # 4. Reproduce Flatpak (long-11 / reproducibility)
 nix build .#hashchat-flatpak   # or the documented flatpak-builder path

@@ -103,11 +103,8 @@ find . -maxdepth 3 -type f \( \
     -name "*cross_device*" \
 \) -exec shred -v -n $SHRED_PASSES -z {} \; 2>/dev/null || true
 
-# 8. Android Rust crate artifacts (separate from main cargo)
-echo "[8/9] Cleaning Android Rust crate build artifacts..."
-if [ -d "android/src/main/rust" ]; then
-    (cd android/src/main/rust && cargo clean 2>/dev/null || true)
-fi
+# 8. Android JNI is the same crate (feature android); cargo clean above covers it.
+echo "[8/9] Android uses src/rust/ with --features android (no second crate)."
 
 # 9. Final status check
 echo "[9/9] Final verification..."

@@ -89,7 +89,7 @@ class HashChatInstrumentedTest {
     fun testRealJNIInitDoesNotCrash() {
         // Critical smoke test: the Rust library must load and init without crashing on device.
         try {
-            System.loadLibrary("hashchat_android")
+            System.loadLibrary("hashchat_rust")
             // If we reach here the .so was found and basic symbols exist
         } catch (e: UnsatisfiedLinkError) {
             // In CI without the .so this is expected; in real device runs it must succeed

@@ -178,42 +178,35 @@
         packages.hashchat-android-rust = pkgs.rustPlatform.buildRustPackage {
           pname = "hashchat-android-rust";
           version = "0.1.9";
-          src = ./android/src/main/rust;
-          cargoLock = { lockFile = ./android/src/main/rust/Cargo.lock; };
+          src = ./.;
+          cargoLock = { lockFile = ./Cargo.lock; };
           buildInputs = with pkgs; [ pkg-config openssl ];
 
           buildPhase = ''
             set -euo pipefail
-            echo "=== hashchat-android-rust (long-11 hardened, no soft paths) ==="
-            echo "Building real DoubleRatchet + JNI for Android (aarch64 + armv7)..."
+            echo "=== hashchat-android-rust (single crate, --features android) ==="
+            echo "Building hashchat-rust JNI for Android (aarch64 + armv7)..."
 
-            # We do not silently succeed. If the host does not have the Android NDK
-            # toolchain configured for cargo-ndk, this must fail hard.
             if ! command -v cargo-ndk >/dev/null 2>&1; then
-              echo "ERROR (long-11): cargo-ndk not found in PATH."
-              echo "For reproducible Android .so builds use the documented one-command path:"
-              echo "  cd android && ./build-android.sh"
-              echo "This produces app/src/main/jniLibs/*/libhashchat_android.so"
-              echo "The pure-Nix path requires additional overlays (ndk, rust-android)."
-              echo "See docs/BUILD_ISOLATION.md and docs/BUILD_REPRODUCIBILITY.md"
+              echo "ERROR: cargo-ndk not found in PATH."
+              echo "Use: ./build-android.sh"
+              echo "This produces android/src/main/jniLibs/*/libhashchat_rust.so"
               exit 1
             fi
 
-            # Real cross compile - will fail if targets or NDK are missing (correct behavior)
-            cargo ndk -t arm64-v8a -t armeabi-v7a build --release --locked
+            cargo ndk -t arm64-v8a -t armeabi-v7a build --release --locked --features android
 
-            # Fail hard if the expected .so files were not actually emitted
             for abi in aarch64-linux-android armv7-linux-androideabi; do
-              so="target/$abi/release/libhashchat_android.so"
+              so="target/$abi/release/libhashchat_rust.so"
               if [ ! -f "$so" ]; then
-                echo "ERROR (long-11): Expected $so was not produced. Build aborted."
+                echo "ERROR: Expected $so was not produced. Build aborted."
                 exit 1
               fi
             done
 
             mkdir -p $out/lib/aarch64 $out/lib/armv7
-            cp target/aarch64-linux-android/release/libhashchat_android.so $out/lib/aarch64/
-            cp target/armv7-linux-androideabi/release/libhashchat_android.so $out/lib/armv7/
+            cp target/aarch64-linux-android/release/libhashchat_rust.so $out/lib/aarch64/
+            cp target/armv7-linux-androideabi/release/libhashchat_rust.so $out/lib/armv7/
             echo "SUCCESS: real .so files written to $out/lib/"
           '';
 

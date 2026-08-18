@@ -27,9 +27,14 @@ subtle = "2.6"
 
 # Gated PQ (quantum feature). See quantum.rs for requirements + warnings.
 ml-kem = { version = "0.3", features = ["zeroize"], optional = true }
+# JNI only when building the Android cdylib. Desktop never pulls this in.
+jni = { version = "0.21", optional = true }
 
 [features]
 default = []
+# One crate for desktop FFI + Android JNI. Build the phone .so with:
+#   cargo ndk -t arm64-v8a -o android/src/main/jniLibs build --release --features android
+android = ["dep:jni"]
 # long-13 / High Phase3 (deepened "work on all critial and hight risk now no stop"): optional gated.
 # --features quantum: hybrid_kex now does REAL X25519 + REAL ML-KEM (ml-kem crate with zeroize).
 # Hybrid (X25519 || ML-KEM-768). Gated. Extreme refuses PQ surface.

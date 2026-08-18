@@ -47,7 +47,7 @@ fun showVoiceSendingIndicator(contact: String) {
 }
 object HashChatNative {
     init {
-        System.loadLibrary("hashchat_android")   // built from android/src/main/rust/
+        System.loadLibrary("hashchat_rust")   // single crate: src/rust/ --features android
     }
 
     external fun init()

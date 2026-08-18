@@ -21,13 +21,12 @@ This is the working plan. Session diaries do not belong here.
 - Quantum hybrid: gated, unaudited `ml-kem`, Extreme should keep it off
 - Tauri GUI: HTML stub
 - Voice/calls: partial; Haskell `Call.hs` / `Voice.hs` are almost empty
-- Two copies of the Rust crate (desktop `src/rust/` vs `android/src/main/rust/`)
 - No signed tag. No independent audit.
 
 ## Work order (do these, in this order)
 
 1. **OPSEC on every push** — `scripts/opsec-pre-push.sh`, Codeberg first, GitHub mirror second. Separate SSH keys when you rotate GitHub.
-2. **One Rust crate** — delete the Android copy; JNI links `hashchat-rust`.
+2. **One Rust crate** — done. Android JNI is `src/rust/android_jni.rs` (`--features android`). Kotlin loads `hashchat_rust`.
 3. **Two-device Tor message** — profile → QR → send/recv → persist → wipe. Log it. That is the real v0.2 gate.
 4. **FFI hygiene** — remaining unwraps, mlock honestly documented, no silent failures.
 5. **Honest docs / icons / screenshots** — then a signed `v0.2` from Codeberg.

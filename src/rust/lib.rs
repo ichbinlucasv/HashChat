@@ -11,6 +11,9 @@ use std::sync::{Mutex, OnceLock};
 mod ratchet;
 mod longterm_identity;
 
+#[cfg(feature = "android")]
+mod android_jni;
+
 // long-13: gated quantum module. Only compiled with `cargo build --features quantum`.
 // The module itself documents the strict constant-time / zeroize / side-channel
 // requirements that any future real implementation must meet.
@@ -138,6 +141,7 @@ pub extern "C" fn rust_hmac_verify(
 
 #[no_mangle]
 pub extern "C" fn rust_wipe_files() {
+    wipe_crypto_stores();
     let _ = fs::remove_dir_all("tor/hidden_service");
     let _ = fs::remove_file("hashchat.db");
 }
@@ -199,7 +203,7 @@ pub extern "C" fn rust_secure_compare(a: *const u8, b: *const u8, len: usize) ->
 
 use crate::ratchet::DoubleRatchet;
 
-fn ratchet_store() -> &'static Mutex<Vec<DoubleRatchet>> {
+pub(crate) fn ratchet_store() -> &'static Mutex<Vec<DoubleRatchet>> {
     static STORE: OnceLock<Mutex<Vec<DoubleRatchet>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(Vec::new()))
 }
@@ -209,11 +213,11 @@ fn extreme_flag() -> &'static Mutex<bool> {
     FLAG.get_or_init(|| Mutex::new(false))
 }
 
-fn is_extreme() -> bool {
+pub(crate) fn is_extreme() -> bool {
     extreme_flag().lock().map(|g| *g).unwrap_or(false)
 }
 
-fn store_put(state_id: u32, r: DoubleRatchet) -> bool {
+pub(crate) fn store_put(state_id: u32, r: DoubleRatchet) -> bool {
     let Ok(mut store) = ratchet_store().lock() else {
         return false;
     };
@@ -695,9 +699,24 @@ pub extern "C" fn rust_encrypt_blob_with_passphrase(
 use crate::longterm_identity::LongTermIdentity;
 use x25519_dalek::PublicKey as X25519Public;
 
-fn longterm_store() -> &'static Mutex<Vec<LongTermIdentity>> {
+pub(crate) fn longterm_store() -> &'static Mutex<Vec<LongTermIdentity>> {
     static STORE: OnceLock<Mutex<Vec<LongTermIdentity>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+pub(crate) fn wipe_crypto_stores() {
+    if let Ok(mut store) = ratchet_store().lock() {
+        for r in store.iter_mut() {
+            r.zeroize();
+        }
+        store.clear();
+    }
+    if let Ok(mut store) = longterm_store().lock() {
+        for id in store.iter_mut() {
+            id.wipe();
+        }
+        store.clear();
+    }
 }
 
 #[no_mangle]
