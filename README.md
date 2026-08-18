@@ -25,22 +25,11 @@ Quick start (Normal User):
 5. Press `v` to test voice recording (real mic on most modern desktops)
 6. Use `:filter term` or `/` (clear), `:status`, `:my-contact` (QR link)
 
-The TUI is text-based but deliberately designed to be usable by normal people on the 5 recommended OSes while keeping the paranoid security model. Full GUI is not planned unless it can be done without increasing attack surface.
+The desktop app is a dense black+gold TUI on purpose (small attack surface). It is not a Simplex-style GUI.
 
-See the expanded "Desktop Runtime Notes" section in INSTALL.md for your specific OS.
+**Status (honest):** Rust Double Ratchet + Argon2id envelopes + Tor v3 path exist. Mesh / relay / PQ / Tauri / calls are stubs. No signed v0.2 until two devices exchange a real Tor message and the remaining stubs are either finished or removed. See [ROADMAP.md](ROADMAP.md) and [THREATMODEL.md](THREATMODEL.md).
 
-**Presidential-grade anonymous messenger** — Strong SimplexChat-style feature parity (burner profiles, groups with sender keys, contact actions, voice, QR-style sharing) with Session-like metadata resistance. Powered by a Rust Double Ratchet core + Tor v3 hidden services.
-
-Note on "look": The desktop version is a powerful text-based TUI (black + gold theme, dense security information, explicit OPSEC cues). It prioritizes minimal attack surface and information density over graphical polish. It does not look like a modern GUI messenger (e.g. SimplexChat desktop). This is intentional for the threat model.
-
-**Honest Readiness Assessment for Normal Users (Fedora/Ubuntu/Arch/Tails/Qubes)**: 
-The TUI + scripts + INSTALL.md one-liners now make it usable by careful non-experts on these 5 OSes: run ./run-tui (diagnostics for audio/Tor), n for burner, v for voice (PipeWire best), :filter/:status/:set-proxy/:my-contact (QR link + use qrencode for scan). All core paranoid features (Tor v3 mandatory, real ratchet E2EE per chunk/voice/msg, posture gates, nuclear wipe, encrypted persistence, queues) are working. 
-However, this is a *dense terminal UI*, not a polished GUI app like SimplexChat. No mouse, no pretty bubbles beyond text, explicit logs everywhere for transparency. Tauri GUI stub exists as optional future thin wrapper (still FFI-only to core for no surface increase) but TUI is and will remain the primary secure default. 
-Current state: ready for technical "normal" users who follow the exact per-OS audio/Tor/install notes and run clean-security. Not "download and click" for absolute beginners. Real hardware evidence (screenshots/logs on Fedora + Tails/Qubes) still required for v0.2 claim of "production for paranoid normal users". See INSTALL.md for the one-liners and Quick Path. Brutal truth: if you want Simplex-like GUI today, use Simplex; if you want stronger endpoint OPSEC + explicit controls on desktop, this is deeper.
-
-**No phone numbers. No user IDs. No central servers. No logs. No metadata.**
-
-**Current Status (as of this build, after "continue")**: TUI is usable by normal users on 5 OSes via ./install.sh + ./run-tui (filter, voice with timer/seconds, status panel, QR tips, sending indicators). ML-KEM dep integrated + compiles (feature gated, real ops in test, strong warnings - not audited). Tauri GUI stub advanced to more prod-like (filter/voice sims, black/gold). Android parity notes + basic code for filter/voice sending. Relay deepened. Honest: evidence/hardware runs still Critical blocker for v0.2 claim. TUI dense text (intentional, not Simplex GUI polish). See INSTALL for quick path. Brutal: ready for careful normal users following docs; GUI optional. Core OPSEC intact.
+**No phone numbers. No user IDs. No central servers.**
 
 ### Current Working Features (What Actually Works Today)
 **Paranoid Core**

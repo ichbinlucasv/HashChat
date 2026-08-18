@@ -60,6 +60,7 @@ HashChat delivers production-grade end-to-end encryption for 1:1 messages and vo
 - **AES-256-GCM message protection** (via FFI):
   - `sendEncryptedMessage` / `receiveEncryptedMessage` (Core.hs:253) call Rust ratchet step then `rust_encrypt_with_key` / `rust_decrypt_with_key` (lib.rs:180) using the exact ratchet-derived key.
   - Used uniformly for text + voice chunks (TUI send path + drainIncoming + voice recording/playback).
+  - Wire format is `nonce(12) || ciphertext || tag`. Nonce is random per seal (2026-08-18). Old all-zero nonce is gone.
 
 - **Long-term per-profile identity for ContactAddress bootstrap (Critical item, completed)**:
   - Rust `LongTermIdentity` ([src/rust/longterm_identity.rs](src/rust/longterm_identity.rs)): 32-byte seed → ed25519 (signing) + x25519 (key agreement), `Zeroize`/`wipe`, Argon2id + AES-256-GCM *exact same envelope format* as ratchets.

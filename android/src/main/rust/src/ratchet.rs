@@ -258,21 +258,31 @@ impl DoubleRatchet {
     }
 }
 
+/// AES-256-GCM. Wire format: nonce(12) || ciphertext || tag(16).
 pub fn encrypt_with_key(key: &[u8; RATCHET_KEY_LEN], pt: &[u8]) -> Result<Vec<u8>, &'static str> {
+    use rand::RngCore;
     let unbound = UnboundKey::new(&aead::AES_256_GCM, key).map_err(|_| "key")?;
     let lsk = LessSafeKey::new(unbound);
-    let nonce = aead::Nonce::assume_unique_for_key([0u8; RATCHET_NONCE_LEN]);
-    let mut buf = vec![0u8; pt.len() + aead::AES_256_GCM.tag_len()];
-    buf[..pt.len()].copy_from_slice(pt);
+    let mut nonce_bytes = [0u8; RATCHET_NONCE_LEN];
+    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = aead::Nonce::assume_unique_for_key(nonce_bytes);
+    let mut buf = pt.to_vec();
     lsk.seal_in_place_append_tag(nonce, Aad::empty(), &mut buf).map_err(|_| "seal")?;
-    Ok(buf)
+    let mut out = Vec::with_capacity(RATCHET_NONCE_LEN + buf.len());
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&buf);
+    Ok(out)
 }
 
 pub fn decrypt_with_key(key: &[u8; RATCHET_KEY_LEN], ct: &[u8]) -> Result<Vec<u8>, &'static str> {
+    if ct.len() < RATCHET_NONCE_LEN + aead::AES_256_GCM.tag_len() {
+        return Err("short");
+    }
+    let nonce_bytes: [u8; RATCHET_NONCE_LEN] = ct[..RATCHET_NONCE_LEN].try_into().map_err(|_| "nonce")?;
     let unbound = UnboundKey::new(&aead::AES_256_GCM, key).map_err(|_| "key")?;
     let lsk = LessSafeKey::new(unbound);
-    let nonce = aead::Nonce::assume_unique_for_key([0u8; RATCHET_NONCE_LEN]);
-    let mut buf = ct.to_vec();
+    let nonce = aead::Nonce::assume_unique_for_key(nonce_bytes);
+    let mut buf = ct[RATCHET_NONCE_LEN..].to_vec();
     let pt = lsk.open_in_place(nonce, Aad::empty(), &mut buf).map_err(|_| "open")?;
     Ok(pt.to_vec())
 }

@@ -236,21 +236,33 @@ impl DoubleRatchet {
     }
 }
 
+/// AES-256-GCM. Wire format: nonce(12) || ciphertext || tag(16).
+/// A fresh random nonce is generated per call so the same message key
+/// cannot be reused with a fixed nonce (that would be a full break).
 pub fn encrypt_with_key(key: &[u8; RATCHET_KEY_LEN], pt: &[u8]) -> Result<Vec<u8>, &'static str> {
+    use rand::RngCore;
     let unbound = UnboundKey::new(&aead::AES_256_GCM, key).map_err(|_| "key")?;
     let lsk = LessSafeKey::new(unbound);
-    let nonce = aead::Nonce::assume_unique_for_key([0u8; RATCHET_NONCE_LEN]);
-    let mut buf = vec![0u8; pt.len() + aead::AES_256_GCM.tag_len()];
-    buf[..pt.len()].copy_from_slice(pt);
+    let mut nonce_bytes = [0u8; RATCHET_NONCE_LEN];
+    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = aead::Nonce::assume_unique_for_key(nonce_bytes);
+    let mut buf = pt.to_vec();
     lsk.seal_in_place_append_tag(nonce, Aad::empty(), &mut buf).map_err(|_| "seal")?;
-    Ok(buf)
+    let mut out = Vec::with_capacity(RATCHET_NONCE_LEN + buf.len());
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&buf);
+    Ok(out)
 }
 
 pub fn decrypt_with_key(key: &[u8; RATCHET_KEY_LEN], ct: &[u8]) -> Result<Vec<u8>, &'static str> {
+    if ct.len() < RATCHET_NONCE_LEN + aead::AES_256_GCM.tag_len() {
+        return Err("short");
+    }
+    let nonce_bytes: [u8; RATCHET_NONCE_LEN] = ct[..RATCHET_NONCE_LEN].try_into().map_err(|_| "nonce")?;
     let unbound = UnboundKey::new(&aead::AES_256_GCM, key).map_err(|_| "key")?;
     let lsk = LessSafeKey::new(unbound);
-    let nonce = aead::Nonce::assume_unique_for_key([0u8; RATCHET_NONCE_LEN]);
-    let mut buf = ct.to_vec();
+    let nonce = aead::Nonce::assume_unique_for_key(nonce_bytes);
+    let mut buf = ct[RATCHET_NONCE_LEN..].to_vec();
     let pt = lsk.open_in_place(nonce, Aad::empty(), &mut buf).map_err(|_| "open")?;
     Ok(pt.to_vec())
 }
@@ -347,5 +359,41 @@ impl DoubleRatchet {
             recv_count: recv,
             skipped_keys: skipped,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encrypt_roundtrip() {
+        let key = [7u8; 32];
+        let pt = b"hashchat-opsec";
+        let ct = encrypt_with_key(&key, pt).expect("encrypt");
+        assert!(ct.len() > pt.len());
+        assert_ne!(&ct[RATCHET_NONCE_LEN..], pt.as_ref());
+        let out = decrypt_with_key(&key, &ct).expect("decrypt");
+        assert_eq!(out, pt);
+    }
+
+    #[test]
+    fn encrypt_uses_unique_nonces() {
+        let key = [9u8; 32];
+        let pt = b"same plaintext";
+        let a = encrypt_with_key(&key, pt).expect("a");
+        let b = encrypt_with_key(&key, pt).expect("b");
+        assert_ne!(a, b, "identical ciphertext means nonce reuse");
+        assert_eq!(decrypt_with_key(&key, &a).unwrap(), pt);
+        assert_eq!(decrypt_with_key(&key, &b).unwrap(), pt);
+    }
+
+    #[test]
+    fn decrypt_rejects_short_and_wrong_key() {
+        let key = [1u8; 32];
+        let other = [2u8; 32];
+        assert!(decrypt_with_key(&key, &[0u8; 8]).is_err());
+        let ct = encrypt_with_key(&key, b"secret").unwrap();
+        assert!(decrypt_with_key(&other, &ct).is_err());
     }
 }

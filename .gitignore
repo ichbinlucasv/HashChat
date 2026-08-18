@@ -80,3 +80,9 @@ credentials.json
 
 # === Git LFS (if you ever use it) ===
 *.lfs
+
+# === Local ritual junk (never commit) ===
+.pre-tag-check-local-ran-*
+sbom-continue-*/
+sbom-pre-tag/
+sbom-v0.2-preview/

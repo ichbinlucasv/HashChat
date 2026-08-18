@@ -321,21 +321,10 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_encryptWithKey(
         }
     }
 
-    let unbound = match UnboundKey::new(&AES_256_GCM, &key_bytes) {
-        Ok(k) => k,
-        Err(_) => return vec_to_java_byte_array(&mut _env, &[]),
-    };
-    let lsk = LessSafeKey::new(unbound);
-    let nonce = Nonce::assume_unique_for_key([0u8; 12]); // In real use this must be unique per message
-
-    let mut buf = pt;
-    buf.resize(buf.len() + AES_256_GCM.tag_len(), 0);
-
-    if lsk.seal_in_place_append_tag(nonce, Aad::empty(), &mut buf).is_err() {
-        return vec_to_java_byte_array(&mut _env, &[]);
+    match crate::ratchet::encrypt_with_key(&key_bytes, &pt) {
+        Ok(buf) => vec_to_java_byte_array(&mut _env, &buf),
+        Err(_) => vec_to_java_byte_array(&mut _env, &[]),
     }
-
-    vec_to_java_byte_array(&mut _env, &buf)
 }
 
 #[no_mangle]
@@ -367,19 +356,10 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_decryptWithKey(
         }
     }
 
-    let unbound = match UnboundKey::new(&AES_256_GCM, &key_bytes) {
-        Ok(k) => k,
-        Err(_) => return vec_to_java_byte_array(&mut _env, &[]),
-    };
-    let lsk = LessSafeKey::new(unbound);
-    let nonce = Nonce::assume_unique_for_key([0u8; 12]);
-
-    let pt = match lsk.open_in_place(nonce, Aad::empty(), &mut ct) {
-        Ok(p) => p.to_vec(),
-        Err(_) => return vec_to_java_byte_array(&mut _env, &[]),
-    };
-
-    vec_to_java_byte_array(&mut _env, &pt)
+    match crate::ratchet::decrypt_with_key(&key_bytes, &ct) {
+        Ok(pt) => vec_to_java_byte_array(&mut _env, &pt),
+        Err(_) => vec_to_java_byte_array(&mut _env, &[]),
+    }
 }
 
 // === Ratchet Export/Import for Group Persistence & Cross-Device (high-4 + real OPSEC) ===

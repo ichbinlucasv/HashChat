@@ -62,7 +62,7 @@ import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds, posixSecondsToUTCTime)
 import Data.Word (Word8, Word16, Word32, Word64)
 import Database.SQLite.Simple
 import Foreign.Ptr
-import Foreign.Marshal.Alloc (malloc)
+import Foreign.Marshal.Alloc (malloc, free)
 import Foreign.Marshal.Array (withArray, peekArray, mallocArray, newArray)
 import Foreign.Storable (peek, poke)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
@@ -320,16 +320,21 @@ sendEncryptedMessage :: Word32 -> ByteString -> ByteString -> Bool -> Maybe Nomi
 sendEncryptedMessage ratchetId senderPub plaintext disappearing ttl = do
   (msgKey, step) <- ratchetSend ratchetId
 
-  -- Actually encrypt with the exact 32-byte key from the ratchet
-  let keyPtr = unsafePerformIO $ newArray (unpack msgKey)
-  let ptPtr  = unsafePerformIO $ newArray (unpack plaintext)
-  let buf    = replicate (BS.length plaintext + 16) 0
-  outPtr <- newArray buf
-  outLenPtr <- malloc
-
-  _ <- rust_encrypt_with_key keyPtr ptPtr (BS.length plaintext) outPtr outLenPtr
-  len <- peek outLenPtr
-  enc <- peekArray len outPtr
+  -- nonce(12) + ciphertext + GCM tag(16)
+  let outCap = BS.length plaintext + 12 + 16
+  enc <- withArray (unpack msgKey) $ \keyPtr ->
+    withArray (unpack plaintext) $ \ptPtr -> do
+      outPtr <- mallocArray outCap
+      outLenPtr <- malloc
+      poke outLenPtr outCap
+      ok <- rust_encrypt_with_key keyPtr ptPtr (BS.length plaintext) outPtr outLenPtr
+      len <- peek outLenPtr
+      bytes <- if ok && len > 0 && len <= outCap
+                 then peekArray len outPtr
+                 else pure []
+      free outPtr
+      free outLenPtr
+      pure bytes
 
   now <- Time.getCurrentTime
   let expTime = if disappearing
@@ -351,16 +356,21 @@ receiveEncryptedMessage :: Word32 -> ByteString -> ByteString -> IO (Maybe Messa
 receiveEncryptedMessage ratchetId senderPub ct = do
   (msgKey, step) <- ratchetRecv ratchetId senderPub
 
-  let keyPtr = unsafePerformIO $ newArray (unpack msgKey)
-  let ctPtr  = unsafePerformIO $ newArray (unpack ct)
-  let buf    = replicate (BS.length ct + 32) 0   -- generous buffer
-  outPtr <- newArray buf
-  outLenPtr <- malloc
-
-  ok <- rust_decrypt_with_key keyPtr ctPtr (BS.length ct) outPtr outLenPtr
+  let outCap = max 1 (BS.length ct)
+  (ok, dec) <- withArray (unpack msgKey) $ \keyPtr ->
+    withArray (unpack ct) $ \ctPtr -> do
+      outPtr <- mallocArray outCap
+      outLenPtr <- malloc
+      poke outLenPtr outCap
+      ok <- rust_decrypt_with_key keyPtr ctPtr (BS.length ct) outPtr outLenPtr
+      dec <- if ok then do
+               len <- peek outLenPtr
+               if len > 0 && len <= outCap then peekArray len outPtr else pure []
+             else pure []
+      free outPtr
+      free outLenPtr
+      pure (ok, dec)
   if ok then do
-    len <- peek outLenPtr
-    dec <- peekArray len outPtr
     now <- Time.getCurrentTime
     pure $ Just $ Message
       { msgId = fromIntegral step

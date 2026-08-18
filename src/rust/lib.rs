@@ -1,13 +1,12 @@
-#![allow(static_mut_refs)]  // Intentional global store for FFI ratchet handles (safe in our single-threaded usage)
-
 use ring::hmac;
 use ring::rand::{SecureRandom, SystemRandom};
 use zeroize::Zeroize;
 use ed25519_dalek::SigningKey;
-use subtle::ConstantTimeEq;  // OPSEC: audited constant-time comparison (replaces deprecated ring internal API)
+use subtle::ConstantTimeEq;
 use std::fs;
 use std::os::raw::c_void;
 use std::ptr;
+use std::sync::{Mutex, OnceLock};
 
 mod ratchet;
 mod longterm_identity;
@@ -45,10 +44,19 @@ pub extern "C" fn rust_quantum_hybrid_kex_test(
         return false;
     }
     unsafe {
-        let our: [u8; 32] = std::slice::from_raw_parts(our_priv, 32).try_into().unwrap_or([0u8; 32]);
-        let px: [u8; 32] = std::slice::from_raw_parts(peer_x, 32).try_into().unwrap_or([0u8; 32]);
-        let pkem_arr: [u8; quantum::KEM_PUBLIC_KEY_LEN] = std::slice::from_raw_parts(peer_kem, quantum::KEM_PUBLIC_KEY_LEN)
-            .try_into().unwrap_or([0u8; quantum::KEM_PUBLIC_KEY_LEN]);
+        let our: [u8; 32] = match std::slice::from_raw_parts(our_priv, 32).try_into() {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        let px: [u8; 32] = match std::slice::from_raw_parts(peer_x, 32).try_into() {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        let pkem_arr: [u8; quantum::KEM_PUBLIC_KEY_LEN] =
+            match std::slice::from_raw_parts(peer_kem, quantum::KEM_PUBLIC_KEY_LEN).try_into() {
+                Ok(b) => b,
+                Err(_) => return false,
+            };
         match quantum::hybrid_kex(&our, &px, &pkem_arr) {
             Ok((ss, ct)) => {
                 std::ptr::copy_nonoverlapping(ct.as_ptr(), out_ct, ct.len());
@@ -83,11 +91,49 @@ pub extern "C" fn rust_secure_erase(ptr: *mut c_void) {
     }
 }
 
+/// HMAC-SHA256(key, msg) -> 32-byte tag.
 #[no_mangle]
-pub extern "C" fn rust_hmac_verify(msg: *const u8, len: usize) -> bool {
-    let slice = unsafe { std::slice::from_raw_parts(msg, len) };
-    let key = hmac::Key::new(hmac::HMAC_SHA512, b"hashchat-extra-key");
-    hmac::verify(&key, slice, slice).is_ok()
+pub extern "C" fn rust_hmac_sign(
+    key: *const u8,
+    key_len: usize,
+    msg: *const u8,
+    msg_len: usize,
+    out_tag: *mut u8,
+) -> bool {
+    if key.is_null() || msg.is_null() || out_tag.is_null() || key_len == 0 {
+        return false;
+    }
+    unsafe {
+        let key_slice = std::slice::from_raw_parts(key, key_len);
+        let msg_slice = std::slice::from_raw_parts(msg, msg_len);
+        let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, key_slice);
+        let tag = hmac::sign(&hmac_key, msg_slice);
+        let bytes = tag.as_ref();
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_tag, bytes.len().min(32));
+        true
+    }
+}
+
+/// Constant-time HMAC-SHA256 verify. Replaces the old self-compare stub.
+#[no_mangle]
+pub extern "C" fn rust_hmac_verify(
+    key: *const u8,
+    key_len: usize,
+    msg: *const u8,
+    msg_len: usize,
+    tag: *const u8,
+    tag_len: usize,
+) -> bool {
+    if key.is_null() || msg.is_null() || tag.is_null() || key_len == 0 || tag_len == 0 {
+        return false;
+    }
+    unsafe {
+        let key_slice = std::slice::from_raw_parts(key, key_len);
+        let msg_slice = std::slice::from_raw_parts(msg, msg_len);
+        let tag_slice = std::slice::from_raw_parts(tag, tag_len);
+        let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, key_slice);
+        hmac::verify(&hmac_key, msg_slice, tag_slice).is_ok()
+    }
 }
 
 #[no_mangle]
@@ -153,52 +199,101 @@ pub extern "C" fn rust_secure_compare(a: *const u8, b: *const u8, len: usize) ->
 
 use crate::ratchet::DoubleRatchet;
 
-static mut RATCHET_STORE: Vec<DoubleRatchet> = Vec::new();
-static mut EXTREME_MODE: bool = false;  // For future Rust-level Extreme gates (parity with Android)
+fn ratchet_store() -> &'static Mutex<Vec<DoubleRatchet>> {
+    static STORE: OnceLock<Mutex<Vec<DoubleRatchet>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn extreme_flag() -> &'static Mutex<bool> {
+    static FLAG: OnceLock<Mutex<bool>> = OnceLock::new();
+    FLAG.get_or_init(|| Mutex::new(false))
+}
+
+fn is_extreme() -> bool {
+    extreme_flag().lock().map(|g| *g).unwrap_or(false)
+}
+
+fn store_put(state_id: u32, r: DoubleRatchet) -> bool {
+    let Ok(mut store) = ratchet_store().lock() else {
+        return false;
+    };
+    if (state_id as usize) < store.len() {
+        store[state_id as usize] = r;
+    } else {
+        store.push(r);
+    }
+    true
+}
 
 #[no_mangle]
 pub extern "C" fn rust_ratchet_new() -> u32 {
-    unsafe {
-        if EXTREME_MODE {
-            // Extreme: refuse new ratchets (groups use them; per design disable groups)
-            return u32::MAX;  // error signal
-        }
-        let id = RATCHET_STORE.len() as u32;
-        RATCHET_STORE.push(DoubleRatchet::new());
-        id
+    if is_extreme() {
+        return u32::MAX;
     }
+    let Ok(mut store) = ratchet_store().lock() else {
+        return u32::MAX;
+    };
+    let id = store.len() as u32;
+    store.push(DoubleRatchet::new());
+    id
 }
 
 #[no_mangle]
 pub extern "C" fn rust_ratchet_init(state_id: u32, remote_pub: *const u8, shared_secret: *const u8) {
+    if remote_pub.is_null() || shared_secret.is_null() {
+        return;
+    }
     unsafe {
-        if let Some(r) = RATCHET_STORE.get_mut(state_id as usize) {
-            let rp = x25519_dalek::PublicKey::from(*<&[u8; 32]>::try_from(std::slice::from_raw_parts(remote_pub, 32)).unwrap());
-            let sh = *<&[u8; 32]>::try_from(std::slice::from_raw_parts(shared_secret, 32)).unwrap();
-            r.init_from_shared(rp, &sh);
+        let rp_bytes: [u8; 32] = match std::slice::from_raw_parts(remote_pub, 32).try_into() {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let sh: [u8; 32] = match std::slice::from_raw_parts(shared_secret, 32).try_into() {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let rp = x25519_dalek::PublicKey::from(rp_bytes);
+        if let Ok(mut store) = ratchet_store().lock() {
+            if let Some(r) = store.get_mut(state_id as usize) {
+                r.init_from_shared(rp, &sh);
+            }
         }
     }
 }
 
 #[no_mangle]
 pub extern "C" fn rust_ratchet_send(state_id: u32, out_key: *mut u8, out_count: *mut u32) {
-    unsafe {
-        if let Some(r) = RATCHET_STORE.get_mut(state_id as usize) {
+    if out_key.is_null() || out_count.is_null() {
+        return;
+    }
+    if let Ok(mut store) = ratchet_store().lock() {
+        if let Some(r) = store.get_mut(state_id as usize) {
             let (key, count) = r.ratchet_send();
-            std::ptr::copy_nonoverlapping(key.as_ptr(), out_key, 32);
-            *out_count = count;
+            unsafe {
+                std::ptr::copy_nonoverlapping(key.as_ptr(), out_key, 32);
+                *out_count = count;
+            }
         }
     }
 }
 
 #[no_mangle]
 pub extern "C" fn rust_ratchet_recv(state_id: u32, remote_pub: *const u8, out_key: *mut u8, out_count: *mut u32) {
+    if remote_pub.is_null() || out_key.is_null() || out_count.is_null() {
+        return;
+    }
     unsafe {
-        if let Some(r) = RATCHET_STORE.get_mut(state_id as usize) {
-            let rp = x25519_dalek::PublicKey::from(*<&[u8; 32]>::try_from(std::slice::from_raw_parts(remote_pub, 32)).unwrap());
-            let (key, count) = r.ratchet_recv(&rp);
-            std::ptr::copy_nonoverlapping(key.as_ptr(), out_key, 32);
-            *out_count = count;
+        let rp_bytes: [u8; 32] = match std::slice::from_raw_parts(remote_pub, 32).try_into() {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let rp = x25519_dalek::PublicKey::from(rp_bytes);
+        if let Ok(mut store) = ratchet_store().lock() {
+            if let Some(r) = store.get_mut(state_id as usize) {
+                let (key, count) = r.ratchet_recv(&rp);
+                std::ptr::copy_nonoverlapping(key.as_ptr(), out_key, 32);
+                *out_count = count;
+            }
         }
     }
 }
@@ -207,8 +302,8 @@ pub extern "C" fn rust_ratchet_recv(state_id: u32, remote_pub: *const u8, out_ke
 /// Called when a message expires so the corresponding ratchet material is erased.
 #[no_mangle]
 pub extern "C" fn rust_ratchet_wipe_skipped_key(state_id: u32, msg_number: u32) {
-    unsafe {
-        if let Some(r) = RATCHET_STORE.get_mut(state_id as usize) {
+    if let Ok(mut store) = ratchet_store().lock() {
+        if let Some(r) = store.get_mut(state_id as usize) {
             r.wipe_skipped_key(msg_number);
         }
     }
@@ -224,19 +319,17 @@ pub extern "C" fn rust_encrypt_with_key(
     out: *mut u8,
     out_len: *mut usize,
 ) -> bool {
+    if key.is_null() || plaintext.is_null() || out.is_null() || out_len.is_null() {
+        return false;
+    }
     unsafe {
-        let key_slice = std::slice::from_raw_parts(key, 32);
+        let key_arr: [u8; 32] = match std::slice::from_raw_parts(key, 32).try_into() {
+            Ok(k) => k,
+            Err(_) => return false,
+        };
         let pt = std::slice::from_raw_parts(plaintext, plaintext_len);
-
-        let unbound = ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, key_slice).unwrap();
-        let lsk = ring::aead::LessSafeKey::new(unbound);
-
-        let nonce = ring::aead::Nonce::assume_unique_for_key([0u8; 12]);
-        let mut buf = vec![0u8; plaintext_len + ring::aead::AES_256_GCM.tag_len()];
-        buf[..plaintext_len].copy_from_slice(pt);
-
-        match lsk.seal_in_place_append_tag(nonce, ring::aead::Aad::empty(), &mut buf) {
-            Ok(_) => {
+        match crate::ratchet::encrypt_with_key(&key_arr, pt) {
+            Ok(buf) => {
                 std::ptr::copy_nonoverlapping(buf.as_ptr(), out, buf.len());
                 *out_len = buf.len();
                 true
@@ -254,17 +347,16 @@ pub extern "C" fn rust_decrypt_with_key(
     out: *mut u8,
     out_len: *mut usize,
 ) -> bool {
+    if key.is_null() || ciphertext.is_null() || out.is_null() || out_len.is_null() {
+        return false;
+    }
     unsafe {
-        let key_slice = std::slice::from_raw_parts(key, 32);
+        let key_arr: [u8; 32] = match std::slice::from_raw_parts(key, 32).try_into() {
+            Ok(k) => k,
+            Err(_) => return false,
+        };
         let ct = std::slice::from_raw_parts(ciphertext, ciphertext_len);
-
-        let unbound = ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, key_slice).unwrap();
-        let lsk = ring::aead::LessSafeKey::new(unbound);
-
-        let nonce = ring::aead::Nonce::assume_unique_for_key([0u8; 12]);
-        let mut buf = ct.to_vec();
-
-        match lsk.open_in_place(nonce, ring::aead::Aad::empty(), &mut buf) {
+        match crate::ratchet::decrypt_with_key(&key_arr, ct) {
             Ok(plain) => {
                 std::ptr::copy_nonoverlapping(plain.as_ptr(), out, plain.len());
                 *out_len = plain.len();
@@ -279,37 +371,36 @@ pub extern "C" fn rust_decrypt_with_key(
 
 #[no_mangle]
 pub extern "C" fn rust_ratchet_to_bytes(state_id: u32, out: *mut u8, out_len: *mut usize) -> bool {
-    unsafe {
-        if let Some(r) = RATCHET_STORE.get(state_id as usize) {
-            let bytes = r.to_bytes();
-            if bytes.len() > *out_len {
-                *out_len = bytes.len();
-                return false;
-            }
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
-            *out_len = bytes.len();
-            true
-        } else {
-            false
-        }
+    if out.is_null() || out_len.is_null() {
+        return false;
     }
+    let Ok(store) = ratchet_store().lock() else {
+        return false;
+    };
+    let Some(r) = store.get(state_id as usize) else {
+        return false;
+    };
+    let bytes = r.to_bytes();
+    unsafe {
+        if bytes.len() > *out_len {
+            *out_len = bytes.len();
+            return false;
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
+        *out_len = bytes.len();
+    }
+    true
 }
 
 #[no_mangle]
 pub extern "C" fn rust_ratchet_from_bytes(state_id: u32, data: *const u8, len: usize) -> bool {
-    unsafe {
-        let bytes = std::slice::from_raw_parts(data, len);
-        match DoubleRatchet::from_bytes(bytes) {
-            Ok(r) => {
-                if (state_id as usize) < RATCHET_STORE.len() {
-                    RATCHET_STORE[state_id as usize] = r;
-                } else {
-                    RATCHET_STORE.push(r);
-                }
-                true
-            }
-            Err(_) => false,
-        }
+    if data.is_null() {
+        return false;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+    match DoubleRatchet::from_bytes(bytes) {
+        Ok(r) => store_put(state_id, r),
+        Err(_) => false,
     }
 }
 
@@ -349,7 +440,10 @@ pub extern "C" fn rust_ratchet_export_encrypted(
     out_len: *mut usize,
 ) -> bool {
     unsafe {
-        if let Some(ratchet) = RATCHET_STORE.get(state_id as usize) {
+        let Ok(store) = ratchet_store().lock() else {
+            return false;
+        };
+        if let Some(ratchet) = store.get(state_id as usize) {
             let pass = std::slice::from_raw_parts(passphrase, pass_len);
             if pass.is_empty() {
                 return false;
@@ -443,14 +537,7 @@ pub extern "C" fn rust_ratchet_import_encrypted(
         match lsk.open_in_place(nonce, Aad::empty(), &mut buf) {
             Ok(plain) => {
                 match DoubleRatchet::from_bytes(plain) {
-                    Ok(r) => {
-                        if (state_id as usize) < RATCHET_STORE.len() {
-                            RATCHET_STORE[state_id as usize] = r;
-                        } else {
-                            RATCHET_STORE.push(r);
-                        }
-                        true
-                    }
+                    Ok(r) => store_put(state_id, r),
                     Err(_) => false,
                 }
             }
@@ -608,17 +695,19 @@ pub extern "C" fn rust_encrypt_blob_with_passphrase(
 use crate::longterm_identity::LongTermIdentity;
 use x25519_dalek::PublicKey as X25519Public;
 
-/// Global store for long-term identities (indexed by u32, similar to ratchets).
-/// In a real application these would be managed per-profile in the host (Haskell).
-static mut LONGTERM_STORE: Vec<LongTermIdentity> = Vec::new();
+fn longterm_store() -> &'static Mutex<Vec<LongTermIdentity>> {
+    static STORE: OnceLock<Mutex<Vec<LongTermIdentity>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(Vec::new()))
+}
 
 #[no_mangle]
 pub extern "C" fn rust_longterm_identity_new() -> u32 {
-    unsafe {
-        let id = LONGTERM_STORE.len() as u32;
-        LONGTERM_STORE.push(LongTermIdentity::generate());
-        id
-    }
+    let Ok(mut store) = longterm_store().lock() else {
+        return u32::MAX;
+    };
+    let id = store.len() as u32;
+    store.push(LongTermIdentity::generate());
+    id
 }
 
 #[no_mangle]
@@ -628,7 +717,10 @@ pub extern "C" fn rust_longterm_identity_get_public(
     out_x25519: *mut u8,
 ) -> bool {
     unsafe {
-        if let Some(id) = LONGTERM_STORE.get(identity_id as usize) {
+        let Ok(store) = longterm_store().lock() else {
+            return false;
+        };
+        if let Some(id) = store.get(identity_id as usize) {
             let ed_pub: [u8; 32] = id.ed25519_public().to_bytes();
             let x_pub: [u8; 32] = *id.x25519_public().as_bytes();
 
@@ -650,7 +742,10 @@ pub extern "C" fn rust_longterm_identity_export_encrypted(
     out_len: *mut usize,
 ) -> bool {
     unsafe {
-        if let Some(identity) = LONGTERM_STORE.get(identity_id as usize) {
+        let Ok(store) = longterm_store().lock() else {
+            return false;
+        };
+        if let Some(identity) = store.get(identity_id as usize) {
             let pass = std::slice::from_raw_parts(passphrase, pass_len);
             match longterm_export_encrypted(identity, pass) {
                 Ok(envelope) => {
@@ -684,10 +779,14 @@ pub extern "C" fn rust_longterm_identity_import_encrypted(
 
         match longterm_import_encrypted(envelope, pass) {
             Ok(identity) => {
-                if (identity_id as usize) < LONGTERM_STORE.len() {
-                    LONGTERM_STORE[identity_id as usize] = identity;
+                if let Ok(mut store) = longterm_store().lock() {
+                    if (identity_id as usize) < store.len() {
+                        store[identity_id as usize] = identity;
+                    } else {
+                        store.push(identity);
+                    }
                 } else {
-                    LONGTERM_STORE.push(identity);
+                    return false;
                 }
                 true
             }
@@ -698,9 +797,9 @@ pub extern "C" fn rust_longterm_identity_import_encrypted(
 
 #[no_mangle]
 pub extern "C" fn rust_longterm_identity_wipe(identity_id: u32) {
-    unsafe {
-        if (identity_id as usize) < LONGTERM_STORE.len() {
-            LONGTERM_STORE[identity_id as usize].wipe();
+    if let Ok(mut store) = longterm_store().lock() {
+        if let Some(id) = store.get_mut(identity_id as usize) {
+            id.wipe();
         }
     }
 }
@@ -714,10 +813,16 @@ pub extern "C" fn rust_longterm_x25519_dh(
     out_shared: *mut u8,
 ) -> bool {
     unsafe {
-        if (identity_id as usize) >= LONGTERM_STORE.len() || peer_x.is_null() || out_shared.is_null() {
+        if peer_x.is_null() || out_shared.is_null() {
             return false;
         }
-        let id = &LONGTERM_STORE[identity_id as usize];
+        let Ok(store) = longterm_store().lock() else {
+            return false;
+        };
+        if (identity_id as usize) >= store.len() {
+            return false;
+        }
+        let id = &store[identity_id as usize];
         let peer_slice = std::slice::from_raw_parts(peer_x, 32);
         let mut peer_arr = [0u8; 32];
         peer_arr.copy_from_slice(peer_slice);
@@ -730,16 +835,14 @@ pub extern "C" fn rust_longterm_x25519_dh(
 
 #[no_mangle]
 pub extern "C" fn rust_set_extreme_mode(enabled: bool) {
-    unsafe {
-        EXTREME_MODE = enabled;
+    if let Ok(mut flag) = extreme_flag().lock() {
+        *flag = enabled;
     }
 }
 
 #[no_mangle]
 pub extern "C" fn rust_is_extreme_mode() -> bool {
-    unsafe {
-        EXTREME_MODE
-    }
+    is_extreme()
 }
 
 #[no_mangle]
