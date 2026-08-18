@@ -157,14 +157,25 @@ impl DoubleRatchet {
 
     pub fn init_from_shared(&mut self, remote_pub: PublicKey, shared: &[u8; 32]) {
         self.remote_dh = Some(remote_pub);
+        self.apply_shared_root(shared);
+    }
 
+    /// X3DH bootstrap: same shared secret on both sides, no remote DH yet.
+    /// Symmetric chains stay aligned for the first messages (DH ratchet later
+    /// needs the peer's ephemeral pub on the wire).
+    pub fn init_symmetric(&mut self, shared: &[u8; 32]) {
+        self.remote_dh = None;
+        self.apply_shared_root(shared);
+    }
+
+    fn apply_shared_root(&mut self, shared: &[u8; 32]) {
         let hk = Hkdf::<Sha256>::new(None, shared);
-        // Strong context string for domain separation
         hk.expand(b"HashChat-v1-initial-root", &mut self.root_key)
             .expect("HKDF failed");
-
         self.chain_key_send = self.root_key;
         self.chain_key_recv = self.root_key;
+        self.send_count = 0;
+        self.recv_count = 0;
     }
 
     fn dh_ratchet(&mut self, remote: &PublicKey) {

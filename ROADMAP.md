@@ -28,7 +28,8 @@ This is the working plan. Session diaries do not belong here.
 1. **OPSEC on every push** — `scripts/opsec-pre-push.sh`, Codeberg first, GitHub mirror second. Separate SSH keys when you rotate GitHub.
 2. **One Rust crate** — done. Android JNI is `src/rust/android_jni.rs`.
 3. **Rust desktop TUI** — done. Haskell sources deleted.
-4. **Two-device Tor message** — profile → QR → send/recv → persist → wipe. That is the real v0.2 gate.
+4. **Two-device Tor path** — done in-process (X25519 DH + frame + tests). TUI: `:listen` (v3 onion via control port), `:my-contact` / QR, `:add-contact`, SOCKS send, local HS recv.
+5. **Harden that path** — persist onion key if you want a stable address; put ephemeral DH on the wire; cookie-auth docs for ControlPort 9051.
 4. **FFI hygiene** — remaining unwraps, mlock honestly documented, no silent failures.
 5. **Honest docs / icons / screenshots** — then a signed `v0.2` from Codeberg.
 

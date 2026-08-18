@@ -1,14 +1,17 @@
-//! HashChat desktop TUI — Rust (ratatui). Replaces the Haskell Brick UI.
+//! HashChat desktop TUI — two-device Tor path.
 //!
-//! Keys: Enter send · Tab contact · n burner · w wipe · t Tor · s selftest
-//!       :status :my-contact :extreme · q quit · ? help
+//! 1. :listen     publish a v3 onion (keeps the control connection open)
+//! 2. :my-contact share hashchat://… (qrencode if installed)
+//! 3. :add-contact hashchat://contact/v1/<onion>/<x25519>
+//! 4. type a message + Enter  (framed ciphertext over SOCKS to onion:80)
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use hashchat_rust::session::Session;
+use hashchat_rust::hidden_service::{start_hidden_service, HiddenService};
+use hashchat_rust::session::{maybe_qr_text, Session};
 use hashchat_rust::tor_socks::{probe, socks5_send};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -23,11 +26,13 @@ const GOLD: Color = Color::Rgb(255, 215, 0);
 
 struct App {
     session: Session,
+    hs: Option<HiddenService>,
     input: String,
     help: bool,
     status: String,
     socks_host: String,
     socks_port: u16,
+    control_port: u16,
 }
 
 impl App {
@@ -37,11 +42,57 @@ impl App {
         session.log(tor.note.clone());
         App {
             session,
+            hs: None,
             input: String::new(),
             help: false,
-            status: tor.note,
+            status: format!("{} — :listen to publish your onion", tor.note),
             socks_host: "127.0.0.1".into(),
             socks_port: 9050,
+            control_port: 9051,
+        }
+    }
+
+    fn drain_incoming(&mut self) {
+        let Some(hs) = self.hs.as_ref() else {
+            return;
+        };
+        let mut frames = Vec::new();
+        while let Some(f) = hs.try_recv() {
+            frames.push(f);
+        }
+        for frame in frames {
+            match self.session.receive_frame(&frame) {
+                Ok(text) => {
+                    self.status = format!("recv: {text}");
+                    self.session.log(format!("recv {text}"));
+                }
+                Err(e) => {
+                    self.status = format!("recv failed: {e}");
+                    self.session.log(self.status.clone());
+                }
+            }
+        }
+    }
+
+    fn listen(&mut self) {
+        if self.hs.is_some() {
+            self.status = format!(
+                "already listening as {}",
+                self.session.onion.as_deref().unwrap_or("?")
+            );
+            return;
+        }
+        match start_hidden_service(&self.socks_host, self.control_port) {
+            Ok(hs) => {
+                self.session.onion = Some(hs.onion.clone());
+                self.status = format!("onion {}  (local :{})", hs.onion, hs.local_port);
+                self.session.log(self.status.clone());
+                self.hs = Some(hs);
+            }
+            Err(e) => {
+                self.status = format!(":listen failed: {e}");
+                self.session.log(self.status.clone());
+            }
         }
     }
 }
@@ -63,6 +114,7 @@ fn main() -> io::Result<()> {
 
 fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
     loop {
+        app.drain_incoming();
         terminal.draw(|f| draw(f, app))?;
         if !event::poll(Duration::from_millis(200))? {
             continue;
@@ -78,15 +130,18 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
             KeyCode::Esc => return Ok(()),
             KeyCode::Char('?') if app.input.is_empty() => app.help = !app.help,
             KeyCode::Char('n') if app.input.is_empty() => {
+                app.hs = None;
                 app.session = Session::burner();
                 app.status = format!("new burner {}", app.session.profile);
             }
             KeyCode::Char('w') if app.input.is_empty() => {
+                app.hs = None;
                 app.session.nuclear_wipe();
                 app.status = "wiped".into();
             }
+            KeyCode::Char('l') if app.input.is_empty() => app.listen(),
             KeyCode::Char('t') if app.input.is_empty() => {
-                let st = probe(&app.socks_host, app.socks_port, 9051);
+                let st = probe(&app.socks_host, app.socks_port, app.control_port);
                 app.status = st.note.clone();
                 app.session.log(st.note);
             }
@@ -122,23 +177,41 @@ fn handle_enter(app: &mut App) -> bool {
     if line == ":q" || line == ":quit" {
         return false;
     }
+    if line == ":listen" {
+        app.listen();
+        return true;
+    }
     if line == ":status" {
-        let tor = probe(&app.socks_host, app.socks_port, 9051);
+        let tor = probe(&app.socks_host, app.socks_port, app.control_port);
         app.status = format!(
-            "profile={} extreme={} tor={}",
-            app.session.profile, app.session.extreme, tor.note
+            "profile={} onion={} extreme={} {}",
+            app.session.profile,
+            app.session.onion.as_deref().unwrap_or("-"),
+            app.session.extreme,
+            tor.note
         );
         return true;
     }
     if line == ":my-contact" {
-        app.status = app.session.my_contact_link();
-        app.session.log(app.status.clone());
+        let link = app.session.my_contact_link();
+        if let Some(qr) = maybe_qr_text(&link) {
+            app.session.log(qr);
+        }
+        app.status = link.clone();
+        app.session.log(link);
+        return true;
+    }
+    if let Some(rest) = line.strip_prefix(":add-contact ") {
+        match app.session.add_contact_link(rest) {
+            Ok(name) => app.status = format!("added {name}"),
+            Err(e) => app.status = e.into(),
+        }
         return true;
     }
     if line == ":extreme on" {
         app.session.extreme = true;
         hashchat_rust::rust_set_extreme_mode(true);
-        app.status = "EXTREME on — send refused".into();
+        app.status = "EXTREME on — send/add refused".into();
         return true;
     }
     if line == ":extreme off" {
@@ -165,13 +238,9 @@ fn handle_enter(app: &mut App) -> bool {
                 .current_contact()
                 .map(|c| c.onion.clone())
                 .unwrap_or_default();
-            if dest.ends_with(".onion") && dest != "alice.onion" && dest != "bob.onion" {
-                match socks5_send(&app.socks_host, app.socks_port, &dest, 80, &frame) {
-                    Ok(()) => app.status = format!("sent {} bytes over Tor SOCKS", frame.len()),
-                    Err(e) => app.status = format!("encrypted locally; Tor send failed: {e}"),
-                }
-            } else {
-                app.status = format!("encrypted {} bytes (set a real .onion to send via Tor)", frame.len());
+            match socks5_send(&app.socks_host, app.socks_port, &dest, 80, &frame) {
+                Ok(()) => app.status = format!("sent {} bytes → {dest}", frame.len()),
+                Err(e) => app.status = format!("encrypted; Tor send failed: {e}"),
             }
         }
         Err(e) => app.status = e.into(),
@@ -192,9 +261,10 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
         .split(f.area());
 
     let title = format!(
-        " HashChat  {}  [{}] ",
+        " HashChat  {}  [{}] {} ",
         app.session.profile,
-        if app.session.extreme { "EXTREME" } else { "RUST" }
+        if app.session.extreme { "EXTREME" } else { "RUST" },
+        app.session.onion.as_deref().unwrap_or("no onion")
     );
     f.render_widget(
         Paragraph::new(app.status.as_str()).style(gold).block(
@@ -211,16 +281,19 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
         .constraints([Constraint::Percentage(28), Constraint::Percentage(72)])
         .split(chunks[1]);
 
-    let items: Vec<ListItem> = app
-        .session
-        .contacts
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let mark = if i == app.session.current { ">" } else { " " };
-            ListItem::new(format!("{mark} {}", c.name))
-        })
-        .collect();
+    let items: Vec<ListItem> = if app.session.contacts.is_empty() {
+        vec![ListItem::new(" (none — :add-contact)")]
+    } else {
+        app.session
+            .contacts
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let mark = if i == app.session.current { ">" } else { " " };
+                ListItem::new(format!("{mark} {}", c.name))
+            })
+            .collect()
+    };
     f.render_widget(
         List::new(items).block(
             Block::default()
@@ -261,8 +334,11 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
                 ])
             })
             .collect();
-        for log in app.session.logs.iter().rev().take(6).rev() {
-            lines.push(Line::from(Span::styled(format!("· {log}"), Style::default().fg(Color::DarkGray))));
+        for log in app.session.logs.iter().rev().take(8).rev() {
+            lines.push(Line::from(Span::styled(
+                format!("· {log}"),
+                Style::default().fg(Color::DarkGray),
+            )));
         }
         f.render_widget(
             Paragraph::new(lines).wrap(Wrap { trim: false }).block(
@@ -279,13 +355,13 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
         Paragraph::new(app.input.as_str()).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" message  (:status :my-contact :extreme on/off) ")
+                .title(" :listen  :my-contact  :add-contact <link> ")
                 .border_style(gold),
         ),
         chunks[2],
     );
     f.render_widget(
-        Paragraph::new("q quit  ? help  n burner  w wipe  t tor  s e2ee-selftest  Tab contact")
+        Paragraph::new("q quit  ? help  l listen  n burner  w wipe  t tor  s selftest  Tab contact")
             .style(Style::default().fg(Color::DarkGray)),
         chunks[3],
     );
@@ -293,17 +369,18 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
 
 fn help_text() -> String {
     [
-        "HashChat Rust TUI — the whole desktop stack is this crate.",
+        "Two devices (both need a local Tor with ControlPort 9051 + SOCKS 9050):",
         "",
-        "n          new burner profile (new long-term keys)",
-        "w          nuclear wipe (zeroize ratchets, delete hashchat_data)",
-        "s          two-ratchet E2EE selftest (proves GCM+frame+DH)",
-        "t          probe Tor SOCKS 9050 + control 9051",
-        "Enter      encrypt to current contact; send via Tor if onion is real",
-        ":my-contact   show shareable public link (no private material)",
-        ":extreme on   refuse sends",
+        "  l / :listen              publish a v3 onion",
+        "  :my-contact              your hashchat:// link (qrencode if installed)",
+        "  :add-contact <link>      paste the other person's link",
+        "  type a message + Enter   encrypt + send over Tor SOCKS to their onion",
         "",
-        "Android UI stays Kotlin (platform shell). Crypto is this same crate.",
+        "s  X25519 + ratchet selftest (no network)",
+        "w  wipe keys + data",
+        "",
+        "Exchange links out of band. Private keys never leave this machine.",
+        "First-message crypto is X25519 DH of long-term keys, then a symmetric ratchet.",
     ]
     .join("\n")
 }

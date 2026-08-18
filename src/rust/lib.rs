@@ -13,6 +13,7 @@ pub mod longterm_identity;
 pub mod wire;
 pub mod session;
 pub mod tor_socks;
+pub mod hidden_service;
 
 #[cfg(feature = "android")]
 mod android_jni;

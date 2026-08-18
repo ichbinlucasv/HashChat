@@ -44,22 +44,22 @@ pub fn probe(socks_host: &str, socks_port: u16, control_port: u16) -> TorStatus 
 }
 
 /// SOCKS5 CONNECT through a local Tor client. `dest` is a hostname (v3 onion or DNS).
-pub fn socks5_send(
+pub fn socks5_connect(
     proxy_host: &str,
     proxy_port: u16,
     dest_host: &str,
     dest_port: u16,
-    payload: &[u8],
-) -> Result<(), String> {
+) -> Result<TcpStream, String> {
     let addr = format!("{proxy_host}:{proxy_port}")
         .to_socket_addrs()
         .map_err(|e| e.to_string())?
         .next()
         .ok_or("proxy resolve")?;
-    let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).map_err(|e| e.to_string())?;
-    s.set_write_timeout(Some(Duration::from_secs(8)))
+    let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(8)).map_err(|e| e.to_string())?;
+    // Onion circuits are slow on first use.
+    s.set_write_timeout(Some(Duration::from_secs(45)))
         .map_err(|e| e.to_string())?;
-    s.set_read_timeout(Some(Duration::from_secs(8)))
+    s.set_read_timeout(Some(Duration::from_secs(45)))
         .map_err(|e| e.to_string())?;
 
     // greeting: VER=5, NMETHODS=1, METHOD=0 (no auth)
@@ -103,6 +103,16 @@ pub fn socks5_send(
         _ => return Err("socks atyp".into()),
     }
 
-    s.write_all(payload).map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(s)
+}
+
+pub fn socks5_send(
+    proxy_host: &str,
+    proxy_port: u16,
+    dest_host: &str,
+    dest_port: u16,
+    payload: &[u8],
+) -> Result<(), String> {
+    let mut s = socks5_connect(proxy_host, proxy_port, dest_host, dest_port)?;
+    crate::hidden_service::write_framed(&mut s, payload)
 }

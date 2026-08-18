@@ -9,7 +9,9 @@ if [ -f /etc/os-release ]; then
   echo "Distro: ${NAME:-Unknown} ${VERSION_ID:-}"
 fi
 if ! pgrep -x tor >/dev/null 2>&1; then
-  echo "[WARNING] Tor does not appear to be running (SOCKS 9050)."
+  echo "[WARNING] Tor does not appear to be running."
+  echo "          Need SOCKS 9050 and ControlPort 9051 (CookieAuthentication 1)."
+  echo "          Then in the TUI: :listen  →  :my-contact  →  :add-contact <peer link>"
 fi
 
 if [[ ! -x target/release/hashchat-tui ]]; then
