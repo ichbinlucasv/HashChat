@@ -4,8 +4,14 @@ version = "0.1.9"
 edition = "2021"
 
 [lib]
-crate-type = ["cdylib", "staticlib"]
+name = "hashchat_rust"
+crate-type = ["rlib", "cdylib", "staticlib"]
 path = "src/rust/lib.rs"
+
+[[bin]]
+name = "hashchat-tui"
+path = "src/bin/hashchat_tui.rs"
+required-features = ["tui"]
 
 [dependencies]
 ring = "0.17"
@@ -29,11 +35,15 @@ subtle = "2.6"
 ml-kem = { version = "0.3", features = ["zeroize"], optional = true }
 # JNI only when building the Android cdylib. Desktop never pulls this in.
 jni = { version = "0.21", optional = true }
+ratatui = { version = "0.29", optional = true }
+crossterm = { version = "0.28", optional = true }
 
 [features]
 default = []
+# Desktop TUI (ratatui). Not pulled into the Android cdylib.
+tui = ["dep:ratatui", "dep:crossterm"]
 # One crate for desktop FFI + Android JNI. Build the phone .so with:
-#   cargo ndk -t arm64-v8a -o android/src/main/jniLibs build --release --features android
+#   cargo ndk -t arm64-v8a -o android/src/main/jniLibs build --release --no-default-features --features android
 android = ["dep:jni"]
 # long-13 / High Phase3 (deepened "work on all critial and hight risk now no stop"): optional gated.
 # --features quantum: hybrid_kex now does REAL X25519 + REAL ML-KEM (ml-kem crate with zeroize).

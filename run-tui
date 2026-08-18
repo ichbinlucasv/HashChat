@@ -1,66 +1,20 @@
 #!/usr/bin/env bash
-# Convenient launcher for the HashChat Brick TUI (desktop focus)
-# Sets LD_LIBRARY_PATH correctly, prefers release build, gives clear diagnostics.
-
+# Launch the Rust TUI (ratatui). Haskell Brick is no longer the default.
 set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIB_DIR="$SCRIPT_DIR/rust-lib"
-RUST_LIB="$LIB_DIR/libhashchat_rust.so"
-
-echo "=== HashChat Desktop TUI Launcher ==="
-
-# Check for Rust FFI lib (critical for ratchet)
-if [ ! -f "$RUST_LIB" ]; then
-  echo "[INFO] Rust library not found in rust-lib/. Attempting build..."
-  if command -v cargo >/dev/null 2>&1; then
-    cargo build --release --locked || {
-      echo "[ERROR] cargo build failed. Run 'cargo build --release' manually in project root."
-      exit 1
-    }
-    mkdir -p "$LIB_DIR"
-    cp target/release/libhashchat_rust.so "$LIB_DIR/" 2>/dev/null || true
-  else
-    echo "[ERROR] cargo not found. Install Rust (rustup) or use Nix: nix build .#hashchat-tui"
-    exit 1
-  fi
-fi
-
-export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-# Desktop environment diagnostics (important for Fedora, Ubuntu, Arch, Tails, Qubes)
-echo "=== Desktop Environment Check ==="
-echo "OS: $(uname -s) | Kernel: $(uname -r)"
+echo "=== HashChat Rust TUI ==="
 if [ -f /etc/os-release ]; then
   . /etc/os-release
   echo "Distro: ${NAME:-Unknown} ${VERSION_ID:-}"
 fi
-
-# Audio backend detection (critical for real voice recording on C)
-echo "Audio backends detected:"
-command -v pw-record >/dev/null && echo "  - PipeWire (pw-record) - Recommended on modern Fedora/Ubuntu/Arch"
-command -v parecord  >/dev/null && echo "  - PulseAudio (parecord)"
-command -v arecord   >/dev/null && echo "  - ALSA (arecord) - Fallback for minimal Tails/Qubes"
-
-# Tor hint (stronger for Qubes/Tails)
 if ! pgrep -x tor >/dev/null 2>&1; then
-  echo "[WARNING] Tor does not appear to be running."
-  echo "          For full anonymity you need ControlPort 9051 + CookieAuth."
-  echo "          - Fedora/Ubuntu/Arch: sudo systemctl start tor + edit /etc/tor/torrc"
-  echo "          - Tails: Tor is usually pre-configured"
-  echo "          - Qubes: Use sys-whonix or dedicated Tor qube + set proxy with :set-proxy"
-  echo "          See INSTALL.md and THREATMODEL.md"
+  echo "[WARNING] Tor does not appear to be running (SOCKS 9050)."
 fi
 
-echo "Starting HashChat TUI (Double Ratchet + Tor v3 + encrypted persistence)..."
-echo "LD_LIBRARY_PATH: $LIB_DIR"
-echo "Tip: Press '?' for help, 'w' for nuclear wipe, 'v' for voice (real mic), / or :filter to search contacts, :status for quick view."
-
-# Prefer cabal run for the tui target
-if command -v cabal >/dev/null 2>&1; then
-  exec cabal run hashchat-tui -- "$@"
-else
-  echo "[ERROR] cabal not found in PATH."
-  echo "        Recommended: use Nix (nix build .#hashchat-flatpak) or the appropriate install script for your OS."
-  exit 1
+if [[ ! -x target/release/hashchat-tui ]]; then
+  echo "[INFO] Building hashchat-tui (Rust)..."
+  cargo build --release --locked --features tui --bin hashchat-tui
 fi
+
+exec target/release/hashchat-tui "$@"

@@ -13,7 +13,7 @@ OUT="android/src/main/jniLibs"
 mkdir -p "$OUT"
 
 echo "Building hashchat-rust --features android (arm64-v8a, armeabi-v7a)..."
-cargo ndk -t arm64-v8a -t armeabi-v7a -o "$OUT" build --release --features android
+cargo ndk -t arm64-v8a -t armeabi-v7a -o "$OUT" build --release --no-default-features --features android
 
 if [ ! -f "$OUT/arm64-v8a/libhashchat_rust.so" ]; then
   echo "ERROR: libhashchat_rust.so was not written to $OUT"

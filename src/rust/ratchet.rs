@@ -195,8 +195,8 @@ impl DoubleRatchet {
     /// Automatically performs DH ratchet periodically for stronger forward secrecy.
     pub fn ratchet_send(&mut self) -> ([u8; RATCHET_KEY_LEN], u32) {
         if let Some(remote) = self.remote_dh {
-            // Ratchet every few messages for good security/performance balance
-            if self.send_count % 2 == 0 {
+            // Skip DH on the first send so init_from_shared chains stay aligned.
+            if self.send_count > 0 && self.send_count % 2 == 0 {
                 self.dh_ratchet(&remote);
             }
         }
@@ -217,7 +217,9 @@ impl DoubleRatchet {
 
     /// Advance the receiving chain when we get a message from a (possibly new) remote key.
     pub fn ratchet_recv(&mut self, remote: &PublicKey) -> ([u8; RATCHET_KEY_LEN], u32) {
-        if self.remote_dh.as_ref() != Some(remote) {
+        // Only DH-ratchet when we already have a remote key and it changed.
+        // After init_from_shared the chains already match; a first recv must not DH.
+        if self.remote_dh.map(|k| k != *remote).unwrap_or(false) {
             self.dh_ratchet(remote);
         }
 

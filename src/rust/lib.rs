@@ -8,8 +8,11 @@ use std::os::raw::c_void;
 use std::ptr;
 use std::sync::{Mutex, OnceLock};
 
-mod ratchet;
-mod longterm_identity;
+pub mod ratchet;
+pub mod longterm_identity;
+pub mod wire;
+pub mod session;
+pub mod tor_socks;
 
 #[cfg(feature = "android")]
 mod android_jni;

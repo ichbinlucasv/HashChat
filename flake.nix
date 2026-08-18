@@ -194,7 +194,7 @@
               exit 1
             fi
 
-            cargo ndk -t arm64-v8a -t armeabi-v7a build --release --locked --features android
+            cargo ndk -t arm64-v8a -t armeabi-v7a build --release --locked --no-default-features --features android
 
             for abi in aarch64-linux-android armv7-linux-androideabi; do
               so="target/$abi/release/libhashchat_rust.so"

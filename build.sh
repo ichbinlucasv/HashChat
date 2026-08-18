@@ -18,13 +18,12 @@
 
 set -euo pipefail
 
-echo "=== Building HashChat (Haskell + Rust) - Reproducible Mode ==="
+echo "=== Building HashChat (Rust) - Reproducible Mode ==="
 echo "Platform: $(uname -s)"
 echo ""
 
-# Enforce lockfile usage where possible
-echo "[1/5] Building Rust FFI library (release, locked)..."
-cargo build --release --locked
+echo "[1/5] Building Rust library + TUI (release, locked)..."
+cargo build --release --locked --features tui --bin hashchat-tui
 
 # Stage the Rust library
 echo "[2/5] Staging Rust library..."
@@ -42,32 +41,12 @@ else
     echo "  Warning: ${LIB_NAME} not found in target/release/"
 fi
 
-# Haskell - strict use of cabal.project / lockfiles
-echo "[3/5] Updating Cabal index (use --project-file if you have a locked index-state)..."
-cabal update
-
-echo "[4/5] Building Haskell (library + CLI with -f-tui, using lockfiles)..."
-cabal build -f-tui hashchat --enable-tests
-cabal build -f-tui hashchat-cli --enable-tests
-
-# Optional TUI build
-if [[ "${1:-}" == "tui" || "${1:-}" == "--tui" ]]; then
-    echo "[5/5] Building TUI..."
-    cabal build -f-tui hashchat-tui --enable-tests
-else
-    echo ""
-    echo "Tip: Run './build.sh tui' to also build the desktop TUI."
-fi
+echo "[3/5] Rust TUI is the desktop app (hashchat-tui)."
+echo "[4/5] Haskell Brick leftover is not built. Use cabal only if you need the old UI."
+echo "[5/5] Android JNI: ./build-android.sh (same crate, --features android)"
 
 echo ""
 echo "=== Build completed ==="
-echo ""
-echo "Reproducibility notes:"
-echo "  - Cargo used --locked"
-echo "  - Cabal used existing cabal.project / lockfiles"
-echo "  - For stronger reproducibility, pin GHC and Rust toolchain versions"
-echo "    (see docs/BUILD_REPRODUCIBILITY.md for recommended setup)"
-echo ""
-echo "Run the TUI with: ./run-tui"
+echo "Run: ./run-tui"
 echo ""
 echo "For maximum security: Build inside Tails or a Qubes disposable VM."
