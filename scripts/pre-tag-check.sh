@@ -87,7 +87,7 @@ if ! echo "$RECENT_DOCS" | grep -q "THREATMODEL.md"; then
 fi
 
 # No new TODO/FIXME in security-critical files since last tag (or in working tree for dev)
-CRITICAL_FILES="src/rust/android_jni.rs android/src/main/java/MainActivity.kt scripts/clean-security.sh scripts/pre-tag-check.sh src/rust/*.rs src/haskell/HashChat/Group.hs"
+CRITICAL_FILES="src/rust/android_jni.rs android/src/main/java/MainActivity.kt scripts/clean-security.sh scripts/pre-tag-check.sh src/rust/*.rs src/bin/hashchat_tui.rs"
 NEW_TODOS=$(git diff --name-only HEAD~5 -- $CRITICAL_FILES 2>/dev/null | xargs -I{} git diff HEAD~5 -- {} 2>/dev/null | grep -E '^\+.*(TODO|FIXME|XXX|HACK)' | grep -v 'TODO (deep ongoing work)' || true)
 if [ -n "$NEW_TODOS" ]; then
     echo "  HARD FAIL (Deep Wave): New TODO/FIXME added in security-critical files since recent commits:"
@@ -157,19 +157,16 @@ echo "  -> SBOM formal diff step complete. REQUIRE: semantic-clean (or documente
     echo "  -> sbom-v0.2-preview/ present (formal example dir). Review its rust-sbom.json + diff against main sbom/ or prior before v0.2 signed."
   fi
 
-# Phase 1 Roadmap additions (hybrid transport, XFTP files, queues, I2P)
-echo "[Phase 1] Checking I2P launch helper + multi-path / simplex queue presence (new in roadmap)..."
-if grep -q "launchI2pdIfNeeded\|sendOverMultiProxy\|newSMPQueue\|rotateQueue\|ContactQueues" src/haskell/HashChat/Tor.hs src/haskell/HashChat/Queue.hs ; then
-    echo "  -> I2P actual launch + multi-path + real unidirectional SMP queues present."
+echo "[Rust] Checking TUI + protocol modules..."
+if [ -f src/bin/hashchat_tui.rs ] && [ -f src/rust/session.rs ] && [ -f src/rust/wire.rs ] && [ -f src/rust/tor_socks.rs ]; then
+    echo "  -> Rust TUI, session, wire, Tor SOCKS present (Haskell removed)."
 else
-    fail "Phase 1 hybrid transport (I2P + queues) not yet implemented in Tor/Queue."
+    fail "Rust desktop modules missing."
 fi
-
-echo "[Phase 1] Checking real ratchet-chunked XFTP file transfer (FileTransfer + TUI wiring)..."
-if grep -q "sendFileChunked\|fileSend\|receiveFileChunked" src/haskell/HashChat/FileTransfer.hs app-desktop/TUI.hs ; then
-    echo "  -> Ratchet-chunked file transfer (real sendEncrypted + frame) wired."
+if find . \( -path ./target -o -path ./.git \) -prune -o \( -name '*.hs' -o -name '*.cabal' \) -print | grep -q .; then
+    fail "Haskell leftover still in the tree."
 else
-    fail "Phase 1 XFTP file transfer not complete."
+    echo "  -> No .hs / .cabal files."
 fi
 
 echo "[Phase 1] SBOM artifacts present..."
@@ -179,79 +176,12 @@ else
     echo "  >>> Warning: run ./scripts/generate-sbom.sh and commit artifacts or note before final tag."
 fi
 
-# Phase2: mesh + email MVP presence
-echo "[Phase 2] Checking mesh discovery + email DHT MVP stubs..."
-if grep -q "discoverLocalMeshPeers\|sendOverMesh\|EmailInbox\|pollEmailInbox\|syncMeshQueues" src/haskell/HashChat/Tor.hs src/haskell/HashChat/Core.hs ; then
-    echo "  -> Mesh UDP discovery + sync + Email DHT skeleton present."
-else
-    echo "  >>> Warning: Phase2 mesh/email not yet in code (continue to add)."
-fi
-# Note full mesh sync (drain/receive) and email UI in TUI for Phase2. Real UDP recv in discover for mesh.
-if grep -q "recvFrom\|bind.*12345" src/haskell/HashChat/Tor.hs ; then
-    echo "  -> Real UDP recv beacons in mesh discovery present."
-fi
-# Full integrate: mesh recv in TUI drain, email I2P recv in Core.
-if grep -q "receiveFromMeshPeers\|pollEmailInbox.*I2P" app-desktop/TUI.hs src/haskell/HashChat/Core.hs ; then
-    echo "  -> Mesh recv integrate in TUI + email I2P recv stub in Core present."
-fi
-# Note full mesh peer sync and email DHT poll in TUI for Phase2.
-if grep -q "drain mesh incoming\|forM_ meshIncoming" app-desktop/TUI.hs ; then
-    echo "  -> Full mesh recv drain in TUI present."
-fi
-# Persist for email.
-if grep -q "persistEmailInbox" src/haskell/HashChat/Core.hs ; then
-    echo "  -> Email persist stub present."
-fi
-
-# Phase3 starters (post "continue" batch + this continue on table): Starlink, self-host Relay, quantum hybrid, public channels, monetization, Tauri stub, :relay/:channel integration
-echo "[Phase 3] Checking Starlink detect + self-host Relay + quantum hybrid + public channels + Tauri stub + :relay/:channel cmd..."
-if grep -q "detectStarlinkOrPreferred\|chooseProxyWithStarlinkFallback" src/haskell/HashChat/Tor.hs ; then
-    echo "  -> Starlink detect + failover present (Phase3 resilience, table)."
-fi
-if [ -f src/haskell/HashChat/Relay.hs ] && grep -q "module HashChat.Relay" src/haskell/HashChat/Relay.hs ; then
-    echo "  -> Self-host Relay.hs MVP present (announce, queue relay, paid notes)."
-fi
+echo "[Phase] Rust-only tree: leftover Haskell Phase2/3 stubs were deleted, not ported."
 if grep -q "hybrid_kex\|hybrid_ratchet_new\|ML-KEM" src/rust/quantum.rs ; then
-    echo "  -> Quantum hybrid_kex + FFI + ML-KEM notes present (gated feature, table)."
+    echo "  -> Quantum module still gated in Rust."
 fi
-if grep -q ":quantum\|quantumHybridKexTest\|rust_quantum_hybrid_kex_test" app-desktop/TUI.hs src/haskell/HashChat/Core.hs ; then
-    echo "  -> :quantum cmd + Core FFI wrapper for hybrid kex test present (TUI test using FFI, table)."
-fi
-if grep -q "relayStore\|readIORef relayStore\|writeIORef relayStore" src/haskell/HashChat/Relay.hs ; then
-    echo "  -> Relay store used in send/receive/poll (demo queue roundtrip for local tests + QROT)."
-fi
-if grep -q "rustQuantumHybridKexTest\|Java_chat_hashchat_HashChatNative_rustQuantumHybridKexTest" src/rust/android_jni.rs ; then
-    echo "  -> Android quantum kex test FFI present (High parity)."
-fi
-if grep -q "relayCts\|RELAY-DRAIN\|relayReceive.*drain\|processRelayIncoming" app-desktop/TUI.hs ; then
-    echo "  -> Relay cts polled/processed in drainIncoming + processRelayIncoming (stable offline queue sync + QROT + ratchet advance)."
-fi
-if grep -q "drainIncoming.*:relay poll" app-desktop/TUI.hs ; then
-    echo "  -> :relay poll triggers drain for stable processing."
-fi
-if grep -q "getSessionLongTermPublic.*peerXDemo\|real long x used for peer" app-desktop/TUI.hs ; then
-    echo "  -> :quantum uses real long-term x pub for realistic hybrid test (deeper integration)."
-fi
-if grep -q "initRatchetHybrid\|Layered hybrid ratchet init on X3DH" src/haskell/HashChat/Core.hs app-desktop/TUI.hs ; then
-    echo "  -> initRatchetHybrid wired in Core + used in :add-contact X3DH bootstrap (optional quantum layer for new contacts, gated)."
-fi
-if grep -q "PublicChannel" src/haskell/HashChat/Group.hs ; then
-    echo "  -> PublicChannel (decentralized groups/channels) present."
-fi
-if [ -f tauri/src-tauri/Cargo.toml ] && grep -q "FFI" tauri/src-tauri/src/main.rs ; then
-    echo "  -> Tauri GUI stub present (FFI examples, strict caps, table full app)."
-fi
-if grep -q ":relay\|:channel" app-desktop/TUI.hs ; then
-    echo "  -> :relay/:channel cmds in TUI (integrates Relay/Group module, table)."
-fi
-if [ -f app-relay/RelayMain.hs ] ; then
-    echo "  -> Relay server binary (app-relay/RelayMain + cabal exec, table)."
-fi
-if grep -q "freemium\|Pro (one-time" android/PAID_VERSION_PLAN.md ; then
-    echo "  -> PAID freemium align present (unlimited DHT/relay credits, self-host service)."
-fi
-if grep -q "Phase3: Relay\|Phase3: Public channel" android/src/main/java/MainActivity.kt ; then
-    echo "  -> Android Phase3 FFI/actions (Relay/Channel, table)."
+if grep -q "Java_chat_hashchat_HashChatNative_rustQuantumHybridKexTest" src/rust/android_jni.rs ; then
+    echo "  -> Android quantum JNI present."
 fi
 
 # Threat sim integration (High OPSEC awareness)
@@ -318,13 +248,13 @@ fi
 
 # Extreme mode checks (from decision: scoped impl - full TUI + Android + Rust)
 echo "[11/12] Checking Extreme mode implementation (full per design)..."
-if grep -q "isExtremeMode\|EXTREME_MODE\|setExtremeMode\|rust_set_extreme_mode" app-desktop/TUI.hs android/src/main/java/MainActivity.kt src/haskell/HashChat/Core.hs src/rust/lib.rs src/rust/android_jni.rs ; then
+if grep -q "isExtremeMode\|EXTREME_MODE\|setExtremeMode\|rust_set_extreme_mode" android/src/main/java/MainActivity.kt src/rust/lib.rs src/rust/android_jni.rs src/bin/hashchat_tui.rs ; then
     echo "  -> Extreme flag, setters, FFI, and gates present in TUI/Android/Rust."
 else
     echo "  >>> WARNING: Extreme mode not fully wired across layers."
 fi
 # Additional: check for key gates
-if grep -q "EXTREME.*Group\|EXTREME.*voice\|EXTREME.*export\|EXTREME.*decoy" app-desktop/TUI.hs android/src/main/java/MainActivity.kt ; then
+if grep -q "EXTREME\|extreme" src/bin/hashchat_tui.rs android/src/main/java/MainActivity.kt ; then
     echo "  -> Key feature gates (groups/voice/export/decoy) present."
     echo "  -> Found testing evidence: $EVIDENCE_FILE (modified $(stat -c %y "$EVIDENCE_FILE" 2>/dev/null || echo 'recently'))"
 fi

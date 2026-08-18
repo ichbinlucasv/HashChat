@@ -34,7 +34,7 @@
 git status --short
 cargo test --release                    # Must be 9+ tests passing
 cargo test --release --features android
-cabal build hashchat-cli -f-tui
+cargo test --release --features tui
 # Supply chain (arch-3): Run audit + formal SBOM for signed tag + diff review
 cargo install cargo-audit --locked 2>/dev/null || true
 cargo audit --deny high || echo "High/critical issues found - review before tagging"
@@ -115,7 +115,7 @@ git status --short   # must show only source changes, never tor/ or *.db or voic
 
 # 2. Reproduce desktop Rust + TUI
 cargo test --release   # all paranoid-path tests (wipe, disappearing, framing, export roundtrips)
-cabal build hashchat-cli -f-tui
+cargo test --release --features tui
 
 # 3. Reproduce Android Rust (high-4 artifact)
 cargo check --release --features android

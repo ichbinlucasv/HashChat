@@ -9,7 +9,7 @@
 #
 # Recommended for high-security builds:
 #   - Build inside Tails or a Qubes disposable VM
-#   - Use pinned versions of GHC and Rust (via ghcup + rustup with exact toolchains)
+#   - Pin the Rust toolchain (rustup)
 #
 # Usage:
 #   ./build.sh

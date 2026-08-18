@@ -4,9 +4,8 @@ This document describes how to build HashChat in a highly reproducible and audit
 
 ## Current State (2026)
 
-- `build.sh` enforces `--locked` for Cargo.
-- Cabal builds respect `cabal.project` and lockfiles when present.
-- The project is moving toward stronger reproducibility.
+- `build.sh` builds the Rust TUI with `cargo --locked --features tui`.
+- There is no Haskell / Cabal path.
 
 ## Recommended Setup for Maximum Reproducibility
 
@@ -19,23 +18,10 @@ rustup default 1.82.0
 cargo +1.82.0 build --locked
 ```
 
-**Haskell (GHC)**
-Use `ghcup` and pin a specific GHC version:
+### 2. Build
 
 ```bash
-ghcup install ghc 9.6.7
-ghcup set ghc 9.6.7
-```
-
-Then build with:
-```bash
-cabal build --ghc-options="-fhide-source-paths"
-```
-
-### 2. Use `cabal freeze` (when stable)
-
-```bash
-cabal freeze
+cargo build --release --locked --features tui --bin hashchat-tui
 ```
 
 Commit the resulting `cabal.project.freeze` file.

@@ -1,5 +1,5 @@
 {
-  description = "HashChat - Maximum anonymity messenger (Haskell + Rust + Tor)";
+  description = "HashChat - Maximum anonymity messenger (Rust + Tor)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -19,7 +19,6 @@
 
         # Reproducible pinned toolchains (edit these for exact builds)
         rustVersion = "1.82.0";
-        ghcVersion  = "ghc96";
 
       in
       {
@@ -34,22 +33,28 @@
             };
             buildInputs = with pkgs; [ pkg-config openssl ];
             # Only build the lib we actually use for FFI
-            buildPhase = "cargo build --release --locked";
+            buildPhase = "cargo build --release --locked --features tui --bin hashchat-tui";
             installPhase = ''
-              mkdir -p $out/lib
+              mkdir -p $out/lib $out/bin
               cp target/release/libhashchat_rust.* $out/lib/ || true
+              cp target/release/hashchat-tui $out/bin/ || true
             '';
           };
 
-          # The TUI (requires the Rust lib to be in rust-lib/ at build time)
-          hashchat-tui = pkgs.writeShellScriptBin "hashchat-tui" ''
-            set -euo pipefail
-            echo "Building HashChat TUI via Nix (reproducible path)..."
-            # In a real flake we would use haskell.nix or cabal2nix + the rust-lib above
-            # For now we call the audited build.sh (still the recommended path)
-            ${pkgs.bash}/bin/bash ./build.sh tui
-            echo "Run with: ./run-tui"
-          '';
+          hashchat-tui = pkgs.rustPlatform.buildRustPackage {
+            pname = "hashchat-tui";
+            version = "0.1.9";
+            src = ./.;
+            cargoLock = { lockFile = ./Cargo.lock; };
+            buildAndTestSubdir = ".";
+            buildType = "release";
+            cargoBuildFlags = [ "--features" "tui" "--bin" "hashchat-tui" ];
+            doCheck = false;
+            installPhase = ''
+              mkdir -p $out/bin
+              cp target/release/hashchat-tui $out/bin/
+            '';
+          };
 
           # Unified normal-user installer (new rec). Promotes ./install.sh + Nix.
           hashchat-install = pkgs.writeShellScriptBin "hashchat-install" ''
@@ -129,7 +134,6 @@
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             rustc cargo
-            ghc cabal-install  # fixed ghc96 (undefined in current nixpkgs for repro builds; use ghc or pin nixpkgs with ghc96 if needed)
             pkg-config openssl
             # For Tor testing
             tor
@@ -140,7 +144,7 @@
 
           shellHook = ''
             echo "=== HashChat Nix dev shell (maximum reproducible OPSEC) ==="
-            echo "Rust + GHC + Cabal + flatpak-builder ready."
+            echo "Rust + cargo + flatpak-builder ready (no Haskell)."
             echo "CRITICAL #2 (Nix/Flake repro - table):"
             echo "  nix build .#hashchat-tui"
             echo "  nix build .#hashchat-flatpak"

@@ -85,14 +85,13 @@ find android -name "*.so" -o -name "*.o" -o -name "*.a" 2>/dev/null | while read
     rm -f "$f" 2>/dev/null || true
 done
 
-# 6. Rust + Haskell clean (with optional toolchain cache wiping)
-echo "[6/9] Running cargo + cabal clean..."
+# 6. Rust clean
+echo "[6/9] Running cargo clean..."
 cargo clean 2>/dev/null || true
-cabal clean 2>/dev/null || true
 
 if [ "$STRICT_MODE" = true ]; then
-    echo "  [STRICT] Also cleaning user ghcup/cargo caches (this can be slow)..."
-    rm -rf ~/.cargo/registry ~/.cargo/git ~/.ghcup 2>/dev/null || true
+    echo "  [STRICT] Also cleaning user cargo caches (this can be slow)..."
+    rm -rf ~/.cargo/registry ~/.cargo/git 2>/dev/null || true
 fi
 
 # 7. Temporary sensitive files (exports, ratchet blobs, etc.)

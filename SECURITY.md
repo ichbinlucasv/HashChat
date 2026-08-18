@@ -33,7 +33,7 @@ We take reports seriously and will respond within 48 hours.
 
 3. **Cryptography**:
    - All changes to `src/rust/ratchet.rs` or encryption code must be reviewed.
-   - We use `ring` + `x25519-dalek` for primitives.
+   - We use `ring` + `x25519-dalek` for primitives. There is no Haskell crypto path.
 
 4. **Build Artifacts**:
    - Never commit `target/`, `dist-newstyle/`, or generated launchers.

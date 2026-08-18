@@ -68,4 +68,4 @@ Extreme mode should refuse all of the above.
 
 ## Language split
 
-Rust owns keys, ratchets, AEAD, envelopes. Haskell owns TUI + Tor control. Kotlin is UI + JNI only. Do not add C/C++. Do not rewrite the TUI until the Rust core is one crate with tests.
+Rust owns keys, ratchets, AEAD, envelopes, TUI, and Tor SOCKS. Kotlin is Android UI + JNI only. Do not add C/C++ or Haskell.

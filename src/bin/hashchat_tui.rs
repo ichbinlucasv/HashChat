@@ -293,7 +293,7 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
 
 fn help_text() -> String {
     [
-        "HashChat Rust TUI — the desktop app is now this binary, not Haskell.",
+        "HashChat Rust TUI — the whole desktop stack is this crate.",
         "",
         "n          new burner profile (new long-term keys)",
         "w          nuclear wipe (zeroize ratchets, delete hashchat_data)",
@@ -304,7 +304,6 @@ fn help_text() -> String {
         ":extreme on   refuse sends",
         "",
         "Android UI stays Kotlin (platform shell). Crypto is this same crate.",
-        "Haskell Brick TUI is leftover and is no longer launched by ./run-tui.",
     ]
     .join("\n")
 }

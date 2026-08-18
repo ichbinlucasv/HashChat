@@ -1,6 +1,6 @@
 # HashChat
 
-> **Maximum-anonymity messenger** built with Haskell + Rust.
+> **Maximum-anonymity messenger** built in Rust.
 > See [SECURITY.md](SECURITY.md) before contributing.
 
 **Repository Status (as of 2026)**

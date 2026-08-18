@@ -22,5 +22,5 @@ Deepened (previous + this pass):
 
 Latest additions for "do all new": real basic frontend so normal users can click posture/send/wipe instead of pure terminal. TUI still wins for OPSEC density (filter, voice sending indicator, status panel).
 
-TUI (app-desktop/TUI.hs) is always the paranoid default. This wrapper shares core for feature parity without increasing TCB. Use `install.sh` + `./run-tui` first.
+The Rust TUI (`hashchat-tui`) is the desktop default. This wrapper is optional. Use `./run-tui` first.
 
