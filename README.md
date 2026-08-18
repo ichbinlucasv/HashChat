@@ -27,7 +27,7 @@ Quick start (Normal User):
 
 The desktop app is a dense black+gold TUI on purpose (small attack surface). It is not a Simplex-style GUI.
 
-**Status (honest):** Rust Double Ratchet + Argon2id envelopes + Tor v3 path exist. Mesh / relay / PQ / Tauri / calls are stubs. No signed v0.2 until two devices exchange a real Tor message and the remaining stubs are either finished or removed. See [ROADMAP.md](ROADMAP.md) and [THREATMODEL.md](THREATMODEL.md).
+**Status (honest):** Desktop is the **Rust TUI** (`./run-tui` → `hashchat-tui`). Crypto, framing, session, Tor SOCKS, wipe, and E2EE selftest are Rust. Haskell Brick is leftover and is not launched. Android UI is still Kotlin over the same Rust crate. Mesh / relay / PQ / Tauri / calls remain stubs. See [ROADMAP.md](ROADMAP.md).
 
 **No phone numbers. No user IDs. No central servers.**
 
