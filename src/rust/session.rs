@@ -2,7 +2,7 @@
 
 use crate::longterm_identity::LongTermIdentity;
 use crate::ratchet::{decrypt_with_key, encrypt_with_key, DoubleRatchet};
-use crate::wire::{frame_for_wire, unframe_from_wire};
+use crate::wire::{frame_v2, unframe};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -33,6 +33,8 @@ pub struct Session {
     pub extreme: bool,
     pub logs: Vec<String>,
     pub onion: Option<String>,
+    pub onion_key: Option<String>,
+    pub pending: Vec<(String, Vec<u8>)>,
 }
 
 impl Session {
@@ -47,9 +49,18 @@ impl Session {
             extreme: false,
             logs: Vec::new(),
             onion: None,
+            onion_key: None,
+            pending: Vec::new(),
         };
         s.log("burner profile created — add a peer with :add-contact <link>");
         s
+    }
+
+    pub fn open() -> Self {
+        match Self::load_disk() {
+            Some(s) => s,
+            None => Self::burner(),
+        }
     }
 
     pub fn log(&mut self, line: impl Into<String>) {
@@ -133,9 +144,10 @@ impl Session {
             .entry(name.clone())
             .or_insert_with(DoubleRatchet::new);
         let (mut key, step) = r.ratchet_send();
+        let dh = *r.public_key().as_bytes();
         let ct = encrypt_with_key(&key, text.as_bytes())?;
         key.zeroize();
-        let frame = frame_for_wire(&self.my_x25519(), step, &ct);
+        let frame = frame_v2(&self.my_x25519(), step, &dh, &ct);
         self.messages.entry(name).or_default().push(ChatMsg {
             from_me: true,
             text: text.to_string(),
@@ -145,12 +157,12 @@ impl Session {
     }
 
     pub fn receive_frame(&mut self, frame: &[u8]) -> Result<String, &'static str> {
-        let (hint, _step, ct) = unframe_from_wire(frame).ok_or("bad frame")?;
-        if hint.len() != 32 {
+        let parsed = unframe(frame).ok_or("bad frame")?;
+        if parsed.hint.len() != 32 {
             return Err("bad hint");
         }
         let mut hx = [0u8; 32];
-        hx.copy_from_slice(&hint);
+        hx.copy_from_slice(&parsed.hint);
         let name = self
             .contacts
             .iter()
@@ -158,8 +170,12 @@ impl Session {
             .map(|c| c.name.clone())
             .ok_or("unknown sender — add their :my-contact link first")?;
         let r = self.ratchets.get_mut(&name).ok_or("no ratchet")?;
-        let pk = r.public_key();
-        let (mut key, step) = r.ratchet_recv(&pk);
+        let remote = match parsed.sender_dh {
+            Some(dh) => x25519_dalek::PublicKey::from(dh),
+            None => r.public_key(),
+        };
+        let (mut key, step) = r.ratchet_recv(&remote);
+        let ct = parsed.ciphertext;
         let pt = decrypt_with_key(&key, &ct)?;
         key.zeroize();
         let text = String::from_utf8(pt).map_err(|_| "utf8")?;
@@ -187,13 +203,15 @@ impl Session {
         ra.init_symmetric(&sa);
         rb.init_symmetric(&sb);
         let (mut k, step) = ra.ratchet_send();
+        let dh = *ra.public_key().as_bytes();
         let ct = encrypt_with_key(&k, b"hashchat-rust-e2ee")?;
         k.zeroize();
-        let frame = frame_for_wire(a.x25519_public().as_bytes(), step, &ct);
-        let (hint, _, ct2) = unframe_from_wire(&frame).ok_or("frame")?;
-        assert_eq!(hint, a.x25519_public().as_bytes());
-        let (mut k2, _) = rb.ratchet_recv(&rb.public_key());
-        let pt = decrypt_with_key(&k2, &ct2)?;
+        let frame = frame_v2(a.x25519_public().as_bytes(), step, &dh, &ct);
+        let parsed = unframe(&frame).ok_or("frame")?;
+        assert_eq!(parsed.hint, a.x25519_public().as_bytes());
+        let remote = x25519_dalek::PublicKey::from(parsed.sender_dh.unwrap());
+        let (mut k2, _) = rb.ratchet_recv(&remote);
+        let pt = decrypt_with_key(&k2, &parsed.ciphertext)?;
         k2.zeroize();
         if pt != b"hashchat-rust-e2ee" {
             return Err("selftest mismatch");
@@ -209,6 +227,8 @@ impl Session {
         self.messages.clear();
         self.longterm.wipe();
         self.onion = None;
+        self.onion_key = None;
+        self.pending.clear();
         let _ = remove_tree("hashchat_data");
         let _ = remove_tree("tor/hidden_service");
         crate::rust_wipe_files();
@@ -217,15 +237,55 @@ impl Session {
         self.log("nuclear wipe: ratchets zeroized, hashchat_data removed");
     }
 
-    pub fn persist(&self, passphrase: &[u8]) -> Result<(), &'static str> {
-        if passphrase.is_empty() {
-            return Err("empty pass");
+    pub fn queue_outgoing(&mut self, onion: String, frame: Vec<u8>) {
+        if self.pending.len() < 64 {
+            self.pending.push((onion, frame));
         }
-        let dir = format!("hashchat_data/profiles/{}", sanitize(&self.profile));
-        fs::create_dir_all(&dir).map_err(|_| "mkdir")?;
-        let blob = crate::longterm_identity::export_encrypted(&self.longterm, passphrase)?;
-        fs::write(format!("{dir}/longterm.enc"), blob).map_err(|_| "write")?;
+        self.log(format!("queued ({} waiting)", self.pending.len()));
+    }
+
+    pub fn take_pending(&mut self) -> Vec<(String, Vec<u8>)> {
+        std::mem::take(&mut self.pending)
+    }
+
+    pub fn save_disk(&self) -> Result<(), &'static str> {
+        fs::create_dir_all("hashchat_data").map_err(|_| "mkdir")?;
+        let key = machine_key()?;
+        let mut plain = Vec::new();
+        plain.push(1u8);
+        plain.extend_from_slice(&self.longterm.to_bytes());
+        let onion = self.onion.clone().unwrap_or_default();
+        let ok = self.onion_key.clone().unwrap_or_default();
+        write_len_str(&mut plain, &onion);
+        write_len_str(&mut plain, &ok);
+        let env = wrap_blob(&plain, &key)?;
+        fs::write("hashchat_data/state.enc", env).map_err(|_| "write")?;
+        let _ = set_private("hashchat_data/state.enc");
         Ok(())
+    }
+
+    pub fn load_disk() -> Option<Self> {
+        let key = machine_key().ok()?;
+        let env = fs::read("hashchat_data/state.enc").ok()?;
+        let plain = unwrap_blob(&env, &key).ok()?;
+        if plain.is_empty() || plain[0] != 1 {
+            return None;
+        }
+        if plain.len() < 33 {
+            return None;
+        }
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&plain[1..33]);
+        let mut pos = 33;
+        let onion = read_len_str(&plain, &mut pos)?;
+        let okey = read_len_str(&plain, &mut pos)?;
+        let mut s = Session::burner();
+        s.longterm = LongTermIdentity::from_seed(seed);
+        s.onion = if onion.is_empty() { None } else { Some(onion) };
+        s.onion_key = if okey.is_empty() { None } else { Some(okey) };
+        s.profile = "restored".into();
+        s.log("restored identity + onion from disk");
+        Some(s)
     }
 }
 
@@ -259,16 +319,61 @@ pub fn maybe_qr_text(link: &str) -> Option<String> {
     String::from_utf8(out.stdout).ok()
 }
 
-fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+fn write_len_str(out: &mut Vec<u8>, s: &str) {
+    let b = s.as_bytes();
+    out.extend_from_slice(&(b.len() as u32).to_be_bytes());
+    out.extend_from_slice(b);
+}
+
+fn read_len_str(buf: &[u8], pos: &mut usize) -> Option<String> {
+    if *pos + 4 > buf.len() {
+        return None;
+    }
+    let n = u32::from_be_bytes(buf[*pos..*pos + 4].try_into().ok()?) as usize;
+    *pos += 4;
+    if *pos + n > buf.len() {
+        return None;
+    }
+    let s = String::from_utf8(buf[*pos..*pos + n].to_vec()).ok()?;
+    *pos += n;
+    Some(s)
+}
+
+fn machine_key() -> Result<[u8; 32], &'static str> {
+    let path = Path::new("hashchat_data/machine.key");
+    if let Ok(b) = fs::read(path) {
+        if b.len() == 32 {
+            let mut k = [0u8; 32];
+            k.copy_from_slice(&b);
+            return Ok(k);
+        }
+    }
+    fs::create_dir_all("hashchat_data").map_err(|_| "mkdir")?;
+    let k = rand_bytes();
+    fs::write(path, k).map_err(|_| "write key")?;
+    let _ = set_private("hashchat_data/machine.key");
+    Ok(k)
+}
+
+fn set_private(path: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+fn wrap_blob(plain: &[u8], pass: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&pass[..32.min(pass.len())]);
+    crate::ratchet::encrypt_with_key(&key, plain)
+}
+
+fn unwrap_blob(blob: &[u8], pass: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&pass[..32.min(pass.len())]);
+    crate::ratchet::decrypt_with_key(&key, blob)
 }
 
 fn remove_tree(p: &str) -> std::io::Result<()> {
@@ -339,6 +444,11 @@ mod tests {
         let frame2 = b.send_text("ack").unwrap();
         let text2 = a.receive_frame(&frame2).unwrap();
         assert_eq!(text2, "ack");
+        // More messages exercise DH rotation after both sides have a remote pub.
+        for i in 0..5 {
+            let f = a.send_text(&format!("round-{i}")).unwrap();
+            assert_eq!(b.receive_frame(&f).unwrap(), format!("round-{i}"));
+        }
     }
 
     #[test]

@@ -1,256 +1,97 @@
-# HashChat Installation Guide
+# Install HashChat
 
-**Repository Status**
-- **Primary**: https://codeberg.org/ichbinlucasv/HashChat
-- **Mirror**: https://github.com/ichbinlucasv/HashChat (read-only)
-
-All development happens on **Codeberg**. GitHub is kept only as a read-only mirror.
-
-> The project has migrated its primary home to Codeberg. Use the Codeberg clone for all new work.
-
----
-
-**Normal User Quick Path (Recommended for most people on these OSes)**
-
-You do **not** need to be an expert.
-
-1. Clone from Codeberg (primary):
-   ```bash
-   git clone https://codeberg.org/ichbinlucasv/HashChat.git
-   cd HashChat
-   ```
-
-2. Run the **unified installer** (new rec - detects OS and recommends the right path):
-   ```bash
-   chmod +x install.sh
-   ./install.sh
-   ```
-   (It promotes Nix/Flatpak for repro, runs install-*.sh for your distro, prints audio one-liners.)
-
-3. Run the launcher (always gives diagnostics):
-   ```bash
-   ./run-tui
-   ```
-   It will tell you exactly what audio backends and Tor status you have.
-
-4. Inside the TUI:
-   - Press `n` → create a burner profile
-   - Press `v` → test real voice recording (works on modern Fedora/Ubuntu/Arch via PipeWire)
-   - Use `:filter alice` or `/` (clear) to search your contacts
-   - Use `:set-proxy 127.0.0.1 9050` if needed (very useful in Qubes)
-   - Use `:status` and `?` for guidance; `:my-contact` for shareable link (generate QR with qrencode)
-
-See the big "Desktop Runtime Notes per OS" section below for your specific operating system.
-
-**Honest Assessment vs SimplexChat GUI + Readiness for Normal Users**:
-- What works now for normal users on Fedora/Ubuntu/Arch/Tails/Qubes: ./run-tui gives diagnostics, one-liners for audio (pw-record etc), Tor, install-*.sh, 'n' profile, 'v' real voice (per-chunk ratchet + wipe), :set-proxy, :filter search, :status panel always visible, :my-contact for share (QR via external), dynamic contacts, groups, full E2EE+Tor core + posture + wipe.
-- Visual: Black/gold dense TUI. Explicit "SENDING VOICE...", posture banners, status lines, ratchet wipes logged. Functional but text-heavy and keyboard only. Not the modern polished GUI experience of SimplexChat desktop (bubbles, nice icons, mouse friendly).
-- By design: Minimal attack surface (no webview/GUI libs by default, Tauri optional future with strict caps). Preserves paranoid OPSEC core.
-- Recommendation: If your threat model allows a GUI and you prefer polish, consider SimplexChat for daily. Use HashChat TUI when you specifically need the extra OPSEC (Extreme, nuclear wipe live, explicit posture, Tor mandatory + proxy per profile, voice ratchet FS visible).
-- Readiness: Good for users comfortable with terminal + following one-liners. "Even the most normal user" path exists in docs/scripts now. Full production claim waits on your real-device evidence runs (screenshot-prep + real-device-test on hardware) + v0.2 pre-tag.
-- Tauri GUI: stub ready but not primary. TUI will stay the paranoid default.
-
-## For Fedora (Recommended Easy Method)
+**Clone from Codeberg** (primary). GitHub is a mirror.
 
 ```bash
-# Primary repository (recommended)
 git clone https://codeberg.org/ichbinlucasv/HashChat.git
-
-# Mirror (GitHub)
-# git clone https://github.com/ichbinlucasv/HashChat.git
-
 cd HashChat
-chmod +x install-fedora.sh
-./install-fedora.sh
 ```
 
-Then follow the on-screen instructions for Tor setup.
+## Fast path
 
-## Manual Installation (Any Linux)
-
-### 1. System Dependencies
-
-**Fedora:**
 ```bash
-sudo dnf install gcc make pkg-config openssl-devel ncurses-devel libffi-devel zlib-devel git curl ghc ghc-Cabal cabal-install
+chmod +x install.sh && ./install.sh
+./run-tui
 ```
 
-**Ubuntu/Debian:**
+`install.sh` detects Fedora, Ubuntu/Debian, or Arch and runs the matching script. Those scripts install a C toolchain + rustup if needed, then:
+
 ```bash
-sudo apt update
-sudo apt install build-essential pkg-config libssl-dev libncurses5-dev libffi-dev zlib1g-dev git curl ghc cabal-install
+cargo build --release --locked --features tui --bin hashchat-tui
 ```
 
-### 2. Rust Toolchain
+Manual (any Linux with rustup):
+
 ```bash
+sudo apt/dnf/pacman install …  # gcc, pkg-config, openssl headers, git, curl
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
+cargo build --release --locked --features tui --bin hashchat-tui
+./run-tui
 ```
 
-### 3. Build the Project (Recommended)
+Nix (optional):
 
-**Best (reproducible, no external scripts):**
 ```bash
-nix build .#hashchat-flatpak   # Pure Nix .flatpak
 nix build .#hashchat-tui
+./result/bin/hashchat-tui
 ```
 
-**Quick dev:**
-```bash
-./build.sh tui
-./run-tui
+There is **no GHC / Cabal** step.
+
+## Tor (required for two devices)
+
+`/etc/tor/torrc` (or user torrc):
+
 ```
-
-This project uses pure Bash (no Python) for the legacy path. Nix is the preferred modern path.
-
-### 4. Run
-```bash
-./run-tui
-```
-
-## Critical: Tor Setup (Required)
-
-HashChat is designed as **Tor-only**. You must have Tor running with ControlPort enabled.
-
-### Fedora
-```bash
-sudo dnf install tor
-sudo systemctl enable --now tor
-```
-
-Edit `/etc/tor/torrc` and add:
-```
+SocksPort 9050
 ControlPort 9051
 CookieAuthentication 1
 ```
 
-Then restart:
+Then:
+
 ```bash
-sudo systemctl restart tor
+sudo systemctl enable --now tor
 ```
 
-### Recommended Environments (Strongly Suggested)
+Cookie file must be readable by your user. If `:listen` says auth failed:
 
-- **Best**: Run inside **Tails OS** (amnesic, Tor by default)
-- **Excellent**: Run inside a **Qubes OS** disposable VM + Whonix
-- **Good**: Fedora + hardened Tor setup + no swap + full disk encryption
+- Debian/Ubuntu: add yourself to the `debian-tor` group, or copy cookie perms as documented by your distro
+- Do not turn cookie auth off on a shared machine
 
-See `THREATMODEL.md` for why this matters.
+Optional QR:
 
-### Desktop Runtime Notes (Fedora / Ubuntu / Arch / Tails / Qubes)
+```bash
+sudo apt/dnf/pacman install qrencode
+```
 
-**Voice Recording (new in recent waves)**:
-- Modern Fedora (40+), Ubuntu (22.04+), and Arch use PipeWire by default.
-  - Best: `pw-record` (added support)
-  - Fallback: `parecord` (Pulse compatibility layer)
-  - Last resort: `arecord` (ALSA) — often the only option in minimal Tails or Qubes Debian templates.
-- On Tails/Qubes: Enable audio in the qube/template first. Disposables reset audio settings.
-- If no recorder is found, voice falls back to placeholder bytes (keeps attack surface low).
+## Two-device checklist
 
-**Per-Profile Proxy (new in recent waves)**:
-- Use `:set-proxy <host> <port>` inside the TUI (e.g. `:set-proxy 127.0.0.1 9050` for local Tor).
-- On Qubes: Point to a proxy running in sys-vpn or a dedicated proxy qube.
-- On Tails: Combine with Tails' bridge or VPN feature.
-- The setting is per-burner profile and survives profile switches.
+1. Tor running on both sides (9050 + 9051)
+2. Both: `./run-tui` then `:listen`
+3. Both: `:my-contact` and exchange the link
+4. Both: `:add-contact <their link>`
+5. Send. First circuit can take ~30s. `:retry` if one side was down.
 
-**Tor on different OSes**:
-- Fedora / Ubuntu / Arch: `sudo systemctl start tor` + edit `/etc/tor/torrc` for ControlPort 9051 + CookieAuthentication.
-- Tails: Tor is pre-configured. Use the built-in bridges when needed.
-- Qubes: Usually run through sys-whonix. Use `:set-proxy` inside the HashChat qube to talk to the Tor qube's SOCKS.
-
-**Recommended Hardening per OS**:
-- Tails & Qubes disposables: Strongest OPSEC (amnesia + compartmentalization).
-- Fedora/Arch with full disk encryption + no swap + hardened kernel: Good balance.
-- Ubuntu: Fine for testing, but be aware of more telemetry by default — consider minimal install + hardening.
-
-For maximum security on any of these OSes, combine with the dynamic posture checks and nuclear wipe.
-
-**Quick Audio Enable One-Liners (for Voice on Desktop)**
-
-- **Fedora**: `sudo dnf install pipewire-utils alsa-utils && systemctl --user restart pipewire`
-- **Ubuntu 22.04+**: `sudo apt install pipewire pipewire-pulse wireplumber alsa-utils && systemctl --user restart pipewire`
-- **Arch**: `sudo pacman -S pipewire pipewire-pulse wireplumber alsa-utils && systemctl --user enable --now pipewire`
-- **Tails**: Audio is usually available; if not, use the "Configure" screen in Tails to enable it. Use arecord fallback.
-- **Qubes**: In the template (preferably Fedora), run `sudo dnf install pipewire-utils alsa-utils`. Then in the HashChat qube: `qvm-service --enable <qube> audio`. Disposables need audio enabled in the template first. Use :set-proxy to sys-whonix.
-
-After enabling audio, run `./run-tui` — it will now clearly tell you which recorder is available.
-
-**Detailed per-OS Desktop Notes (Fedora / Ubuntu / Arch / Tails / Qubes)**
-
-**Fedora (40+ recommended)**:
-- PipeWire is default → `pw-record` should just work for voice.
-- Use `dnf install pipewire-utils alsa-utils` if recorders are missing.
-- The `run-tui` script will now clearly show available audio backends at startup.
-- For best reproducibility: prefer the Nix/Flatpak path over native cabal.
-
-**Ubuntu (22.04+ or 24.04+)**:
-- Newer releases default to PipeWire. Older ones may still be PulseAudio-only (`parecord`).
-- Install: `sudo apt install pipewire pipewire-pulse alsa-utils`
-- Run inside a hardened VM or with AppArmor profiles for extra paranoia.
-- The launcher now detects and reports the audio stack.
-
-**Arch Linux**:
-- Rolling release — be careful with ghcup/cabal pins. Prefer Nix for reproducible builds.
-- PipeWire is common: `sudo pacman -S pipewire pipewire-pulse wireplumber alsa-utils`
-- Excellent for desktop experimentation. Use the improved `run-tui` diagnostics.
-
-**Tails**:
-- Strongest amnesia properties.
-- Audio is often limited in the default environment — enable it explicitly if needed.
-- `arecord` is usually the only reliable recorder. `run-tui` will warn accordingly.
-- Never persist anything. Use the Flatpak if possible (copy from another machine).
-- Combine with Tails' built-in bridges for the `:set-proxy` feature.
-
-**Qubes OS (strongly recommended for compartmentalization)**:
-- Run HashChat in its own qube (ideally disposable or with strict firewall).
-- Audio: depends on the template. Fedora templates usually have better PipeWire support.
-- Use `:set-proxy` to route through a dedicated sys-vpn or sys-whonix qube.
-- Build using the `scripts/qubes-build.sh` (it enforces clean + disposable best practices).
-- The launcher will help you see exactly what audio/proxy resources are available inside the qube.
-
-If you are on any of these OSes and hit voice or proxy issues, run `./run-tui` first — it now prints the detected audio backends and basic Tor status. This is the fastest way to debug on your specific setup.
+Identity + onion key are stored under `hashchat_data/` (`machine.key` mode 0600 + `state.enc`). `w` deletes that. A seized unlocked disk can still read it — use a dedicated user or VM if that matters.
 
 ## Android
 
-Currently in early development. Planned as a paid app (initially ~20 CHF, later cheaper).
-
-Will require:
-- Android NDK
-- Rust + cargo-ndk
-- Proper secure storage + JNI integration
-
-## Flatpak (Primary Recommended Distribution Method)
-
-We now have a **pure-Nix reproducible Flatpak** as the main easy install path.
-
 ```bash
-nix build .#hashchat-flatpak
-flatpak install --user result/hashchat-tui.flatpak
-flatpak run org.hashchat.HashChat
+./build-android.sh
 ```
 
-This is currently the best way to get a sandboxed, reproducible build on Fedora and other distros. See `flake.nix` for details.
+Produces `android/src/main/jniLibs/*/libhashchat_rust.so`. Kotlin still owns the screens. Two-device Tor on the phone is **not** finished (use Orbot + the desktop path for now).
+
+## Tails / Qubes
+
+Build in a disposable VM, copy only the `hashchat-tui` binary if you must. Point SOCKS at Whonix/sys-whonix if that is your Tor. `:set-proxy 127.0.0.1 9050` (or the Whonix socks port you actually use).
 
 ## Troubleshooting
 
-- **Missing `libhashchat_rust.so`**: Run `cargo build --release` and copy the library to `rust-lib/`.
-- **TUI won't start / ncurses errors**: Make sure `ncurses-devel` is installed.
-- **Tor connection fails**: Ensure `tor` service is running and ControlPort 9051 is accessible.
-- **Cabal dependency hell**: Try `cabal clean` + `rm -rf dist-newstyle` + `cabal update`.
-
-## Development
-
-```bash
-./run-tui          # Normal run
-cargo build --release && ./run-tui
-```
-
-For maximum security during development, consider using Qubes OS.
-
----
-
-**Legal / Funding Note**
-
-The Linux/desktop version is and will remain free and open source.
-
-The Android version may be offered as a paid app to help fund server infrastructure and continued development. Pricing will decrease over time as adoption grows.
+| Symptom | Likely cause |
+|---|---|
+| `:listen failed` + auth | Cannot read Tor cookie / ControlPort is not 9051 |
+| `Tor send failed` | Peer not listening, or first HS descriptor not published yet — wait and `:retry` |
+| `unknown sender` | You did not `:add-contact` their link |
+| `peer has no onion` | They ran `:my-contact` before `:listen` |

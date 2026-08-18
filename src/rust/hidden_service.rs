@@ -24,6 +24,15 @@ impl HiddenService {
 }
 
 pub fn start_hidden_service(control_host: &str, control_port: u16) -> Result<HiddenService, String> {
+    start_hidden_service_with_key(control_host, control_port, None).map(|(hs, _)| hs)
+}
+
+/// Returns the service plus the Tor private-key blob (`ED25519-V3:…`) so we can reuse the onion.
+pub fn start_hidden_service_with_key(
+    control_host: &str,
+    control_port: u16,
+    existing_key: Option<&str>,
+) -> Result<(HiddenService, String), String> {
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
     listener
         .set_nonblocking(false)
@@ -32,7 +41,7 @@ pub fn start_hidden_service(control_host: &str, control_port: u16) -> Result<Hid
 
     let mut control = connect_control(control_host, control_port)?;
     authenticate(&mut control)?;
-    let onion = add_onion(&mut control, local_port)?;
+    let (onion, privkey) = add_onion(&mut control, local_port, existing_key)?;
 
     let (tx, rx) = mpsc::channel();
     thread::Builder::new()
@@ -40,12 +49,15 @@ pub fn start_hidden_service(control_host: &str, control_port: u16) -> Result<Hid
         .spawn(move || accept_loop(listener, tx))
         .map_err(|e| e.to_string())?;
 
-    Ok(HiddenService {
-        onion,
-        local_port,
-        rx,
-        _control: control,
-    })
+    Ok((
+        HiddenService {
+            onion,
+            local_port,
+            rx,
+            _control: control,
+        },
+        privkey,
+    ))
 }
 
 pub fn write_framed(stream: &mut TcpStream, payload: &[u8]) -> Result<(), String> {
@@ -135,15 +147,31 @@ fn cookie_path_from_protocolinfo(lines: &[String]) -> Option<String> {
     None
 }
 
-fn add_onion(s: &mut TcpStream, local_port: u16) -> Result<String, String> {
-    let cmd = format!("ADD_ONION NEW:ED25519-V3 Flags=DiscardPK Port=80,127.0.0.1:{local_port}");
+fn add_onion(
+    s: &mut TcpStream,
+    local_port: u16,
+    existing_key: Option<&str>,
+) -> Result<(String, String), String> {
+    let spec = match existing_key {
+        Some(k) if !k.is_empty() => k.trim().to_string(),
+        _ => "NEW:ED25519-V3".to_string(),
+    };
+    let cmd = format!("ADD_ONION {spec} Port=80,127.0.0.1:{local_port}");
     let resp = control_cmd(s, &cmd)?;
+    let mut onion = None;
+    let mut privkey = existing_key.unwrap_or("").to_string();
     for line in &resp {
         if let Some(id) = line.strip_prefix("250-ServiceID=") {
-            return Ok(format!("{id}.onion"));
+            onion = Some(format!("{}.onion", id.trim()));
+        }
+        if let Some(pk) = line.strip_prefix("250-PrivateKey=") {
+            privkey = pk.trim().to_string();
         }
     }
-    Err(format!("ADD_ONION failed: {resp:?}"))
+    match onion {
+        Some(o) => Ok((o, privkey)),
+        None => Err(format!("ADD_ONION failed: {resp:?}")),
+    }
 }
 
 fn control_cmd(s: &mut TcpStream, cmd: &str) -> Result<Vec<String>, String> {

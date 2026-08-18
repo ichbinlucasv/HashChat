@@ -119,7 +119,7 @@ impl DoubleRatchet {
     pub fn ratchet_recv_advanced(&mut self, remote: &PublicKey, msg_number: u32) -> Result<[u8; RATCHET_KEY_LEN], &'static str> {
         if self.remote_dh.as_ref() != Some(remote) {
             // New remote key -> DH ratchet
-            self.dh_ratchet(remote);
+            self.dh_ratchet_recv(remote);
         }
 
         // Check if we already have this message key from previous skips
@@ -178,37 +178,42 @@ impl DoubleRatchet {
         self.recv_count = 0;
     }
 
-    fn dh_ratchet(&mut self, remote: &PublicKey) {
-        let shared = self.dh_secret.diffie_hellman(remote);
+    fn apply_dh_shared(&mut self, shared: x25519_dalek::SharedSecret, remote: PublicKey) {
         let hk = Hkdf::<Sha256>::new(Some(&self.root_key), shared.as_bytes());
-
         let mut new_root = [0u8; RATCHET_KEY_LEN];
         hk.expand(b"HashChat-v1-root", &mut new_root)
             .expect("HKDF failed");
         self.root_key = new_root;
-
-        // Rotate DH keys for forward secrecy
-        self.dh_secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
-        self.dh_public = PublicKey::from(&self.dh_secret);
-        self.remote_dh = Some(*remote);
-
-        // Derive fresh chain keys
+        self.remote_dh = Some(remote);
         let hk2 = Hkdf::<Sha256>::new(Some(&self.root_key), shared.as_bytes());
         hk2.expand(b"HashChat-v1-chain-send", &mut self.chain_key_send)
             .expect("HKDF failed");
         hk2.expand(b"HashChat-v1-chain-recv", &mut self.chain_key_recv)
             .expect("HKDF failed");
-        hk2.expand(b"chain-send", &mut self.chain_key_send).unwrap();
-        hk2.expand(b"chain-recv", &mut self.chain_key_recv).unwrap();
+    }
+
+    /// Sender: new ephemeral, DH(new, their_current). Frame carries our new pub.
+    fn dh_ratchet_send(&mut self, remote: &PublicKey) {
+        self.dh_secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
+        self.dh_public = PublicKey::from(&self.dh_secret);
+        let shared = self.dh_secret.diffie_hellman(remote);
+        self.apply_dh_shared(shared, *remote);
+    }
+
+    /// Receiver: DH(our_current, their_new). Do not rotate our key first.
+    /// Swap send/recv so our recv chain matches their new send chain.
+    fn dh_ratchet_recv(&mut self, their_new: &PublicKey) {
+        let shared = self.dh_secret.diffie_hellman(their_new);
+        self.apply_dh_shared(shared, *their_new);
+        std::mem::swap(&mut self.chain_key_send, &mut self.chain_key_recv);
     }
 
     /// Advance the sending chain. Returns (message_key, message_number).
     /// Automatically performs DH ratchet periodically for stronger forward secrecy.
     pub fn ratchet_send(&mut self) -> ([u8; RATCHET_KEY_LEN], u32) {
         if let Some(remote) = self.remote_dh {
-            // Skip DH on the first send so init_from_shared chains stay aligned.
             if self.send_count > 0 && self.send_count % 2 == 0 {
-                self.dh_ratchet(&remote);
+                self.dh_ratchet_send(&remote);
             }
         }
 
@@ -228,10 +233,11 @@ impl DoubleRatchet {
 
     /// Advance the receiving chain when we get a message from a (possibly new) remote key.
     pub fn ratchet_recv(&mut self, remote: &PublicKey) -> ([u8; RATCHET_KEY_LEN], u32) {
-        // Only DH-ratchet when we already have a remote key and it changed.
-        // After init_from_shared the chains already match; a first recv must not DH.
-        if self.remote_dh.map(|k| k != *remote).unwrap_or(false) {
-            self.dh_ratchet(remote);
+        // First frame teaches us their ephemeral (no DH). Later changes DH-ratchet.
+        match self.remote_dh {
+            None => self.remote_dh = Some(*remote),
+            Some(existing) if existing != *remote => self.dh_ratchet_recv(remote),
+            Some(_) => {}
         }
 
         let hk = Hkdf::<Sha256>::new(None, &self.chain_key_recv);

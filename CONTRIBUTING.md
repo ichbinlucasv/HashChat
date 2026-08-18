@@ -1,27 +1,18 @@
-# Contributing to HashChat
+# Contributing
 
-HashChat is a Rust messenger (desktop TUI + shared crypto crate). Android UI is thin Kotlin over the same crate.
-
-**Primary**: https://codeberg.org/ichbinlucasv/HashChat  
-**Mirror**: https://github.com/ichbinlucasv/HashChat
-
-## Setup
+Primary development: **Codeberg** https://codeberg.org/ichbinlucasv/HashChat  
+GitHub is a read-only mirror.
 
 ```bash
+cargo test --features tui
 cargo build --release --features tui --bin hashchat-tui
-./run-tui
+./scripts/opsec-pre-push.sh
+git push origin main
+git push github main
 ```
 
-## Layout
+- `src/rust/` — crate
+- `src/bin/hashchat_tui.rs` — desktop
+- `android/` — Kotlin UI
 
-- `src/rust/` — ratchet, identity, session, wire, Tor SOCKS, JNI
-- `src/bin/hashchat_tui.rs` — desktop TUI
-- `android/` — Kotlin UI only
-
-There is no Haskell. Do not add GHC/Cabal.
-
-## Rules
-
-- Never commit `tor/hidden_service/`, `hashchat_data/`, or compiled `.so`
-- Crypto changes go in `src/rust/ratchet.rs` and need tests
-- Run `./scripts/opsec-pre-push.sh` then push Codeberg (`origin`) first
+Do not add Haskell, C/C++, or a second crypto crate. Security bugs go privately, not as public issues.

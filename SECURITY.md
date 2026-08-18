@@ -1,48 +1,31 @@
-# Security Policy for HashChat
+# Security policy
 
-HashChat is a **maximum-anonymity** messenger. Security is the #1 priority.
-
-**Primary repository**: https://codeberg.org/ichbinlucasv/HashChat  
+**Primary**: https://codeberg.org/ichbinlucasv/HashChat  
 **Mirror**: https://github.com/ichbinlucasv/HashChat
 
-## Supported Versions
+Report vulnerabilities privately (Codeberg security advisory or the maintainer). Do not open a public issue for crypto bugs.
 
-Only the latest `main` branch is supported for security issues.
+## Do not commit
 
-## Reporting a Vulnerability
+- `tor/hidden_service/`, `hashchat_data/`, `*.onion` private keys
+- `rust-lib/`, `target/`, compiled `.so`
+- Tor control cookies, passphrases
 
-**Please do NOT open public issues for security problems.**
+## Crypto
 
-Instead, report privately by:
-- Opening a private security advisory on Codeberg (primary) or GitHub mirror (if available), or
-- Contacting the maintainer directly (preferred for serious issues).
+Owned by `src/rust/ratchet.rs`, `longterm_identity.rs`, `wire.rs`.
 
-We take reports seriously and will respond within 48 hours.
+- Double Ratchet, AES-256-GCM (random nonce prepended)
+- Contact bootstrap: X25519 DH of long-term keys
+- Later messages: ephemeral DH on frame v2
+- At-rest: `hashchat_data/machine.key` (0600) wraps `state.enc`
 
-## Critical Rules for Contributors & Users
+`ml-kem` is optional, unaudited, off by default.
 
-1. **Never commit**:
-   - Anything inside `tor/hidden_service/`
-   - Compiled Rust libraries (`rust-lib/`)
-   - Any `.onion` private keys
-   - Database files (`*.db`)
+## Tor
 
-2. **Tor Hidden Services**:
-   - Real `.onion` private keys must never leave your machine.
-   - The `tor/torrc` in this repo is safe to share (it contains no secrets).
+`:listen` uses the control port (`ADD_ONION`) and **keeps that TCP connection open**. Closing the TUI drops a non-persisted onion; persisted keys are replayed on the next `:listen`.
 
-3. **Cryptography**:
-   - All changes to `src/rust/ratchet.rs` or encryption code must be reviewed.
-   - We use `ring` + `x25519-dalek` for primitives. There is no Haskell crypto path.
+## Wipe
 
-4. **Build Artifacts**:
-   - Never commit `target/`, `dist-newstyle/`, or generated launchers.
-
-5. **Android**:
-   - Never commit native libraries built for release without stripping symbols.
-
-## Responsible Disclosure
-
-We appreciate responsible disclosure and will credit researchers (unless they prefer anonymity).
-
-Thank you for helping keep HashChat users safe.
+`w` zeroizes ratchets and deletes `hashchat_data/` plus local HS material. If the device was already compromised, keys may already be gone.

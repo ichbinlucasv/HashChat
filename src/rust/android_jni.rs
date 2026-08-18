@@ -1356,3 +1356,43 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_rustQuantumHybridKexTest(
     vec_to_java_byte_array(&mut _env, b"QUANTUM-FEATURE-OFF".as_ref())
 }
 
+/// Parse a desktop contact link. Returns "onion\\nx25519hex" or empty on error.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_parseContactLink(
+    mut env: JNIEnv,
+    _class: JClass,
+    link: jni::objects::JString,
+) -> jbyteArray {
+    let s: String = env.get_string(&link).map(|x| x.into()).unwrap_or_default();
+    match crate::session::parse_contact_link(&s) {
+        Ok((onion, key)) => {
+            let out = format!("{}\n{}", onion, crate::session::hex_encode(&key));
+            vec_to_java_byte_array(&mut env, out.as_bytes())
+        }
+        Err(_) => vec_to_java_byte_array(&mut env, &[]),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_formatContactLink(
+    mut env: JNIEnv,
+    _class: JClass,
+    onion: jni::objects::JString,
+    x25519: jbyteArray,
+) -> jbyteArray {
+    let o: String = env.get_string(&onion).map(|x| x.into()).unwrap_or_default();
+    let arr = unsafe { wrap_byte_array(x25519) };
+    let n = env.get_array_length(&arr).unwrap_or(0) as usize;
+    if n < 32 {
+        return vec_to_java_byte_array(&mut env, &[]);
+    }
+    let mut tmp = [0i8; 32];
+    let _ = env.get_byte_array_region(&arr, 0, &mut tmp);
+    let mut key = [0u8; 32];
+    for (i, b) in tmp.iter().enumerate() {
+        key[i] = *b as u8;
+    }
+    let link = crate::session::format_contact_link(&o, &key);
+    vec_to_java_byte_array(&mut env, link.as_bytes())
+}
+

@@ -113,6 +113,9 @@ object HashChatNative {
     // Phase3 High: quantum FFI parity (gated; test from actions, Extreme refuse, processor note).
     external fun rustQuantumHybridNew(): Int
     external fun rustQuantumHybridKexTest(our: ByteArray, peerX: ByteArray, peerKem: ByteArray): ByteArray
+    // Same contact links as the desktop TUI (parse/format only; Tor HS is desktop).
+    external fun parseContactLink(link: String): ByteArray
+    external fun formatContactLink(onion: String, x25519: ByteArray): ByteArray
 
     // Combined Kotlin + JNI strict mode (authoritative for refusal decisions).
     // Expands the old stub with real root detection, dangerous props via reflection + files,

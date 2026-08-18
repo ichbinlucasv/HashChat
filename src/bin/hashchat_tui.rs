@@ -10,7 +10,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use hashchat_rust::hidden_service::{start_hidden_service, HiddenService};
+use hashchat_rust::hidden_service::{start_hidden_service_with_key, HiddenService};
 use hashchat_rust::session::{maybe_qr_text, Session};
 use hashchat_rust::tor_socks::{probe, socks5_send};
 use ratatui::backend::CrosstermBackend;
@@ -37,7 +37,7 @@ struct App {
 
 impl App {
     fn new() -> Self {
-        let mut session = Session::burner();
+        let mut session = Session::open();
         let tor = probe("127.0.0.1", 9050, 9051);
         session.log(tor.note.clone());
         App {
@@ -82,18 +82,47 @@ impl App {
             );
             return;
         }
-        match start_hidden_service(&self.socks_host, self.control_port) {
-            Ok(hs) => {
+        let existing = self.session.onion_key.clone();
+        match start_hidden_service_with_key(
+            &self.socks_host,
+            self.control_port,
+            existing.as_deref(),
+        ) {
+            Ok((hs, privkey)) => {
                 self.session.onion = Some(hs.onion.clone());
+                if !privkey.is_empty() {
+                    self.session.onion_key = Some(privkey);
+                }
+                let _ = self.session.save_disk();
                 self.status = format!("onion {}  (local :{})", hs.onion, hs.local_port);
                 self.session.log(self.status.clone());
                 self.hs = Some(hs);
+                self.retry_pending();
             }
             Err(e) => {
                 self.status = format!(":listen failed: {e}");
                 self.session.log(self.status.clone());
             }
         }
+    }
+
+    fn retry_pending(&mut self) {
+        let waiting = self.session.take_pending();
+        if waiting.is_empty() {
+            return;
+        }
+        let mut fail = 0;
+        for (onion, frame) in waiting {
+            if socks5_send(&self.socks_host, self.socks_port, &onion, 80, &frame).is_err() {
+                self.session.queue_outgoing(onion, frame);
+                fail += 1;
+            }
+        }
+        self.status = if fail == 0 {
+            "queued messages delivered".into()
+        } else {
+            format!("{fail} still queued")
+        };
     }
 }
 
@@ -181,6 +210,10 @@ fn handle_enter(app: &mut App) -> bool {
         app.listen();
         return true;
     }
+    if line == ":retry" {
+        app.retry_pending();
+        return true;
+    }
     if line == ":status" {
         let tor = probe(&app.socks_host, app.socks_port, app.control_port);
         app.status = format!(
@@ -239,8 +272,14 @@ fn handle_enter(app: &mut App) -> bool {
                 .map(|c| c.onion.clone())
                 .unwrap_or_default();
             match socks5_send(&app.socks_host, app.socks_port, &dest, 80, &frame) {
-                Ok(()) => app.status = format!("sent {} bytes → {dest}", frame.len()),
-                Err(e) => app.status = format!("encrypted; Tor send failed: {e}"),
+                Ok(()) => {
+                    app.status = format!("sent {} bytes → {dest}", frame.len());
+                    app.retry_pending();
+                }
+                Err(e) => {
+                    app.session.queue_outgoing(dest, frame);
+                    app.status = format!("queued (offline): {e}");
+                }
             }
         }
         Err(e) => app.status = e.into(),
@@ -371,9 +410,10 @@ fn help_text() -> String {
     [
         "Two devices (both need a local Tor with ControlPort 9051 + SOCKS 9050):",
         "",
-        "  l / :listen              publish a v3 onion",
+        "  l / :listen              publish a v3 onion (reused if saved)",
         "  :my-contact              your hashchat:// link (qrencode if installed)",
         "  :add-contact <link>      paste the other person's link",
+        "  :retry                   flush queued ciphertext if a peer was offline",
         "  type a message + Enter   encrypt + send over Tor SOCKS to their onion",
         "",
         "s  X25519 + ratchet selftest (no network)",

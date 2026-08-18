@@ -1,49 +1,35 @@
 # HashChat plan
 
 Primary: https://codeberg.org/ichbinlucasv/HashChat  
-Mirror: https://github.com/ichbinlucasv/HashChat (push after Codeberg)
+Mirror: https://github.com/ichbinlucasv/HashChat
 
-This is the working plan. Session diaries do not belong here.
+Desktop is Rust. Android UI is Kotlin. No Haskell.
 
-## What is actually solid
+## Done
 
-- Rust Double Ratchet (DH + HKDF chains + skipped keys + zeroize)
-- AES-256-GCM with a **fresh random nonce per seal** (wire: `nonce || ct || tag`)
-- Argon2id + AES-GCM envelopes for ratchet / identity / blobs
-- Long-term ed25519 + x25519 identity
-- Brick TUI as the desktop UI
-- Thin Kotlin UI + Rust JNI on Android
-- Tor v3 hidden-service path on desktop (needs real two-device proof)
+- One crypto crate (`src/rust/`) + JNI feature `android`
+- Rust TUI (`hashchat-tui`)
+- X25519 contact links, frame v2 with ephemeral DH, Tor `:listen` / SOCKS send / HS recv
+- Encrypted local state + onion key reuse
+- Offline send queue (`:retry`)
+- Docs match the code (2026-08-18)
 
-## What is not done (do not advertise)
+## When you come back
 
-- Mesh, Starlink, email DHT, public channels, self-host relay: stubs / demos
-- Quantum hybrid: gated, unaudited `ml-kem`, Extreme should keep it off
-- Tauri GUI: HTML stub
-- Voice/calls: partial; Haskell `Call.hs` / `Voice.hs` are almost empty
-- No signed tag. No independent audit.
+1. Run two real machines through INSTALL.md and fix whatever cookie/ControlPort issues you hit
+2. Persist contacts (not only identity/onion) so `:add-contact` survives restart
+3. Android: Orbot SOCKS + same contact link / send-recv (no second crate)
+4. Frame-level tests against a live Tor if you have a spare VPS
+5. `cargo audit` + one SBOM + signed tag only after (1)
 
-## Work order (do these, in this order)
+## Do not start with
 
-1. **OPSEC on every push** — `scripts/opsec-pre-push.sh`, Codeberg first, GitHub mirror second. Separate SSH keys when you rotate GitHub.
-2. **One Rust crate** — done. Android JNI is `src/rust/android_jni.rs`.
-3. **Rust desktop TUI** — done. Haskell sources deleted.
-4. **Two-device Tor path** — done in-process (X25519 DH + frame + tests). TUI: `:listen` (v3 onion via control port), `:my-contact` / QR, `:add-contact`, SOCKS send, local HS recv.
-5. **Harden that path** — persist onion key if you want a stable address; put ephemeral DH on the wire; cookie-auth docs for ControlPort 9051.
-4. **FFI hygiene** — remaining unwraps, mlock honestly documented, no silent failures.
-5. **Honest docs / icons / screenshots** — then a signed `v0.2` from Codeberg.
+Mesh, Starlink, email DHT, Tauri as default, ML-KEM on by default, Flathub, or monetization.
 
-Do not start mesh, PQ-default, monetization, or Flathub until 1–4 are true.
-
-## Remotes (this machine)
-
-```
-origin  git@codeberg.org:ichbinlucasv/HashChat.git
-github  git@github.com:ichbinlucasv/HashChat.git
-```
+## Remotes
 
 ```bash
 ./scripts/opsec-pre-push.sh
-git push origin main
-git push github main
+git push origin main          # Codeberg
+git push github main          # mirror
 ```
