@@ -8,9 +8,13 @@ The Flatpak **does not bundle Tor**. You must run a host Tor daemon with:
 
 - SOCKS on loopback (typically `9050` or Tor Browser `9150`)
 - `ControlPort 9051` + `CookieAuthentication 1`
+- A ControlPort cookie file readable by the user running the app (typical path: `/run/tor/control.authcookie`)
 
-Never paste ControlPort cookies or onion private keys into issues, chats, or screenshots.
-See root `INSTALL.md` for Fedora / Ubuntu / Arch / Tails / Qubes notes.
+HashChat discovers the cookie path via Tor `PROTOCOLINFO` (`COOKIEFILE=…`) and fail-closes if the cookie is missing or unreadable. There is **no silent clearnet fallback**.
+
+**Never** paste ControlPort cookies or onion private keys into issues, chats, or screenshots. Do not `cat` / `hexdump` the cookie file when debugging — use `systemctl is-active tor`, `ss -ltn`, and `test -r` on the cookie path instead.
+
+See root `INSTALL.md` for Fedora / Ubuntu / Arch / Tails / Qubes walkthroughs (including group membership for cookie read access and Whonix onion-grater caveats).
 
 ## Build (reproducible)
 
@@ -18,6 +22,12 @@ See root `INSTALL.md` for Fedora / Ubuntu / Arch / Tails / Qubes notes.
 nix build .#hashchat-flatpak
 flatpak install --user result/hashchat-tui.flatpak
 flatpak run org.hashchat.HashChat
+```
+
+Preferred matching source build:
+
+```bash
+cargo build --release --locked --bin hashchat-tui --features tui
 ```
 
 The manifest is **install-only**: Nix prebuilds `prebuilt/hashchat-tui` and the Rust library, then Flatpak packs them. Binary name inside the app: **`hashchat-tui`**.

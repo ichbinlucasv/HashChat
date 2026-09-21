@@ -2,7 +2,7 @@
 #
 # HashChat — Ubuntu/Debian installer (Rust-first desktop)
 #
-# Builds: cargo build --release --bin hashchat-tui --features tui
+# Builds: cargo build --release --locked --bin hashchat-tui --features tui
 # Haskell remains a transitional fallback (INSTALL.md).
 #
 # Usage:
@@ -70,8 +70,11 @@ echo "  ./run-tui"
 echo "  # or: ./target/release/hashchat-tui"
 echo ""
 echo "=== Tor (required for the default anonymity path) ==="
-echo "1. Edit /etc/tor/torrc — add ControlPort 9051 and CookieAuthentication 1"
+echo "1. Edit /etc/tor/torrc — add SocksPort 9050, ControlPort 9051, CookieAuthentication 1"
 echo "2. sudo systemctl enable --now tor && sudo systemctl restart tor"
+echo "3. Cookie typically /run/tor/control.authcookie; add yourself to group debian-tor and re-login if needed."
+echo "   Never cat/hexdump/paste cookie contents. HashChat discovers COOKIEFILE via PROTOCOLINFO."
+echo "4. Safe check: systemctl is-active tor; ss -ltn | grep -E '9050|9051'; test -r /run/tor/control.authcookie"
 echo ""
 echo "Voice (optional): sudo apt install pipewire pipewire-pulse wireplumber alsa-utils"
 echo "Stronger OPSEC: Tails or Qubes. See INSTALL.md / THREATMODEL.md"

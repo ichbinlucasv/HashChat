@@ -14,8 +14,9 @@
     <p>
       The desktop client is the native Rust TUI (binary hashchat-tui), themed black and gold
       (logo: chat bubble with hash mark). A host Tor daemon with SOCKS and ControlPort cookie
-      authentication is required; the Flatpak does not bundle Tor. Never share ControlPort
-      cookies or onion private keys.
+      authentication is required; the Flatpak does not bundle Tor. The ControlPort cookie
+      must be readable by the user (typical path /run/tor/control.authcookie); never share
+      cookie contents or onion private keys.
     </p>
     <p>
       It uses real Double Ratchet cryptography with forward secrecy, Tor v3 hidden services by

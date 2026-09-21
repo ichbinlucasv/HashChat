@@ -55,10 +55,11 @@ fi
 if ! pgrep -x tor >/dev/null 2>&1; then
   echo "[WARNING] Tor does not appear to be running."
   echo "          Default path needs SOCKS (9050/9150) + ControlPort 9051 + CookieAuthentication."
-  echo "          - Fedora/Ubuntu/Arch: install tor, edit /etc/tor/torrc, systemctl enable --now tor"
-  echo "          - Tails: Tor usually preconfigured"
-  echo "          - Qubes: sys-whonix / Tor qube; set SOCKS via the client if needed"
-  echo "          See INSTALL.md and THREATMODEL.md — never paste ControlPort cookies into chats/logs."
+  echo "          - Fedora/Ubuntu/Arch: install tor; torrc SocksPort 9050 + ControlPort 9051 + CookieAuthentication 1;"
+  echo "            systemctl enable --now tor; ensure cookie (e.g. /run/tor/control.authcookie) is readable"
+  echo "          - Tails: Tor usually preconfigured; ControlPort/:listen may be restricted"
+  echo "          - Qubes: sys-whonix; SOCKS via Tor NetVM; ControlPort may be onion-grater filtered"
+  echo "          See INSTALL.md — never cat/paste ControlPort cookies into chats/logs."
 fi
 
 ensure_rust_lib() {

@@ -9,9 +9,25 @@ All development happens on **Codeberg**. Clone and work on `codeberg-primary` fo
 
 ---
 
-## Normal User Quick Path (Rust-first)
+## Preferred desktop binary
 
-You do **not** need to be an expert. Desktop focus is the **native Rust TUI**.
+The long-term desktop client is the **native Rust TUI**:
+
+```bash
+cargo build --release --locked --bin hashchat-tui --features tui
+./run-tui
+# equivalent: ./target/release/hashchat-tui
+```
+
+- Binary name: `hashchat-tui` (Cargo feature `tui`)
+- Launcher `./run-tui` prefers the Rust binary; the transitional Haskell Brick TUI is used only if Rust is missing
+- Brand: black `#0A0A0A` + gold `#FFD700` (logo 2 — chat bubble / hash mark); see `branding/`
+
+**Transport default:** Tor only (SOCKS + ControlPort cookie auth). There is **no silent clearnet fallback**. Other networks (if added later) must be an explicit user choice.
+
+---
+
+## Normal User Quick Path
 
 1. Clone from Codeberg and check out the tip branch:
    ```bash
@@ -20,23 +36,19 @@ You do **not** need to be an expert. Desktop focus is the **native Rust TUI**.
    git checkout codeberg-primary
    ```
 
-2. Install (picks Fedora / Ubuntu / Arch automatically), or build Rust yourself:
+2. Install (detects Fedora / Ubuntu / Arch), or build Rust yourself:
    ```bash
    ./install.sh
    # or:
    cargo build --release --locked --bin hashchat-tui --features tui
    ```
 
-3. Run:
+3. Configure Tor ControlPort + cookie auth (see [Tor setup](#critical-tor-setup-required)), then run:
    ```bash
    ./run-tui
-   # equivalent: ./target/release/hashchat-tui
    ```
-   The launcher prefers the Rust binary, prints audio/Tor diagnostics, and only falls back to the transitional Haskell Brick TUI if Rust is missing.
 
-4. Inside the Rust TUI (black + gold): unlock / create identity, `:listen`, exchange signed `hashchat://` contacts, chat over Tor. Panic wipe is available for local sensitive state.
-
-See **Desktop Runtime Notes per OS** below. **Tor with ControlPort is required** for the default anonymity path.
+4. Inside the Rust TUI: unlock / create identity, `:listen`, exchange signed `hashchat://` contacts, chat over Tor. Panic wipe is available for local sensitive state.
 
 ---
 
@@ -50,7 +62,8 @@ See **Desktop Runtime Notes per OS** below. **Tor with ControlPort is required**
 | Arch family | `./install-arch.sh` |
 
 Each script:
-- Installs build tools + **Tor** package where applicable
+
+- Installs build tools + the **Tor** package where applicable
 - Runs `cargo build --release --locked` and `cargo build --release --locked --bin hashchat-tui --features tui`
 - Does **not** print secrets, passphrases, or Tor cookie material
 - Leaves Haskell as an **optional transitional** path (not built by default)
@@ -58,44 +71,349 @@ Each script:
 ```bash
 chmod +x install.sh install-*.sh run-tui
 ./install.sh
+# Then configure Tor (next section), then:
 ./run-tui
 ```
 
+Tails and Qubes are **not** auto-installed by `./install.sh`; see their sections below (the unified script prints a short pointer).
+
 ---
 
-## Manual Installation (Any Linux)
+## Fedora (walkthrough)
 
-### 1. System dependencies
+### Dependencies
 
-**Fedora:**
 ```bash
 sudo dnf install gcc make pkg-config openssl-devel ncurses-devel libffi-devel zlib-devel git curl tor
 ```
 
-**Ubuntu/Debian:**
+Optional voice tooling (PipeWire):
+
+```bash
+sudo dnf install pipewire-utils alsa-utils
+systemctl --user restart pipewire
+```
+
+### Rust toolchain
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+```
+
+Or run `./install-fedora.sh` (installs deps + rustup if needed + builds `hashchat-tui`).
+
+### Build and run
+
+```bash
+cargo build --release --locked --bin hashchat-tui --features tui
+./run-tui
+```
+
+### Tor on Fedora
+
+1. Edit `/etc/tor/torrc` and ensure (add if missing):
+   ```
+   SocksPort 9050
+   ControlPort 9051
+   CookieAuthentication 1
+   ```
+2. Restart Tor:
+   ```bash
+   sudo systemctl enable --now tor
+   sudo systemctl restart tor
+   ```
+3. Cookie file (typical): `/run/tor/control.authcookie`  
+   HashChat discovers the path via Tor `PROTOCOLINFO` (`COOKIEFILE=…`). Your user must be able to **read** that file (often: add yourself to the `tor` group, then log out/in).  
+   **Never** `cat`, `hexdump`, or paste cookie contents into terminals shared with others, tickets, or chat.
+4. Verify without secrets:
+   ```bash
+   systemctl is-active tor
+   ss -ltn | grep -E '9050|9051' || true
+   ```
+
+---
+
+## Ubuntu / Debian (walkthrough)
+
+### Dependencies
+
 ```bash
 sudo apt update
 sudo apt install build-essential pkg-config libssl-dev libncurses5-dev libffi-dev zlib1g-dev git curl tor
 ```
 
-**Arch:**
+Optional voice:
+
+```bash
+sudo apt install pipewire pipewire-pulse wireplumber alsa-utils
+systemctl --user restart pipewire
+```
+
+### Rust toolchain
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+```
+
+Or run `./install-ubuntu.sh`.
+
+### Build and run
+
+```bash
+cargo build --release --locked --bin hashchat-tui --features tui
+./run-tui
+```
+
+### Tor on Ubuntu / Debian
+
+1. Edit `/etc/tor/torrc`:
+   ```
+   SocksPort 9050
+   ControlPort 9051
+   CookieAuthentication 1
+   ```
+2. Restart:
+   ```bash
+   sudo systemctl enable --now tor
+   sudo systemctl restart tor
+   ```
+3. Cookie file (typical): `/run/tor/control.authcookie` (sometimes `/var/run/tor/control.authcookie`).  
+   Membership in the **`debian-tor`** group is commonly required to read the cookie; then log out and back in.  
+   **Never** print or share cookie bytes.
+4. Verify:
+   ```bash
+   systemctl is-active tor
+   ss -ltn | grep -E '9050|9051' || true
+   ```
+
+---
+
+## Arch Linux (walkthrough)
+
+### Dependencies
+
 ```bash
 sudo pacman -S --needed base-devel pkg-config openssl ncurses libffi zlib git curl tor
 ```
 
+Optional voice:
+
+```bash
+sudo pacman -S pipewire pipewire-pulse wireplumber alsa-utils
+systemctl --user enable --now pipewire
+```
+
+### Rust toolchain
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+```
+
+Or run `./install-arch.sh`. For bit-for-bit reproducibility prefer Nix/Flatpak (below).
+
+### Build and run
+
+```bash
+cargo build --release --locked --bin hashchat-tui --features tui
+./run-tui
+```
+
+### Tor on Arch
+
+1. Edit `/etc/tor/torrc`:
+   ```
+   SocksPort 9050
+   ControlPort 9051
+   CookieAuthentication 1
+   ```
+2. Restart:
+   ```bash
+   sudo systemctl enable --now tor
+   sudo systemctl restart tor
+   ```
+3. Cookie file (typical): `/run/tor/control.authcookie`.  
+   Ensure your user can read it (group/`tor` permissions as configured by the package). **Never** echo cookie contents.
+4. Verify with `systemctl is-active tor` and `ss -ltn` as above.
+
+---
+
+## Tails
+
+Tails is amnesic and Tor-first — strong OPSEC for casual sessions, with important caveats for HashChat.
+
+### What works well
+
+- Tor is already the default network path (no “enable Tor” step for browsing).
+- Prefer a **pre-built Flatpak** (or a release binary built elsewhere) copied into the session rather than compiling large toolchains on Tails when you can avoid it.
+- Avoid Persistent Storage for HashChat identity / chat state unless you deliberately accept the forensics trade-off. Amnesia is the point.
+
+### Tor ControlPort on Tails
+
+HashChat’s `:listen` path needs a **loopback Tor ControlPort** with **cookie authentication** so it can issue `ADD_ONION` (fail-closed; no bare `AUTHENTICATE`).
+
+On Tails, ControlPort access is often **restricted** (filtered / not freely available to arbitrary apps). Do not weaken Tails global Tor policy casually.
+
+Practical guidance:
+
+- Confirm whether a ControlPort is reachable on loopback (e.g. TCP `9051`) **without** dumping cookies.
+- Cookie path, when present, is typically under `/run/tor/` (exact name comes from Tor `PROTOCOLINFO` → `COOKIEFILE=`). HashChat reads that path itself — **do not** paste cookie contents into notes or tickets.
+- If ControlPort / `ADD_ONION` is unavailable in your Tails version, `:listen` will fail closed. Prefer documenting that limitation over inventing clearnet workarounds. There is **no silent clearnet fallback**.
+
+### Persistence / OPSEC
+
+- Prefer session-only use; wipe when done (`./scripts/clean-security.sh --strict` if you used a writable tree).
+- Do not screenshot ControlPort status that might include cookie paths in unusual logging setups; HashChat itself must not log cookie bytes (and install docs must not tell you to print them).
+- Bridges: use Tails’ normal Tor configuration UI when your network needs them — that is separate from HashChat.
+
+### Build on Tails (if you must)
+
+```bash
+# Only if you accept a large toolchain on an amnesic session
+cargo build --release --locked --bin hashchat-tui --features tui
+./run-tui
+```
+
+Expect slower builds and loss of the binary when the session ends unless you deliberately persist (discouraged for high-risk use).
+
+---
+
+## Qubes OS
+
+Run HashChat in a **dedicated app qube** (disposable for highest paranoia, or a tightly firewalled vault-style qube). Route network through **sys-whonix** (or equivalent Tor NetVM). Never treat the build disposable as a long-lived chat qube.
+
+### Build (disposable)
+
+```bash
+# Example pattern — adjust template / dispvm names for your install:
+# qvm-run --dispvm=fedora-40-dvm 'bash -s' < scripts/qubes-build.sh
+```
+
+`scripts/qubes-build.sh` prefers a Nix Flatpak build inside the disposable, then you `qvm-copy` the `.flatpak` out. Do not reuse the build disposable for sensitive chatting.
+
+### Install / run in the app qube
+
+- Install the Flatpak (or copy a prebuilt `hashchat-tui`) into the app qube only.
+- Host Tor still comes from the Tor/Whonix infrastructure — the Flatpak does **not** bundle Tor.
+- Preferred local build inside a template/app qube (if you compile there):
+  ```bash
+  cargo build --release --locked --bin hashchat-tui --features tui
+  ./run-tui
+  ```
+
+### Tor / SOCKS / ControlPort on Qubes + Whonix
+
+- **SOCKS**: traffic should egress via sys-whonix. Point HashChat at the SOCKS listener your template documents (often loopback `9050` in Whonix-Workstation, or the address your qube networking exposes). Use `:set-proxy` only if your TUI build supports adjusting SOCKS — never point at clearnet.
+- **ControlPort + cookie**: Whonix commonly **filters** ControlPort via onion-grater. Unrestricted `ADD_ONION` may be denied until a filtered profile allows it. Treat enabling ControlPort commands as a deliberate OPSEC/admin change on the Whonix side — do not paste cookies between qubes in chat or tickets.
+- Cookie files, when used, live on the Tor-providing qube/VM (paths like `/run/tor/control.authcookie`). The HashChat process must be able to read the cookie **in the same place Tor ControlPort is reachable** (usually the workstation/Tor client VM). **Never** `qvm-copy` cookie files or echo them into another qube’s logs.
+- Verify connectivity with service status and listening ports only — not by printing cookie material.
+
+### Audio
+
+Enable audio in the **template** if the app qube needs voice; minimal qubes often only have `arecord`.
+
+### OPSEC caveats
+
+- Prefer disposables for one-shot sessions; accept that state dies with the VM.
+- Do not mix build artifacts, browsing, and long-term identity in one qube.
+- After sensitive work in a persistent qube: `./scripts/clean-security.sh --strict`.
+
+---
+
+## Critical: Tor setup (required)
+
+HashChat’s default transport is **Tor-only**. You need:
+
+| Need | Typical value | Notes |
+|------|---------------|--------|
+| SOCKS | `127.0.0.1:9050` (or Tor Browser `9150`) | Loopback only |
+| ControlPort | TCP `9051` | Desktop client expects **9051** today |
+| Auth | `CookieAuthentication 1` | Cookie only; fail-closed if unreadable |
+
+**Do not** paste ControlPort cookies, authenticators, hashed passwords, or onion private keys into tickets, chat, screenshots, or shell history shared with others.
+
+### Minimal `torrc` for the desktop client
+
+Edit `/etc/tor/torrc` (Fedora / Ubuntu / Arch) and set:
+
+```
+SocksPort 9050
+ControlPort 9051
+CookieAuthentication 1
+```
+
+Then:
+
+```bash
+sudo systemctl enable --now tor
+sudo systemctl restart tor
+```
+
+### How cookie auth works with HashChat (no secret echoing)
+
+1. HashChat opens the ControlPort on loopback.
+2. It sends `PROTOCOLINFO` and reads `COOKIEFILE="…"` from Tor’s reply.
+3. It reads that file and authenticates with cookie `AUTHENTICATE` only.
+4. If the cookie file is missing or unreadable, it **fails closed** (refuses bare `AUTHENTICATE`). Cookie bytes are never meant to be logged.
+
+**Typical cookie paths** (distribution defaults; confirm via Tor, not by publishing contents):
+
+| Environment | Common cookie path |
+|-------------|--------------------|
+| Fedora / Arch / modern Tor | `/run/tor/control.authcookie` |
+| Debian / Ubuntu | `/run/tor/control.authcookie` (alias `/var/run/tor/…`) |
+| Some Tor layouts | `/var/lib/tor/control_auth_cookie` |
+| Tails / Whonix | Under `/run/tor/` when ControlPort is exposed; often filtered |
+
+**Permissions:** the OS user running `hashchat-tui` must be allowed to read the cookie file (commonly via `debian-tor` or `tor` group membership + re-login). Fix permissions/groups — do not copy cookie bytes into the home directory “for convenience.”
+
+**Safe checks:**
+
+```bash
+systemctl is-active tor
+ss -ltn | grep -E '9050|9051' || true
+# Optional: confirm the cookie file exists and is readable *by you* without printing it:
+test -r /run/tor/control.authcookie && echo "cookie file readable" || echo "cookie file not readable (fix group/permissions)"
+```
+
+### Sample `tor/torrc` in this repo
+
+`tor/torrc` is an example hardened config. It may use `ControlPort auto` / a control socket for other deployments. The **desktop Rust TUI currently expects TCP ControlPort `9051`**. For HashChat desktop, prefer the minimal `SocksPort` / `ControlPort 9051` / `CookieAuthentication 1` stanza above unless you knowingly change both Tor and the client.
+
+### Recommended environments
+
+- **Best**: Tails (amnesic, Tor by default) — subject to ControlPort/`ADD_ONION` availability
+- **Excellent**: Qubes disposable + Whonix — subject to onion-grater / ControlPort policy
+- **Good**: Fedora / Arch / Ubuntu + hardened Tor + FDE + no swap
+
+See `THREATMODEL.md` and `SECURITY.md`.
+
+---
+
+## Manual installation (any Linux)
+
+### 1. System dependencies
+
+Use the Fedora / Ubuntu / Arch dependency blocks above (or your distro’s equivalents for gcc/make, pkg-config, OpenSSL headers, ncurses, libffi, zlib, git, curl, **tor**).
+
 ### 2. Rust toolchain
+
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 ```
 
 ### 3. Build the Rust desktop TUI (recommended)
+
 ```bash
 cargo build --release --locked --bin hashchat-tui --features tui
 ./run-tui
 ```
 
 ### 4. Reproducible Flatpak / Nix (optional)
+
 ```bash
 nix build .#hashchat-flatpak   # Pure Nix .flatpak
 flatpak install --user result/hashchat-tui.flatpak
@@ -104,8 +422,12 @@ flatpak run org.hashchat.HashChat
 nix build .#hashchat-tui       # flake TUI wrapper (when available)
 ```
 
+**Host Tor is still required** — see Flatpak section.
+
 ### 5. Transitional Haskell desktop (fallback only)
+
 Legacy Brick TUI over the Rust FFI — **not** the long-term stack:
+
 ```bash
 # Install GHC/Cabal (ghcup recommended on Ubuntu/Arch)
 cabal update
@@ -115,67 +437,19 @@ cabal build -f-tui hashchat-tui
 
 ---
 
-## Critical: Tor Setup (Required)
-
-HashChat’s default transport is **Tor-only**. You need Tor running with SOCKS and a ControlPort using cookie authentication.
-
-**Do not** paste ControlPort cookies, authenticators, or onion private keys into tickets, chat, or screenshots.
-
-### Fedora / Ubuntu / Arch
-Install Tor (install scripts already pull the `tor` package), then edit `/etc/tor/torrc` and add:
-```
-ControlPort 9051
-CookieAuthentication 1
-```
-
-Enable and restart:
-```bash
-sudo systemctl enable --now tor
-sudo systemctl restart tor
-```
-
-SOCKS is typically `127.0.0.1:9050` (or `9150` for Tor Browser). The Rust client probes loopback SOCKS and fail-closes ControlPort cookie auth.
-
-### Tails
-- Tor is usually preconfigured; prefer bridges when needed.
-- Prefer a pre-built Flatpak copied onto the session; avoid unnecessary persistence.
-- Strongest amnesia properties for casual use.
-
-### Qubes
-- Run HashChat in its own qube (disposable or tightly firewalled).
-- Build with `scripts/qubes-build.sh` in a disposable, or install a Flatpak built elsewhere.
-- Route through **sys-whonix**; point SOCKS at the Tor qube as documented for your template.
-- Enable audio in the **template** if you need voice in the app qube.
-
-### Recommended environments
-- **Best**: Tails (amnesic, Tor by default)
-- **Excellent**: Qubes disposable + Whonix
-- **Good**: Fedora/Arch/Ubuntu + hardened Tor + FDE + no swap
-
-See `THREATMODEL.md` and `SECURITY.md`.
-
----
-
-## Desktop Runtime Notes (Fedora / Ubuntu / Arch / Tails / Qubes)
-
-**Rust TUI**
-- Binary name: `hashchat-tui` (Cargo feature `tui`)
-- Brand: black `#0A0A0A` + gold `#FFD700` (logo 2 — chat bubble / hash mark); see `branding/`
-- Launcher: `./run-tui` (Rust first, Haskell transitional fallback)
+## Desktop runtime notes (audio / hardening)
 
 **Voice / audio (where supported)**
+
 - Fedora 40+: PipeWire → `pw-record`
 - Ubuntu 22.04+: PipeWire or Pulse → `pw-record` / `parecord`
 - Arch: PipeWire common
-- Tails/Qubes minimal: often `arecord` only
-- One-liners:
-  - Fedora: `sudo dnf install pipewire-utils alsa-utils && systemctl --user restart pipewire`
-  - Ubuntu: `sudo apt install pipewire pipewire-pulse wireplumber alsa-utils && systemctl --user restart pipewire`
-  - Arch: `sudo pacman -S pipewire pipewire-pulse wireplumber alsa-utils && systemctl --user enable --now pipewire`
+- Tails / Qubes minimal: often `arecord` only
 
 **Hardening hints**
+
 - Tails & Qubes disposables: strongest OPSEC (amnesia + compartmentalization)
-- Fedora/Arch: FDE + no swap + minimal services
+- Fedora / Arch: FDE + no swap + minimal services
 - Ubuntu: prefer minimal install; be aware of default telemetry surface
 - After sensitive sessions: `./scripts/clean-security.sh --strict`
 
@@ -191,7 +465,7 @@ flatpak install --user result/hashchat-tui.flatpak
 flatpak run org.hashchat.HashChat
 ```
 
-**Host Tor is still required** — the Flatpak sandbox does not replace a system Tor daemon with ControlPort. See `flatpak/README.md`.
+**Host Tor is still required** — the Flatpak sandbox does not replace a system Tor daemon with ControlPort + cookie auth. See `flatpak/README.md`.
 
 ---
 
@@ -203,12 +477,13 @@ There is no in-tree PKGBUILD or RPM `.spec` yet. When packaging:
 |------|--------|
 | Desktop / binary name | `hashchat-tui` |
 | Cargo features | `--features tui` for the desktop binary |
+| Preferred build | `cargo build --release --locked --bin hashchat-tui --features tui` |
 | Library (FFI / transitional Haskell) | `libhashchat_rust.so` |
 | Runtime dependency | `tor` (SOCKS + ControlPort cookie auth) |
 | Flatpak app-id | `org.hashchat.HashChat` |
 | Icon name | `org.hashchat.HashChat` (hicolor) |
 
-Arch PKGBUILD sketch: `cargo build --release --locked --bin hashchat-tui --features tui`, install `target/release/hashchat-tui` to `/usr/bin/hashchat-tui`, depend on `tor`. Fedora: same binary name in `%build` / `%install`; `Requires: tor`.
+Arch PKGBUILD sketch: build with the preferred command above, install `target/release/hashchat-tui` to `/usr/bin/hashchat-tui`, depend on `tor`. Fedora: same binary name in `%build` / `%install`; `Requires: tor`. Document that the package does **not** ship Tor cookies and must not run post-install scripts that print ControlPort secrets.
 
 ---
 
@@ -220,11 +495,15 @@ Early development. Needs NDK, Rust / `cargo-ndk`, secure storage + JNI. See `./b
 
 ## Troubleshooting
 
-- **No `hashchat-tui`**: `cargo build --release --locked --bin hashchat-tui --features tui`
-- **Missing `libhashchat_rust.so`** (Haskell fallback): `cargo build --release --locked` and copy into `rust-lib/`
-- **Tor connection fails**: service running? ControlPort `9051` + `CookieAuthentication 1`? Never log cookie bytes.
-- **Cabal dependency hell** (legacy only): `cabal clean` + `rm -rf dist-newstyle` + `cabal update`
-- **Wrong branch**: `git checkout codeberg-primary && git pull`
+| Symptom | What to check |
+|---------|----------------|
+| No `hashchat-tui` | `cargo build --release --locked --bin hashchat-tui --features tui` |
+| Missing `libhashchat_rust.so` (Haskell fallback) | `cargo build --release --locked` and copy into `rust-lib/` |
+| Tor / `:listen` fails | Is `tor` active? Is TCP `9051` listening? Is `CookieAuthentication 1` set? Can your user **read** the cookie file (group membership)? Never log cookie bytes. |
+| Cookie “unreadable” | Add user to `debian-tor` (Debian/Ubuntu) or `tor` (Fedora/Arch as applicable); re-login; confirm with `test -r` on the cookie path — do not `cat` it. |
+| Tails / Whonix ControlPort denied | ControlPort may be filtered; HashChat needs cookie auth + `ADD_ONION`. Do not bypass via clearnet. |
+| Cabal dependency hell (legacy only) | `cabal clean` + `rm -rf dist-newstyle` + `cabal update` |
+| Wrong branch | `git checkout codeberg-primary && git pull` |
 
 ---
 

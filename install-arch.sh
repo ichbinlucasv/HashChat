@@ -2,7 +2,7 @@
 #
 # HashChat — Arch Linux installer (Rust-first desktop)
 #
-# Builds: cargo build --release --bin hashchat-tui --features tui
+# Builds: cargo build --release --locked --bin hashchat-tui --features tui
 # Prefer Nix/Flatpak when you need bit-for-bit reproducibility.
 # Haskell remains a transitional fallback (INSTALL.md).
 #
@@ -70,8 +70,11 @@ echo "  ./run-tui"
 echo "  # or: ./target/release/hashchat-tui"
 echo ""
 echo "=== Tor (required for the default anonymity path) ==="
-echo "1. Edit /etc/tor/torrc — add ControlPort 9051 and CookieAuthentication 1"
+echo "1. Edit /etc/tor/torrc — add SocksPort 9050, ControlPort 9051, CookieAuthentication 1"
 echo "2. sudo systemctl enable --now tor && sudo systemctl restart tor"
+echo "3. Cookie typically /run/tor/control.authcookie; ensure your user can read it (tor group as needed)."
+echo "   Never cat/hexdump/paste cookie contents. HashChat discovers COOKIEFILE via PROTOCOLINFO."
+echo "4. Safe check: systemctl is-active tor; ss -ltn | grep -E '9050|9051'; test -r /run/tor/control.authcookie"
 echo ""
 echo "Voice (optional): sudo pacman -S pipewire pipewire-pulse wireplumber alsa-utils"
 echo "Reproducible path: nix build .#hashchat-flatpak"

@@ -47,9 +47,9 @@ Inspiration: SimpleX-class UX ideas, with paranoid defaults (Tor-first, no phone
 4. Unlock / create identity with a passphrase (Argon2id-wrapped at rest)
 5. `:listen`, exchange signed `hashchat://` contacts, chat over Tor
 
-**Tor is required** for the default path (SOCKS + ControlPort `9051` with cookie authentication). Do not paste ControlPort cookies or onion keys into issues or chats.
+**Tor is required** for the default path (SOCKS + ControlPort `9051` with cookie authentication). Cookie path comes from Tor `PROTOCOLINFO` (typical file: `/run/tor/control.authcookie`); your user must be able to read it. Do not paste ControlPort cookies or onion keys into issues or chats. No silent clearnet fallback.
 
-See [INSTALL.md](INSTALL.md) for per-OS Tor, Flatpak, Tails/Qubes, and packaging notes.
+See [INSTALL.md](INSTALL.md) for Fedora / Ubuntu / Arch / Tails / Qubes walkthroughs, Flatpak, and packaging notes.
 
 **Transport default:** Tor. Other networks (I2P, clearnet) or DNS choices are planned as **explicit** user modes — no silent fallback from Tor.
 

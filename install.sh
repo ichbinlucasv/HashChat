@@ -6,7 +6,7 @@
 # Prints guidance for Tails / Qubes / other.
 #
 # Preferred desktop binary:
-#   cargo build --release --bin hashchat-tui --features tui
+#   cargo build --release --locked --bin hashchat-tui --features tui
 #
 # Usage (from repo root, branch codeberg-primary recommended):
 #   ./install.sh
@@ -80,15 +80,18 @@ case "$DISTRO_ID" in
     fi
 
     echo "=== Tails / Qubes / other ==="
-    echo "Tails: Tor is usually preconfigured. Prefer a copied Flatpak; avoid persistence."
+    echo "Tails: Tor by default; prefer a copied Flatpak; avoid persistence."
+    echo "       :listen needs ControlPort cookie auth (often restricted on Tails) — see INSTALL.md."
     echo "Qubes: Build in a disposable (scripts/qubes-build.sh) or install Flatpak in the app qube;"
-    echo "       route via sys-whonix; enable audio in the template if you need voice."
+    echo "       route via sys-whonix; ControlPort may be onion-grater filtered; never copy cookies between qubes."
+    echo "       Enable audio in the template if you need voice."
     echo ""
     echo "Manual Rust-first build (any Linux with cargo):"
     echo "  cargo build --release --locked --bin hashchat-tui --features tui"
     echo "  ./run-tui"
     echo ""
-    echo "See INSTALL.md for per-OS Tor, audio, and hardening notes."
+    echo "Tor: ControlPort 9051 + CookieAuthentication 1; cookie must be readable by your user."
+    echo "Never cat/hexdump/paste ControlPort cookies. See INSTALL.md."
     echo "After sensitive work: ./scripts/clean-security.sh --strict"
     ;;
 esac
