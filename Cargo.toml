@@ -4,8 +4,13 @@ version = "0.1.9"
 edition = "2021"
 
 [lib]
-crate-type = ["cdylib", "staticlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
 path = "src/rust/lib.rs"
+
+[[bin]]
+name = "hashchat-tui"
+path = "src/bin/hashchat_tui.rs"
+required-features = ["tui"]
 
 [dependencies]
 ring = "0.17"
@@ -25,9 +30,16 @@ libc = "0.2"   # for mlockall / seccomp primitives on Linux (used under cfg(targ
 # It is tiny, has no extra runtime deps in recent versions, and makes security intent explicit for auditors.
 subtle = "2.6"
 
+# Desktop Rust TUI (optional — keeps the FFI/Android lib free of terminal deps)
+ratatui = { version = "0.29", optional = true }
+crossterm = { version = "0.28", optional = true }
+# Note: Cargo.lock pins instability 0.3.7 (ratatui transitive) for rustc 1.85.
+
 [features]
 default = []
 # long-13: optional gated quantum resistance (stub only in v0.2).
 # When enabled, src/rust/quantum.rs is compiled and the hybrid interface is available.
 # No actual PQ security is provided until a real audited ML-KEM implementation lands.
 quantum = []
+# Native Rust desktop TUI (ratatui). Build: cargo build --bin hashchat-tui --features tui
+tui = ["dep:ratatui", "dep:crossterm"]

@@ -58,7 +58,7 @@ See [INSTALL.md](INSTALL.md) for OS notes. Tor with ControlPort is required for 
 - Panic wipe of local sensitive state
 
 **Clients**
-- Desktop TUI (black + gold) — transitional Haskell UI over Rust FFI while Rust desktop lands
+- Desktop: Rust TUI scaffold (`hashchat-tui`, black + gold) + transitional Haskell TUI over Rust FFI
 - Android shell over the Rust library (production two-device path still maturing)
 
 **Brand / packaging**
@@ -75,7 +75,11 @@ Threat model and limits: [THREATMODEL.md](THREATMODEL.md).
 cargo test --lib
 cargo build --release
 
-# Desktop TUI (current entry)
+# Native Rust TUI (scaffold — unlock / contacts / Tor status / wipe)
+cargo build --bin hashchat-tui --features tui
+./target/debug/hashchat-tui
+
+# Transitional Haskell desktop TUI (still building)
 ./run-tui
 
 # Flatpak / Nix (when using the flake path)

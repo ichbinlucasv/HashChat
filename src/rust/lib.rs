@@ -62,13 +62,19 @@ pub extern "C" fn rust_hmac_verify(msg: *const u8, len: usize) -> bool {
     hmac::verify(&key, slice, slice).is_ok()
 }
 
-#[no_mangle]
-pub extern "C" fn rust_wipe_files() {
+/// Wipe local sensitive material (session blob, Tor HS dir, legacy db).
+/// Safe Rust entry used by the FFI wipe and the Rust TUI.
+pub fn wipe_local_sensitive() {
     let _ = fs::remove_dir_all("tor/hidden_service");
     let _ = fs::remove_file("hashchat.db");
     // H2/H3: wipe passphrase-wrapped session blob (identity, contacts, ratchets, pending)
     let _ = session_persist::wipe_disk(std::path::Path::new("hashchat_data"));
     let _ = fs::remove_dir_all("hashchat_data");
+}
+
+#[no_mangle]
+pub extern "C" fn rust_wipe_files() {
+    wipe_local_sensitive();
 }
 
 #[no_mangle]
