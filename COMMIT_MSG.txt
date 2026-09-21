@@ -1,14 +1,13 @@
-fix(rust): mid-session send-side DH FS without bootstrap desync
+polish(tui): contact select, short SAS, clearer :help, Tor-gated :retry
 
-Restore honest Double Ratchet send-side DH after the 7d116c8 bootstrap fix:
+Improve Rust TUI contact UX without scope creep:
 
-- Split DH into matching send/recv steps (new ephemeral first on send;
-  recv derives only the recv chain so one-way traffic stays in sync)
-- Periodic send DH every DH_SEND_EVERY (5) once remote_dh is known and
-  enough messages were sent on the current chain (first reply stays
-  chain-only — peers with remote_dh=None must not see a rotated header)
-- Persist sends_since_dh in ratchet blob v2 (v1 loads default 0)
-- Tests: ping/pong, multi-round, intentional DH step, v2 roundtrip
-- Sync android verbatim copy; document residual limits in THREATMODEL
+- Contact list / selection shows short SAS; ↑↓/Enter set OPSEC-safe status
+  (SAS + onion tail only — never plaintext bodies)
+- Chat title reflects selected peer SAS; unlock auto-selects first contact
+- :sas [link] shows short fingerprint for selected contact or a signed link
+- :help lists :listen :add-contact :my-contact :sas :mode :retry :wipe :quit
+- :retry respects net_mode Tor gate + SOCKS readiness; reports empty queue
+  (listen auto-flush still silent when empty)
 
 cargo test --lib: 54 passed. build hashchat-tui --features tui: ok. No push.

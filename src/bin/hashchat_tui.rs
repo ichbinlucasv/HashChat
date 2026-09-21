@@ -18,7 +18,7 @@ use crossterm::terminal::{
 use hashchat_rust::{
     bootstrap_ratchet_from_signed_link, build_wire_aad, commit_outgoing, encrypt_with_key,
     format_signed_contact_link, frame_v2, is_onion_destination, load_session,
-    parse_signed_contact_link, sas_fingerprint, save_session, socks5_send,
+    parse_signed_contact_link, sas_fingerprint, sas_for_signed, save_session, socks5_send,
     start_hidden_service_with_key, state_exists, tor_probe, unframe_v2, wipe_local_sensitive,
     DnsPreference, DoubleRatchet, HiddenService, IdentityOnionState, LongTermIdentity,
     NetConfig, NetworkMode, PersistMode, PersistedContact, PostureProfile, SessionState,
@@ -250,16 +250,24 @@ impl App {
         } else {
             match load_session(Path::new(DATA_DIR), PersistMode::Passphrase, pass) {
                 Ok(state) => {
+                    let n_contacts = state.contacts.len();
+                    let n_pending = state.pending.len();
                     self.session = Some(state);
                     self.refresh_identity_display();
                     self.screen = Screen::Main;
-                    self.status_msg = "Session unlocked.".into();
-                    if let Some(s) = self.session.as_ref() {
-                        self.messages.push(format!(
-                            "Loaded {} contact(s), {} pending. Transport: Tor only.",
-                            s.contacts.len(),
-                            s.pending.len()
-                        ));
+                    self.messages.push(format!(
+                        "Loaded {n_contacts} contact(s), {n_pending} pending. Transport: Tor only."
+                    ));
+                    if n_contacts > 0 {
+                        self.select_contact(0);
+                        // Keep unlock summary; select_contact already set SAS status.
+                        self.status_msg = format!(
+                            "Unlocked · {n_contacts} contact(s), {n_pending} pending · {}",
+                            self.status_msg
+                        );
+                    } else {
+                        self.status_msg =
+                            "Session unlocked. :listen then :add-contact to begin.".into();
                     }
                 }
                 Err(_) => {
@@ -273,19 +281,33 @@ impl App {
         self.passphrase_confirm.clear();
     }
 
+    fn contact_sas_short(c: &PersistedContact) -> &str {
+        if c.display_name.is_empty() {
+            c.id.as_str()
+        } else {
+            c.display_name.as_str()
+        }
+    }
+
+    fn onion_tail(onion: &str) -> String {
+        onion
+            .chars()
+            .rev()
+            .take(12)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect()
+    }
+
+    /// Contact list labels: short SAS only (OPSEC — no plaintext bodies).
     fn contact_names(&self) -> Vec<String> {
         self.session
             .as_ref()
             .map(|s| {
                 s.contacts
                     .iter()
-                    .map(|c| {
-                        if c.display_name.is_empty() {
-                            c.id.clone()
-                        } else {
-                            c.display_name.clone()
-                        }
-                    })
+                    .map(|c| format!("SAS {}", Self::contact_sas_short(c)))
                     .collect()
             })
             .unwrap_or_default()
@@ -295,6 +317,58 @@ impl App {
         let session = self.session.as_ref()?;
         let idx = self.selected_contact?;
         session.contacts.get(idx)
+    }
+
+    /// Select contact and set OPSEC-safe status (SAS + onion tail; never message bodies).
+    fn select_contact(&mut self, idx: usize) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let Some(c) = session.contacts.get(idx) else {
+            return;
+        };
+        let sas = Self::contact_sas_short(c).to_string();
+        let tail = Self::onion_tail(&c.onion);
+        self.selected_contact = Some(idx);
+        self.contacts_state.select(Some(idx));
+        self.status_msg = format!("Selected SAS {sas} · …{tail}");
+    }
+
+    fn show_sas_command(&mut self, args: &str) {
+        let args = args.trim();
+        if args.is_empty() {
+            if let Some((sas, tail)) = self.selected_contact_record().map(|c| {
+                (
+                    Self::contact_sas_short(c).to_string(),
+                    Self::onion_tail(&c.onion),
+                )
+            }) {
+                self.messages
+                    .push(format!("Peer SAS {sas} (compare out-of-band) · …{tail}"));
+                self.status_msg = format!("SAS {sas}");
+            } else if !self.my_sas.is_empty() {
+                let mine = self.my_sas.clone();
+                self.messages
+                    .push(format!("Your SAS {mine} (no contact selected)"));
+                self.status_msg = format!("SAS {mine}");
+            } else {
+                self.status_msg = "No SAS yet — unlock first.".into();
+            }
+            return;
+        }
+        match parse_signed_contact_link(args) {
+            Ok(peer) => {
+                let sas = sas_for_signed(&peer);
+                let tail = Self::onion_tail(&peer.onion);
+                self.messages
+                    .push(format!("Link SAS {sas} · …{tail} (not added — use :add-contact)"));
+                self.status_msg = format!("SAS {sas}");
+            }
+            Err(_) => {
+                self.status_msg = "SAS refused (bad signature or format).".into();
+                self.messages.push(self.status_msg.clone());
+            }
+        }
     }
 
     fn listen(&mut self) {
@@ -351,7 +425,7 @@ impl App {
                         );
                         self.hs = Some(hs);
                         self.refresh_identity_display();
-                        self.retry_pending();
+                        self.retry_pending(false);
                     }
                     Err(_) => {
                         // Drop HS if we cannot persist onion material (fail closed on H2).
@@ -369,15 +443,27 @@ impl App {
         }
     }
 
-    fn retry_pending(&mut self) {
+    /// Flush pending outbound frames. `report_empty` is true for explicit `:retry`
+    /// (listen auto-flush must not clobber the listening status when the queue is empty).
+    fn retry_pending(&mut self, report_empty: bool) {
         if let Err(e) = self.net.require_messenger_transport() {
             self.status_msg = format!(":retry refused: {e}");
+            self.messages.push(self.status_msg.clone());
+            return;
+        }
+        if self.tor_status != TorStatus::Available {
+            self.status_msg = ":retry refused: Tor SOCKS unavailable".into();
+            self.messages.push(self.status_msg.clone());
             return;
         }
         let Some(session) = self.session.as_mut() else {
+            self.status_msg = "Unlock first.".into();
             return;
         };
         if session.pending.is_empty() {
+            if report_empty {
+                self.status_msg = "No pending frames".into();
+            }
             return;
         }
         let waiting: Vec<(String, Vec<u8>)> = session.pending.drain(..).collect();
@@ -402,6 +488,7 @@ impl App {
         } else {
             format!("{ok} delivered, {fail} still queued")
         };
+        self.messages.push(self.status_msg.clone());
     }
 
     fn drain_incoming(&mut self) {
@@ -495,15 +582,7 @@ impl App {
                     self.status_msg = "Contact refused (onion not v3)".into();
                     return;
                 }
-                let onion_tail: String = peer
-                    .onion
-                    .chars()
-                    .rev()
-                    .take(12)
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect();
+                let onion_tail = Self::onion_tail(&peer.onion);
                 let (select_idx, was_update) = {
                     let session = self.session.as_mut().unwrap();
                     let existing = session
@@ -540,8 +619,9 @@ impl App {
                             "{verb} {sas} — onion …{onion_tail} (peer must :add-contact you too)"
                         ));
                         if let Some(i) = select_idx {
-                            self.selected_contact = Some(i);
-                            self.contacts_state.select(Some(i));
+                            self.select_contact(i);
+                            // Prefer add/update verb in status over generic Selected line.
+                            self.status_msg = format!("{verb} contact (SAS {sas})");
                         }
                     }
                     Err(_) => self.status_msg = "Failed to persist contact.".into(),
@@ -558,20 +638,20 @@ impl App {
 
     fn send_text(&mut self, text: &str) {
         if let Err(e) = self.net.require_messenger_transport() {
-            self.messages.push(format!("Send refused: {e}"));
+            self.status_msg = format!("Send refused: {e}");
+            self.messages.push(self.status_msg.clone());
             return;
         }
         if self.tor_status != TorStatus::Available {
-            self.messages.push(
-                "Send refused: Tor SOCKS not available (Tor-only policy).".into(),
-            );
+            self.status_msg = "Send refused: Tor SOCKS not available (Tor-only policy).".into();
+            self.messages.push(self.status_msg.clone());
             return;
         }
         let contact = match self.selected_contact_record() {
             Some(c) => c.clone(),
             None => {
-                self.messages
-                    .push("Select a contact before sending.".into());
+                self.status_msg = "Select a contact before sending.".into();
+                self.messages.push(self.status_msg.clone());
                 return;
             }
         };
@@ -814,10 +894,11 @@ impl App {
                     self.messages.push(format!("SAS: {}", self.my_sas));
                     self.messages
                         .push(format!("Contact: {}", self.my_contact_link));
+                    self.status_msg = format!("SAS {}", self.my_sas);
                 }
             }
             ":listen" => self.listen(),
-            ":retry" => self.retry_pending(),
+            ":retry" => self.retry_pending(true),
             ":status" | ":tor" => {
                 self.check_tor(true);
                 let probe = tor_probe(SOCKS_HOST, self.socks_port, CONTROL_PORT);
@@ -847,23 +928,39 @@ impl App {
                 self.status_msg = self.tor_status.label(listening);
             }
             ":help" => {
+                self.messages.push("HashChat commands:".into());
+                self.messages
+                    .push("  :listen                 publish Tor v3 onion (ControlPort)".into());
                 self.messages.push(
-                    "Commands: :listen  :my-contact  :add-contact <link>  :tor  :mode  :retry  :wipe  :quit"
-                        .into(),
+                    "  :add-contact <link>     verify signed link + bootstrap ratchet".into(),
+                );
+                self.messages
+                    .push("  :my-contact             your signed link + short SAS".into());
+                self.messages
+                    .push("  :sas [link]             short SAS (selected contact or link)".into());
+                self.messages.push(
+                    "  :mode [tor|status|…]    network mode (Tor default; fail-closed)".into(),
                 );
                 self.messages.push(
-                    "Two devices: both :listen, exchange :my-contact links via :add-contact, then chat."
-                        .into(),
+                    "  :retry                  flush pending queue (Tor / net_mode gate)".into(),
                 );
+                self.messages
+                    .push("  :wipe                   nuclear local wipe (confirm)".into());
+                self.messages.push("  :quit                   exit".into());
                 self.messages.push(
-                    "Transport: Tor default; :mode selects explicit network (no silent fallback)."
+                    "Keys: Tab focus · ↑↓ select contact · Enter select/send. Status never shows plaintext bodies."
                         .into(),
                 );
+                self.status_msg = "Help listed in chat.".into();
             }
             "" => {}
             other if other.starts_with(":add-contact ") => {
                 let link = other.strip_prefix(":add-contact ").unwrap_or("").trim();
                 self.add_contact_link(link);
+            }
+            other if other == ":sas" || other.starts_with(":sas ") => {
+                let args = other.strip_prefix(":sas").unwrap_or("").trim();
+                self.show_sas_command(args);
             }
             other if other == ":mode" || other.starts_with(":mode ") => {
                 let args = other.strip_prefix(":mode").unwrap_or("").trim();
@@ -1091,11 +1188,15 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
             .map(|m| Line::from(Span::styled(m.as_str(), Style::default().fg(TEXT))))
             .collect()
     };
+    let chat_title = match app.selected_contact_record() {
+        Some(c) => format!(" chat · SAS {} ", App::contact_sas_short(c)),
+        None => " chat ".to_string(),
+    };
     let chat = Paragraph::new(msg_lines)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(Span::styled(" chat ", gold_style()))
+                .title(Span::styled(chat_title, gold_style()))
                 .border_style(Style::default().fg(GOLD))
                 .style(Style::default().bg(PANEL)),
         )
@@ -1283,8 +1384,7 @@ fn run() -> io::Result<()> {
                     if len > 0 {
                         let i = app.selected_contact.unwrap_or(0);
                         let ni = if i == 0 { len - 1 } else { i - 1 };
-                        app.selected_contact = Some(ni);
-                        app.contacts_state.select(Some(ni));
+                        app.select_contact(ni);
                     }
                 }
                 KeyCode::Down if app.focus == Focus::Contacts => {
@@ -1292,8 +1392,16 @@ fn run() -> io::Result<()> {
                     if len > 0 {
                         let i = app.selected_contact.unwrap_or(len - 1);
                         let ni = (i + 1) % len;
-                        app.selected_contact = Some(ni);
-                        app.contacts_state.select(Some(ni));
+                        app.select_contact(ni);
+                    }
+                }
+                KeyCode::Enter if app.focus == Focus::Contacts && app.input.is_empty() => {
+                    if let Some(i) = app.selected_contact {
+                        app.select_contact(i);
+                    } else if !app.contact_names().is_empty() {
+                        app.select_contact(0);
+                    } else {
+                        app.status_msg = "No contacts — :add-contact <signed link>".into();
                     }
                 }
                 KeyCode::Enter if app.focus == Focus::Input || !app.input.is_empty() => {
