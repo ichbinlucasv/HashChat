@@ -249,4 +249,20 @@ mod tests {
         let err = socks5_send("127.0.0.1", 9050, "example.com", 80, b"x").unwrap_err();
         assert!(err.contains(".onion"));
     }
+
+    #[test]
+    fn framed_u16_tcp_roundtrip() {
+        use std::net::TcpListener;
+        use std::thread;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let payload = b"wire-v2-ciphertext-blob".to_vec();
+        let handle = thread::spawn(move || {
+            let (mut client, _) = listener.accept().unwrap();
+            read_framed_u16(&mut client).unwrap()
+        });
+        let mut s = TcpStream::connect(addr).unwrap();
+        write_framed_u16(&mut s, &payload).unwrap();
+        assert_eq!(handle.join().unwrap(), payload);
+    }
 }

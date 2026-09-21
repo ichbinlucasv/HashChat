@@ -316,6 +316,54 @@ mod tests {
         assert_eq!(k, [0xABu8; 32]);
     }
 
+    /// Mutual signed bootstrap + wire v2 encrypt/decrypt (desktop two-peer path).
+    #[test]
+    fn mutual_bootstrap_wire_roundtrip() {
+        use crate::ratchet::{build_wire_aad, encrypt_with_key, WIRE_VERSION_V2};
+        use crate::wire::{frame_v2, unframe_v2};
+        use zeroize::Zeroize;
+
+        let alice = LongTermIdentity::from_seed([0xA1; 32]);
+        let bob = LongTermIdentity::from_seed([0xB2; 32]);
+        let onion_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let onion_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let link_a = format_signed_contact_link(&alice, onion_a).unwrap();
+        let link_b = format_signed_contact_link(&bob, onion_b).unwrap();
+
+        let (mut r_a, _) = bootstrap_ratchet_from_signed_link(&alice, &link_b).unwrap();
+        let (mut r_b, _) = bootstrap_ratchet_from_signed_link(&bob, &link_a).unwrap();
+
+        // Bob -> Alice
+        let hint_b = bob.x25519_public_bytes();
+        let (mut key, step) = r_b.ratchet_send();
+        let dh = *r_b.public_key().as_bytes();
+        let aad = build_wire_aad(WIRE_VERSION_V2, &hint_b, step, &dh);
+        let ct = encrypt_with_key(&key, b"hello-alice", &aad).unwrap();
+        key.zeroize();
+        let framed = frame_v2(&hint_b, step, &dh, &ct);
+        let (h, st, sdh, ctb) = unframe_v2(&framed).unwrap();
+        let aad2 = build_wire_aad(WIRE_VERSION_V2, &h, st, &sdh);
+        let (pt, _) = r_a
+            .try_recv_decrypt(&X25519Public::from(sdh), &ctb, &aad2)
+            .expect("alice decrypt");
+        assert_eq!(pt, b"hello-alice");
+
+        // Alice -> Bob (reply must work)
+        let hint_a = alice.x25519_public_bytes();
+        let (mut key2, step2) = r_a.ratchet_send();
+        let dh2 = *r_a.public_key().as_bytes();
+        let aad3 = build_wire_aad(WIRE_VERSION_V2, &hint_a, step2, &dh2);
+        let ct2 = encrypt_with_key(&key2, b"hello-bob", &aad3).unwrap();
+        key2.zeroize();
+        let framed2 = frame_v2(&hint_a, step2, &dh2, &ct2);
+        let (h2, st2, sdh2, ctb2) = unframe_v2(&framed2).unwrap();
+        let aad4 = build_wire_aad(WIRE_VERSION_V2, &h2, st2, &sdh2);
+        let (pt2, _) = r_b
+            .try_recv_decrypt(&X25519Public::from(sdh2), &ctb2, &aad4)
+            .expect("bob decrypt reply");
+        assert_eq!(pt2, b"hello-bob");
+    }
+
     #[test]
     fn sas_stable() {
         let ed = [9u8; 32];

@@ -332,9 +332,14 @@ impl App {
                             "Listening on {} (local :{})",
                             hs.onion, hs.local_port
                         );
-                        self.messages.push(format!(
-                            "Hidden service published. Control connection held open."
-                        ));
+                        self.messages.push(
+                            "Hidden service published; accept loop running (framed wire v2)."
+                                .into(),
+                        );
+                        self.messages.push(
+                            "Share :my-contact; peer must :add-contact your link (and you theirs)."
+                                .into(),
+                        );
                         self.hs = Some(hs);
                         self.refresh_identity_display();
                         self.retry_pending();
@@ -398,14 +403,18 @@ impl App {
             out
         };
         for frame in frames {
+            let n = frame.len();
             match self.try_decrypt_incoming(&frame) {
                 Ok((peer, text)) => {
+                    // UI inbox may show plaintext; status/logs must not.
                     self.messages.push(format!("[{peer}] {text}"));
-                    self.status_msg = format!("Received {} bytes from {peer}", frame.len());
+                    self.status_msg = format!("Received {n} B · {peer}");
                 }
-                Err(e) => {
+                Err(_e) => {
+                    // OPSEC: no frame bytes / decrypt detail in status.
                     self.messages
-                        .push(format!("Incoming frame dropped ({e})"));
+                        .push("Incoming frame dropped (decrypt/verify failed)".into());
+                    self.status_msg = format!("Dropped inbound frame ({n} B)");
                 }
             }
         }
@@ -417,7 +426,13 @@ impl App {
         let pass = self.passphrase.as_bytes().to_vec();
         let session = self.session.as_mut().ok_or_else(|| "no session".to_string())?;
         let contacts = session.contacts.clone();
-        for c in &contacts {
+        // Wire hint is the sender's static x25519 — try matching contacts first.
+        let mut order: Vec<usize> = (0..contacts.len()).collect();
+        if hint.len() == 32 {
+            order.sort_by_key(|&i| if contacts[i].x25519.as_slice() == hint.as_slice() { 0 } else { 1 });
+        }
+        for idx in order {
+            let c = &contacts[idx];
             let ratchet_bytes = session
                 .ratchets
                 .iter()
@@ -463,26 +478,57 @@ impl App {
         let parsed = parse_signed_contact_link(link);
         match (boot, parsed) {
             (Ok((ratchet, sas)), Ok(peer)) => {
-                let session = self.session.as_mut().unwrap();
-                let id = format!("c{}", session.contacts.len() + 1);
-                let onion_tail: String = peer.onion.chars().rev().take(12).collect::<String>().chars().rev().collect();
-                session.contacts.push(PersistedContact {
-                    id: id.clone(),
-                    display_name: sas.clone(),
-                    onion: peer.onion.clone(),
-                    x25519: peer.x25519,
-                    ed25519: peer.ed25519,
-                });
-                session.set_ratchet_bytes(&id, ratchet.to_bytes());
+                if !is_onion_destination(&peer.onion) {
+                    self.status_msg = "Contact refused (onion not v3)".into();
+                    return;
+                }
+                let onion_tail: String = peer
+                    .onion
+                    .chars()
+                    .rev()
+                    .take(12)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect();
+                let (select_idx, was_update) = {
+                    let session = self.session.as_mut().unwrap();
+                    let existing = session
+                        .contacts
+                        .iter()
+                        .position(|c| c.onion == peer.onion || c.ed25519 == peer.ed25519);
+                    let id = if let Some(i) = existing {
+                        let id = session.contacts[i].id.clone();
+                        session.contacts[i].display_name = sas.clone();
+                        session.contacts[i].onion = peer.onion.clone();
+                        session.contacts[i].x25519 = peer.x25519;
+                        session.contacts[i].ed25519 = peer.ed25519;
+                        id
+                    } else {
+                        let id = format!("c{}", session.contacts.len() + 1);
+                        session.contacts.push(PersistedContact {
+                            id: id.clone(),
+                            display_name: sas.clone(),
+                            onion: peer.onion.clone(),
+                            x25519: peer.x25519,
+                            ed25519: peer.ed25519,
+                        });
+                        id
+                    };
+                    session.set_ratchet_bytes(&id, ratchet.to_bytes());
+                    let idx = session.contacts.iter().position(|c| c.id == id);
+                    (idx, existing.is_some())
+                };
                 match self.persist_session() {
                     Ok(()) => {
-                        self.status_msg = format!("Added contact (SAS {sas})");
-                        self.messages
-                            .push(format!("Contact {sas} — onion ends …{onion_tail}"));
-                        let n = self.contact_names().len();
-                        if n > 0 {
-                            self.selected_contact = Some(n - 1);
-                            self.contacts_state.select(Some(n - 1));
+                        let verb = if was_update { "Updated" } else { "Added" };
+                        self.status_msg = format!("{verb} contact (SAS {sas})");
+                        self.messages.push(format!(
+                            "{verb} {sas} — onion …{onion_tail} (peer must :add-contact you too)"
+                        ));
+                        if let Some(i) = select_idx {
+                            self.selected_contact = Some(i);
+                            self.contacts_state.select(Some(i));
                         }
                     }
                     Err(_) => self.status_msg = "Failed to persist contact.".into(),
@@ -518,48 +564,57 @@ impl App {
             return;
         }
 
-        let session = match self.session.as_mut() {
-            Some(s) => s,
-            None => return,
-        };
-        let local = session.identity.identity();
-        let mut ratchet = if let Some((_, bytes)) =
-            session.ratchets.iter().find(|(id, _)| id == &contact.id)
-        {
-            match DoubleRatchet::from_bytes(bytes) {
-                Ok(r) => r,
-                Err(_) => {
-                    self.messages.push("Ratchet restore failed.".into());
-                    return;
-                }
-            }
-        } else if contact.x25519 != [0u8; 32] {
-            let shared = local.x25519_dh(&x25519_dalek::PublicKey::from(contact.x25519));
-            let mut r = DoubleRatchet::new();
-            r.init_symmetric(&shared);
-            r
+        let peer_label = if contact.display_name.is_empty() {
+            contact.id.clone()
         } else {
-            self.messages.push(
-                "No ratchet for contact — add via :add-contact <signed link>.".into(),
-            );
-            return;
+            contact.display_name.clone()
         };
 
-        let hint = local.x25519_public_bytes();
-        let (mut msg_key, step) = ratchet.ratchet_send();
-        let sender_dh = ratchet.public_key().to_bytes();
-        let aad = build_wire_aad(WIRE_VERSION_V2, &hint, step, &sender_dh);
-        let ct = match encrypt_with_key(&msg_key, text.as_bytes(), &aad) {
-            Ok(c) => c,
-            Err(_) => {
-                msg_key.zeroize();
-                self.messages.push("Encrypt failed.".into());
+        let (frame, rbytes) = {
+            let session = match self.session.as_mut() {
+                Some(s) => s,
+                None => return,
+            };
+            let local = session.identity.identity();
+            let mut ratchet = if let Some((_, bytes)) =
+                session.ratchets.iter().find(|(id, _)| id == &contact.id)
+            {
+                match DoubleRatchet::from_bytes(bytes) {
+                    Ok(r) => r,
+                    Err(_) => {
+                        self.messages.push("Ratchet restore failed.".into());
+                        return;
+                    }
+                }
+            } else if contact.x25519 != [0u8; 32] {
+                let shared = local.x25519_dh(&x25519_dalek::PublicKey::from(contact.x25519));
+                let mut r = DoubleRatchet::new();
+                r.init_symmetric(&shared);
+                r
+            } else {
+                self.messages.push(
+                    "No ratchet for contact — add via :add-contact <signed link>.".into(),
+                );
                 return;
-            }
+            };
+
+            let hint = local.x25519_public_bytes();
+            let (mut msg_key, step) = ratchet.ratchet_send();
+            let sender_dh = ratchet.public_key().to_bytes();
+            let aad = build_wire_aad(WIRE_VERSION_V2, &hint, step, &sender_dh);
+            let ct = match encrypt_with_key(&msg_key, text.as_bytes(), &aad) {
+                Ok(c) => c,
+                Err(_) => {
+                    msg_key.zeroize();
+                    self.messages.push("Encrypt failed.".into());
+                    return;
+                }
+            };
+            msg_key.zeroize();
+            let frame = frame_v2(&hint, step, &sender_dh, &ct);
+            let rbytes = ratchet.to_bytes();
+            (frame, rbytes)
         };
-        msg_key.zeroize();
-        let frame = frame_v2(&hint, step, &sender_dh, &ct);
-        let rbytes = ratchet.to_bytes();
 
         // H3: durable queue commit before Tor send.
         if commit_outgoing(
@@ -577,28 +632,28 @@ impl App {
                 .push("Send aborted: durable commit failed.".into());
             return;
         }
-        // Mirror commit into in-memory session.
-        session.set_ratchet_bytes(&contact.id, rbytes);
-        session.queue_pending(&contact.onion, frame.clone());
 
-        let peer = if contact.display_name.is_empty() {
-            contact.id.as_str()
+        // Mirror commit into in-memory session.
+        if let Some(session) = self.session.as_mut() {
+            session.set_ratchet_bytes(&contact.id, rbytes);
+            session.queue_pending(&contact.onion, frame.clone());
+        }
+
+        let sent_ok = socks5_send(SOCKS_HOST, self.socks_port, &contact.onion, 80, &frame).is_ok();
+        if sent_ok {
+            if let Some(session) = self.session.as_mut() {
+                session.ack_pending_frame(&contact.onion, &frame);
+            }
+            let _ = self.persist_session();
+            let frame_len = frame.len();
+            self.messages
+                .push(format!("[{peer_label}] you: {text}  ({frame_len} B via Tor)"));
+            self.status_msg = format!("Sent {frame_len} B via SOCKS");
         } else {
-            contact.display_name.as_str()
-        };
-        match socks5_send(SOCKS_HOST, self.socks_port, &contact.onion, 80, &frame) {
-            Ok(()) => {
-                self.messages
-                    .push(format!("[{peer}] sent {} bytes (committed+Tor)", frame.len()));
-                self.status_msg = format!("Sent {} bytes via SOCKS", frame.len());
-                // Pending remains for crash/retry (:retry); do not re-send immediately.
-            }
-            Err(e) => {
-                self.messages.push(format!(
-                    "[{peer}] queued offline ({e})"
-                ));
-                self.status_msg = "Queued: SOCKS send failed (frame committed)".into();
-            }
+            // OPSEC: short reason only — frame stays queued for :retry.
+            self.messages
+                .push(format!("[{peer_label}] queued offline (SOCKS send failed)"));
+            self.status_msg = "Queued: SOCKS send failed (frame committed)".into();
         }
     }
 
@@ -674,6 +729,10 @@ impl App {
             ":help" => {
                 self.messages.push(
                     "Commands: :listen  :my-contact  :add-contact <link>  :tor  :retry  :wipe  :quit"
+                        .into(),
+                );
+                self.messages.push(
+                    "Two devices: both :listen, exchange :my-contact links via :add-contact, then chat."
                         .into(),
                 );
             }

@@ -144,6 +144,22 @@ impl SessionState {
         }
     }
 
+    /// Remove one queued outbound frame after a successful SOCKS write (exact match).
+    /// Zeroizes the removed body. Returns true if a frame was removed.
+    pub fn ack_pending_frame(&mut self, onion: &str, frame: &[u8]) -> bool {
+        if let Some(i) = self
+            .pending
+            .iter()
+            .position(|(o, f)| o == onion && f.as_slice() == frame)
+        {
+            self.pending[i].1.zeroize();
+            self.pending.remove(i);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Securely clear pending frame bodies then drop the queue.
     pub fn clear_pending_secure(&mut self) {
         for (_o, frame) in self.pending.iter_mut() {
@@ -772,5 +788,20 @@ mod tests {
         assert!(loaded.ratchets.is_empty());
         assert!(loaded.pending.is_empty());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ack_pending_frame_removes_exact_match() {
+        let mut session = SessionState::from_identity(IdentityOnionState {
+            seed: [9u8; 32],
+            onion: "x.onion".into(),
+            onion_key: Vec::new(),
+        });
+        session.queue_pending("a.onion", vec![1, 2, 3]);
+        session.queue_pending("b.onion", vec![4, 5, 6]);
+        assert!(!session.ack_pending_frame("a.onion", &[9, 9]));
+        assert!(session.ack_pending_frame("a.onion", &[1, 2, 3]));
+        assert_eq!(session.pending.len(), 1);
+        assert_eq!(session.pending[0].0, "b.onion");
     }
 }

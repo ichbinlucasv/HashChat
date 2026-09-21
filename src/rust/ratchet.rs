@@ -191,13 +191,15 @@ impl DoubleRatchet {
     }
 
     /// Advance the sending chain. Returns (message_key, message_number).
+    ///
+    /// After `init_symmetric` (signed contact bootstrap), both peers share the same
+    /// chain keys. Send must **not** DH-ratchet merely because `remote_dh` was learned
+    /// on an earlier receive: that rotated the sender's chains while the peer still
+    /// expected the symmetric chain (broken reply / two-device desync).
+    ///
+    /// Mid-session DH forward secrecy remains recv-driven when `sender_dh` changes
+    /// (see `ratchet_recv`); a matching send-side rotate is a follow-up.
     pub fn ratchet_send(&mut self) -> ([u8; RATCHET_KEY_LEN], u32) {
-        if let Some(remote) = self.remote_dh {
-            if self.send_count % 2 == 0 {
-                self.dh_ratchet(&remote);
-            }
-        }
-
         let hk = Hkdf::<Sha256>::new(None, &self.chain_key_send);
         let mut new_chain = [0u8; RATCHET_KEY_LEN];
         let mut msg_key = [0u8; RATCHET_KEY_LEN];
@@ -476,5 +478,71 @@ mod tests {
         // Valid ciphertext still works after the failed speculative attempt.
         let (pt, _) = bob.try_recv_decrypt(&remote, &ct, &aad).expect("ok");
         assert_eq!(pt, b"hello");
+    }
+
+    fn seal(sender: &mut DoubleRatchet, hint: &[u8; 32], pt: &[u8]) -> (Vec<u8>, [u8; 32], u32, Vec<u8>) {
+        let (mut key, step) = sender.ratchet_send();
+        let dh = *sender.public_key().as_bytes();
+        let aad = build_wire_aad(WIRE_VERSION_V2, hint, step, &dh);
+        let ct = encrypt_with_key(&key, pt, &aad).expect("enc");
+        key.zeroize();
+        (ct, dh, step, aad)
+    }
+
+    /// Two-device path: mutual symmetric bootstrap, ping/pong/ping without desync.
+    #[test]
+    fn two_peer_ping_pong() {
+        let shared = [0x55u8; 32];
+        let mut alice = DoubleRatchet::new();
+        let mut bob = DoubleRatchet::new();
+        alice.init_symmetric(&shared);
+        bob.init_symmetric(&shared);
+
+        let hint_b = [0xBBu8; 32];
+        let (ct, dh, _step, aad) = seal(&mut bob, &hint_b, b"ping");
+        let (pt, _) = alice
+            .try_recv_decrypt(&PublicKey::from(dh), &ct, &aad)
+            .expect("alice recv ping");
+        assert_eq!(pt, b"ping");
+
+        let hint_a = [0xAAu8; 32];
+        let (ct2, dh2, _step2, aad2) = seal(&mut alice, &hint_a, b"pong");
+        let (pt2, _) = bob
+            .try_recv_decrypt(&PublicKey::from(dh2), &ct2, &aad2)
+            .expect("bob recv pong");
+        assert_eq!(pt2, b"pong");
+
+        let (ct3, dh3, _step3, aad3) = seal(&mut bob, &hint_b, b"ping2");
+        let (pt3, _) = alice
+            .try_recv_decrypt(&PublicKey::from(dh3), &ct3, &aad3)
+            .expect("alice recv ping2");
+        assert_eq!(pt3, b"ping2");
+    }
+
+    /// Several messages each direction stay decryptable (chain advance only).
+    #[test]
+    fn two_peer_multi_round() {
+        let shared = [0x77u8; 32];
+        let mut a = DoubleRatchet::new();
+        let mut b = DoubleRatchet::new();
+        a.init_symmetric(&shared);
+        b.init_symmetric(&shared);
+        let ha = [1u8; 32];
+        let hb = [2u8; 32];
+        for i in 0..5u8 {
+            let msg = [b'A', i];
+            let (ct, dh, _, aad) = seal(&mut a, &ha, &msg);
+            let (pt, _) = b
+                .try_recv_decrypt(&PublicKey::from(dh), &ct, &aad)
+                .expect("b recv");
+            assert_eq!(pt, msg);
+
+            let msg2 = [b'B', i];
+            let (ct2, dh2, _, aad2) = seal(&mut b, &hb, &msg2);
+            let (pt2, _) = a
+                .try_recv_decrypt(&PublicKey::from(dh2), &ct2, &aad2)
+                .expect("a recv");
+            assert_eq!(pt2, msg2);
+        }
     }
 }

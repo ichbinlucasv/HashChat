@@ -65,8 +65,8 @@ See [INSTALL.md](INSTALL.md) for per-OS Tor, Flatpak, Tails/Qubes, and packaging
 - Panic wipe of local sensitive state
 
 **Clients**
-- Desktop: **Rust TUI** (`hashchat-tui`, black + gold) — preferred
-- Transitional Haskell Brick TUI over Rust FFI — fallback only
+- Desktop: **Rust TUI** (`hashchat-tui`, black + gold) — preferred; two-peer path: `:listen` → exchange `:my-contact` / `:add-contact` → encrypt over Tor SOCKS
+- Transitional Haskell Brick TUI over Rust FFI — fallback only (unchanged this pass)
 - Android shell over the Rust library (production two-device path still maturing)
 
 **Brand / packaging**
