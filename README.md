@@ -1,5 +1,9 @@
 # HashChat
 
+<p align="center">
+  <img src="branding/hashchat-lockup.png" alt="HashChat" width="480"/>
+</p>
+
 > Anonymous messenger built with Haskell + Rust.
 > See [SECURITY.md](SECURITY.md) before contributing.
 
