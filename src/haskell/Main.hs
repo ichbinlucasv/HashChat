@@ -99,7 +99,7 @@ cliMessageLoop ratchets messages = do
           pure (r, Map.insert contact r ratchets)
 
       -- Use the real high-level send (now produces actual ciphertext via ratchet key + AES-GCM)
-      realMsg <- sendEncryptedMessage rid (BS.pack []) plaintext False Nothing
+      (realMsg, _senderDh) <- sendEncryptedMessage rid (BS.pack []) plaintext False Nothing
 
       let ctLen = BS.length (ciphertext realMsg)
       let encNote = "[ratchet#" ++ show (ratchetStep realMsg) ++ " ct:" ++ show ctLen ++ "B]"

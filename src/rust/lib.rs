@@ -1,7 +1,6 @@
 #![allow(static_mut_refs)]  // Intentional global store for FFI ratchet handles (safe in our single-threaded usage)
 
 use ring::hmac;
-use ring::rand::{SecureRandom, SystemRandom};
 use zeroize::Zeroize;
 use ed25519_dalek::SigningKey;
 use subtle::ConstantTimeEq;  // OPSEC: audited constant-time comparison (replaces deprecated ring internal API)
@@ -22,7 +21,10 @@ pub use quantum::{hybrid_ratchet_new, QuantumHybridRatchet};
 #[no_mangle]
 pub extern "C" fn rust_init_profile() -> *mut c_void {
     let mut secret = [0u8; 32];
-    let _ = getrandom::getrandom(&mut secret);
+    if getrandom::getrandom(&mut secret).is_err() {
+        // M2: never silently proceed with an all-zero profile seed
+        return std::ptr::null_mut();
+    }
     let _signing = SigningKey::from_bytes(&secret);
     let boxed = Box::new(secret);
     Box::into_raw(boxed) as *mut c_void
@@ -51,10 +53,13 @@ pub extern "C" fn rust_wipe_files() {
 }
 
 #[no_mangle]
-pub extern "C" fn rust_secure_random(buf: *mut u8, len: usize) {
-    let rng = SystemRandom::new();
+pub extern "C" fn rust_secure_random(buf: *mut u8, len: usize) -> bool {
+    if buf.is_null() || len == 0 {
+        return false;
+    }
     let slice = unsafe { std::slice::from_raw_parts_mut(buf, len) };
-    let _ = rng.fill(slice);
+    // M2: propagate CSPRNG failure; do not leave uninitialized/zero as "success"
+    getrandom::getrandom(slice).is_ok()
 }
 
 #[no_mangle]
@@ -170,22 +175,30 @@ pub extern "C" fn rust_encrypt_with_key(
     key: *const u8,
     plaintext: *const u8,
     plaintext_len: usize,
+    aad: *const u8,
+    aad_len: usize,
     out: *mut u8,
     out_len: *mut usize,
 ) -> bool {
+    if key.is_null() || plaintext.is_null() || out.is_null() || out_len.is_null() {
+        return false;
+    }
+    if aad_len > 0 && aad.is_null() {
+        return false;
+    }
     unsafe {
-        let key_slice = std::slice::from_raw_parts(key, 32);
+        let key_arr: [u8; 32] = match std::slice::from_raw_parts(key, 32).try_into() {
+            Ok(k) => k,
+            Err(_) => return false,
+        };
         let pt = std::slice::from_raw_parts(plaintext, plaintext_len);
-
-        let unbound = ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, key_slice).unwrap();
-        let lsk = ring::aead::LessSafeKey::new(unbound);
-
-        let nonce = ring::aead::Nonce::assume_unique_for_key([0u8; 12]);
-        let mut buf = vec![0u8; plaintext_len + ring::aead::AES_256_GCM.tag_len()];
-        buf[..plaintext_len].copy_from_slice(pt);
-
-        match lsk.seal_in_place_append_tag(nonce, ring::aead::Aad::empty(), &mut buf) {
-            Ok(_) => {
+        let aad_slice = if aad_len == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(aad, aad_len)
+        };
+        match crate::ratchet::encrypt_with_key(&key_arr, pt, aad_slice) {
+            Ok(buf) => {
                 std::ptr::copy_nonoverlapping(buf.as_ptr(), out, buf.len());
                 *out_len = buf.len();
                 true
@@ -200,26 +213,108 @@ pub extern "C" fn rust_decrypt_with_key(
     key: *const u8,
     ciphertext: *const u8,
     ciphertext_len: usize,
+    aad: *const u8,
+    aad_len: usize,
     out: *mut u8,
     out_len: *mut usize,
 ) -> bool {
+    if key.is_null() || ciphertext.is_null() || out.is_null() || out_len.is_null() {
+        return false;
+    }
+    if aad_len > 0 && aad.is_null() {
+        return false;
+    }
     unsafe {
-        let key_slice = std::slice::from_raw_parts(key, 32);
+        let key_arr: [u8; 32] = match std::slice::from_raw_parts(key, 32).try_into() {
+            Ok(k) => k,
+            Err(_) => return false,
+        };
         let ct = std::slice::from_raw_parts(ciphertext, ciphertext_len);
-
-        let unbound = ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, key_slice).unwrap();
-        let lsk = ring::aead::LessSafeKey::new(unbound);
-
-        let nonce = ring::aead::Nonce::assume_unique_for_key([0u8; 12]);
-        let mut buf = ct.to_vec();
-
-        match lsk.open_in_place(nonce, ring::aead::Aad::empty(), &mut buf) {
+        let aad_slice = if aad_len == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(aad, aad_len)
+        };
+        match crate::ratchet::decrypt_with_key(&key_arr, ct, aad_slice) {
             Ok(plain) => {
                 std::ptr::copy_nonoverlapping(plain.as_ptr(), out, plain.len());
                 *out_len = plain.len();
                 true
             }
             Err(_) => false,
+        }
+    }
+}
+
+/// Current ratchet ephemeral public key (32 bytes) for wire v2 sender_dh.
+#[no_mangle]
+pub extern "C" fn rust_ratchet_public_key(state_id: u32, out: *mut u8) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    unsafe {
+        if let Some(r) = RATCHET_STORE.get(state_id as usize) {
+            let pk = *r.public_key().as_bytes();
+            std::ptr::copy_nonoverlapping(pk.as_ptr(), out, 32);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// C1: speculative ratchet_recv + AEAD open; commits only on success.
+#[no_mangle]
+pub extern "C" fn rust_ratchet_recv_decrypt(
+    state_id: u32,
+    remote_pub: *const u8,
+    ciphertext: *const u8,
+    ciphertext_len: usize,
+    aad: *const u8,
+    aad_len: usize,
+    out: *mut u8,
+    out_len: *mut usize,
+    out_step: *mut u32,
+) -> bool {
+    if remote_pub.is_null()
+        || ciphertext.is_null()
+        || out.is_null()
+        || out_len.is_null()
+        || out_step.is_null()
+    {
+        return false;
+    }
+    if aad_len > 0 && aad.is_null() {
+        return false;
+    }
+    unsafe {
+        let rp_bytes: [u8; 32] = match std::slice::from_raw_parts(remote_pub, 32).try_into() {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        let rp = x25519_dalek::PublicKey::from(rp_bytes);
+        let ct = std::slice::from_raw_parts(ciphertext, ciphertext_len);
+        let aad_slice = if aad_len == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(aad, aad_len)
+        };
+        if let Some(r) = RATCHET_STORE.get_mut(state_id as usize) {
+            match r.try_recv_decrypt(&rp, ct, aad_slice) {
+                Ok((plain, step)) => {
+                    if plain.len() > *out_len {
+                        *out_len = plain.len();
+                        return false;
+                    }
+                    std::ptr::copy_nonoverlapping(plain.as_ptr(), out, plain.len());
+                    *out_len = plain.len();
+                    *out_step = step;
+                    true
+                }
+                Err(_) => false,
+            }
+        } else {
+            false
         }
     }
 }

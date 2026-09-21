@@ -9,16 +9,18 @@ module HashChat.Tor
   , sendCiphertextOverTor
   , ProxyConfig(..)
   , defaultProxyConfig
+  , isLoopbackHost
+  , isOnionDestination
   ) where
 
 import Network.Socket
 import System.IO
 import Control.Exception (try, SomeException, bracket)
-import Data.List (isPrefixOf)
+import Data.List (isPrefixOf, isSuffixOf)
 import System.Directory (doesFileExist, createDirectoryIfMissing)
 import System.FilePath (takeDirectory)
 import Control.Monad (when, void)
-import Data.Char (intToDigit)
+import Data.Char (intToDigit, toLower)
 import Data.Word (Word8, Word16)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
@@ -52,6 +54,61 @@ defaultTorConfig = TorConfig
 defaultProxyConfig :: ProxyConfig
 defaultProxyConfig = Socks5Proxy "127.0.0.1" 9050   -- Default: local Tor
 
+
+-- H4: SOCKS proxy must be loopback only (127.0.0.0/8 or ::1).
+isLoopbackHost :: String -> Bool
+isLoopbackHost h =
+  let h' = map toLower h
+  in h' == "localhost"
+     || h' == "::1"
+     || h' == "[::1]"
+     || "127." `isPrefixOf` h'
+
+-- H4: outbound destinations must be Tor v3 onions.
+isOnionDestination :: String -> Bool
+isOnionDestination d =
+  let d' = map toLower (takeWhile (/= ':') d)
+  in ".onion" `isSuffixOf` d' && length d' >= 62
+
+cookiePathFromProtocolInfo :: [String] -> Maybe FilePath
+cookiePathFromProtocolInfo lines' =
+  case [p | l <- lines', Just p <- [extractCookieFile l]] of
+    (p:_) -> Just p
+    []    -> Nothing
+  where
+    extractCookieFile line =
+      case breakOn "COOKIEFILE=" line of
+        (_, "") -> Nothing
+        (_, rest) ->
+          let r = drop (length "COOKIEFILE=") rest
+              r' = dropWhile (== '"') r
+              p = takeWhile (/= '"') r'
+          in if null p then Nothing else Just p
+    breakOn :: String -> String -> (String, String)
+    breakOn needle hay =
+      case findInfix needle hay of
+        Just i -> splitAt i hay
+        Nothing -> (hay, "")
+    findInfix :: String -> String -> Maybe Int
+    findInfix needle hay =
+      let n = length needle
+          go i s | length s < n = Nothing
+                 | take n s == needle = Just i
+                 | otherwise = go (i+1) (drop 1 s)
+      in go 0 hay
+
+-- Read Tor control reply until a completing 250 / 5xx line.
+readControlReply :: Handle -> IO [String]
+readControlReply h = go []
+  where
+    go acc = do
+      line <- hGetLine h
+      let acc' = acc ++ [line]
+      if "250 " `isPrefixOf` line || (not (null line) && head line == '5')
+        then pure acc'
+        else go acc'
+
+
 -- Connect to Tor control port and send a command
 sendTorCommand :: TorConfig -> String -> IO (Either String String)
 sendTorCommand cfg cmd = do
@@ -63,10 +120,22 @@ sendTorCommand cfg cmd = do
     h <- socketToHandle sock ReadWriteMode
     hSetBuffering h LineBuffering
 
-    hPutStrLn h "AUTHENTICATE"
-    authResp <- hGetLine h
-    when (not $ "250" `isPrefixOf` authResp) $
-      fail "Tor authentication failed"
+    -- M1: NEVER send bare AUTHENTICATE. Cookie auth only; fail closed if cookie unreadable.
+    hPutStrLn h "PROTOCOLINFO 1"
+    protoLines <- readControlReply h
+    case cookiePathFromProtocolInfo protoLines of
+      Nothing -> fail "Tor control: no COOKIEFILE in PROTOCOLINFO (fail-closed; refusing bare AUTHENTICATE)"
+      Just cookiePath -> do
+        cookieExists <- doesFileExist cookiePath
+        when (not cookieExists) $
+          fail $ "Tor control cookie unreadable: " ++ cookiePath ++ " (fail-closed)"
+        raw <- BS.readFile cookiePath
+        let hex = concatMap (\b -> let hi = fromIntegral b `div` 16; lo = fromIntegral b `mod` 16
+                                    in [intToDigit hi, intToDigit lo]) (BS.unpack raw)
+        hPutStrLn h ("AUTHENTICATE " ++ hex)
+        authResp <- hGetLine h
+        when (not $ "250" `isPrefixOf` authResp) $
+          fail $ "Tor cookie authentication failed: " ++ authResp
 
     hPutStrLn h cmd
     response <- hGetContents h
@@ -130,6 +199,15 @@ sendCiphertextOverTor mProxy destinationOnion ciphertext = do
         Just (h, p) -> (h, p)
         Nothing     -> ("127.0.0.1", 9050)
 
+  -- H4 fail-closed: loopback SOCKS only + .onion destination required
+  if not (isLoopbackHost proxyHost)
+    then pure $ Left $ "SOCKS proxy refused (not loopback): " ++ proxyHost
+    else if not (isOnionDestination destinationOnion)
+      then pure $ Left $ "destination refused (need .onion): " ++ destinationOnion
+      else sendCiphertextOverTorChecked proxyHost proxyPort destinationOnion ciphertext
+
+sendCiphertextOverTorChecked :: String -> Int -> String -> BS.ByteString -> IO (Either String ())
+sendCiphertextOverTorChecked proxyHost proxyPort destinationOnion ciphertext = do
   putStrLn $ "[Transport] Connecting via SOCKS5 to " ++ destinationOnion ++ " via " ++ proxyHost ++ ":" ++ show proxyPort
 
   result <- try $ do

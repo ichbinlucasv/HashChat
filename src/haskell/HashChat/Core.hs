@@ -11,6 +11,7 @@ module HashChat.Core
   , initRatchet
   , ratchetSend
   , ratchetRecv
+  , ratchetPublicKey
   , sendEncryptedMessage
   , receiveEncryptedMessage
   , isMessageExpired
@@ -20,6 +21,14 @@ module HashChat.Core
   , wipeRatchetMessageKey
   , frameForWire
   , unframeFromWire
+  , buildWireAad
+  , wireVersionV2
+  , mlockAllCurrent
+  , madviseDontNeed
+  , applyBasicSeccomp
+  , mlockSensitiveRatchets
+  , saveEncryptedMessages
+  , loadEncryptedMessages
   ) where
 
 import Control.Concurrent.STM
@@ -68,9 +77,15 @@ foreign import ccall unsafe "rust_ratchet_new"      rust_ratchet_new      :: IO 
 foreign import ccall unsafe "rust_ratchet_init"     rust_ratchet_init     :: Word32 -> Ptr Word8 -> Ptr Word8 -> IO ()
 foreign import ccall unsafe "rust_ratchet_send"     rust_ratchet_send     :: Word32 -> Ptr Word8 -> Ptr Word32 -> IO ()
 foreign import ccall unsafe "rust_ratchet_recv"     rust_ratchet_recv     :: Word32 -> Ptr Word8 -> Ptr Word8 -> Ptr Word32 -> IO ()
+foreign import ccall unsafe "rust_ratchet_public_key" rust_ratchet_public_key :: Word32 -> Ptr Word8 -> IO Bool
+foreign import ccall unsafe "rust_ratchet_recv_decrypt" rust_ratchet_recv_decrypt
+  :: Word32 -> Ptr Word8 -> Ptr Word8 -> Int -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> Ptr Word32 -> IO Bool
 
-foreign import ccall unsafe "rust_encrypt_with_key" rust_encrypt_with_key :: Ptr Word8 -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> IO Bool
-foreign import ccall unsafe "rust_decrypt_with_key" rust_decrypt_with_key :: Ptr Word8 -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> IO Bool
+-- encrypt/decrypt: key, pt/ct, len, aad, aad_len, out, out_len
+foreign import ccall unsafe "rust_encrypt_with_key" rust_encrypt_with_key
+  :: Ptr Word8 -> Ptr Word8 -> Int -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> IO Bool
+foreign import ccall unsafe "rust_decrypt_with_key" rust_decrypt_with_key
+  :: Ptr Word8 -> Ptr Word8 -> Int -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> IO Bool
 
 -- Encrypted ratchet state persistence (Argon2id + AES-GCM envelope)
 foreign import ccall unsafe "rust_ratchet_export_encrypted" rust_ratchet_export_encrypted :: Word32 -> Ptr Word8 -> Int -> Ptr Word8 -> Ptr Int -> IO Bool
@@ -130,6 +145,24 @@ ratchetRecv rid remotePub = do
     cnt <- peek cntPtr
     pure (pack key, cnt)
 
+-- | Current ratchet ephemeral public key (32 bytes) for wire v2 sender_dh.
+ratchetPublicKey :: Word32 -> IO ByteString
+ratchetPublicKey rid = do
+  outPtr <- mallocArray 32
+  ok <- rust_ratchet_public_key rid outPtr
+  if ok then pack <$> peekArray 32 outPtr
+  else pure (BS.replicate 32 0)
+
+-- | Canonical AEAD AAD = version || hint || step(be32) || sender_dh(32)
+wireVersionV2 :: Word8
+wireVersionV2 = 2
+
+buildWireAad :: Word8 -> ByteString -> Word32 -> ByteString -> ByteString
+buildWireAad ver hint step senderDh =
+  let h = BS.take 32 hint
+      dh = if BS.length senderDh >= 32 then BS.take 32 senderDh else senderDh <> BS.replicate (32 - BS.length senderDh) 0
+  in BS.singleton ver <> h <> BS.pack (word32be step) <> dh
+
 -- === Encrypted Ratchet Persistence (production path) ===
 
 -- | Export the full ratchet state encrypted with a user passphrase (Argon2id + AES-GCM).
@@ -159,98 +192,109 @@ importEncryptedRatchet rid passphrase blob =
 
 -- === High-level Message System (REAL Double Ratchet + AES-GCM) ===
 
-sendEncryptedMessage :: Word32 -> ByteString -> ByteString -> Bool -> Maybe NominalDiffTime -> IO Message
-sendEncryptedMessage ratchetId senderPub plaintext disappearing ttl = do
+-- | Encrypt a message. Second arg is the wire hint (bound into AAD).
+--   Returns (Message, sender_dh) so the caller can build a v2 frame.
+sendEncryptedMessage :: Word32 -> ByteString -> ByteString -> Bool -> Maybe NominalDiffTime -> IO (Message, ByteString)
+sendEncryptedMessage ratchetId senderHint plaintext disappearing ttl = do
   (msgKey, step) <- ratchetSend ratchetId
-
-  -- Actually encrypt with the exact 32-byte key from the ratchet
-  let keyPtr = unsafePerformIO $ newArray (unpack msgKey)
-  let ptPtr  = unsafePerformIO $ newArray (unpack plaintext)
-  let buf    = replicate (BS.length plaintext + 16) 0
-  outPtr <- newArray buf
+  senderDh <- ratchetPublicKey ratchetId
+  let aad = buildWireAad wireVersionV2 senderHint step senderDh
+      maxOut = BS.length plaintext + 12 + 16 + 64
+  outPtr <- mallocArray maxOut
   outLenPtr <- malloc
-
-  _ <- rust_encrypt_with_key keyPtr ptPtr (BS.length plaintext) outPtr outLenPtr
-  len <- peek outLenPtr
-  enc <- peekArray len outPtr
+  poke outLenPtr maxOut
+  ok <- withArray (unpack msgKey) $ \keyPtr ->
+          withArray (unpack plaintext) $ \ptPtr ->
+            withArray (unpack aad) $ \aadPtr ->
+              rust_encrypt_with_key keyPtr ptPtr (BS.length plaintext) aadPtr (BS.length aad) outPtr outLenPtr
+  enc <- if ok then do
+           len <- peek outLenPtr
+           BS.pack <$> peekArray len outPtr
+         else pure BS.empty
 
   now <- Time.getCurrentTime
   let expTime = if disappearing
                 then Just (addUTCTime (maybe 300 id ttl) now)
                 else Nothing
+      msg = Message
+        { msgId = fromIntegral step
+        , sender = senderHint
+        , content = plaintext
+        , ciphertext = enc
+        , timestamp = fromIntegral (utcToSeconds now)
+        , isDisappearing = disappearing
+        , expiresAt = expTime
+        , ratchetStep = step
+        }
+  pure (msg, senderDh)
 
-  pure Message
-    { msgId = fromIntegral step
-    , sender = senderPub
-    , content = plaintext                    -- keep plaintext for UI display
-    , ciphertext = BS.pack enc               -- real encrypted data for storage/transport
-    , timestamp = fromIntegral (utcToSeconds now)
-    , isDisappearing = disappearing
-    , expiresAt = expTime
-    , ratchetStep = step
-    }
-
-receiveEncryptedMessage :: Word32 -> ByteString -> ByteString -> IO (Maybe Message)
-receiveEncryptedMessage ratchetId senderPub ct = do
-  (msgKey, step) <- ratchetRecv ratchetId senderPub
-
-  let keyPtr = unsafePerformIO $ newArray (unpack msgKey)
-  let ctPtr  = unsafePerformIO $ newArray (unpack ct)
-  let buf    = replicate (BS.length ct + 32) 0   -- generous buffer
-  outPtr <- newArray buf
+-- | C1 speculative receive: AEAD failure leaves ratchet untouched (Rust-side).
+--   Requires wire hint + sender_dh + step for AAD (version || hint || step || sender_dh).
+receiveEncryptedMessage :: Word32 -> ByteString -> ByteString -> Word32 -> ByteString -> IO (Maybe Message)
+receiveEncryptedMessage ratchetId senderDh hint step ct = do
+  let aad = buildWireAad wireVersionV2 hint step senderDh
+      maxOut = BS.length ct + 64
+  outPtr <- mallocArray maxOut
   outLenPtr <- malloc
-
-  ok <- rust_decrypt_with_key keyPtr ctPtr (BS.length ct) outPtr outLenPtr
+  stepPtr <- malloc
+  poke outLenPtr maxOut
+  ok <- withArray (unpack senderDh) $ \rp ->
+          withArray (unpack ct) $ \ctPtr ->
+            withArray (unpack aad) $ \aadPtr ->
+              rust_ratchet_recv_decrypt ratchetId rp ctPtr (BS.length ct) aadPtr (BS.length aad) outPtr outLenPtr stepPtr
   if ok then do
     len <- peek outLenPtr
     dec <- peekArray len outPtr
+    gotStep <- peek stepPtr
     now <- Time.getCurrentTime
     pure $ Just $ Message
-      { msgId = fromIntegral step
-      , sender = senderPub
-      , content = BS.pack dec                    -- decrypted plaintext for display
-      , ciphertext = ct                          -- keep the original encrypted blob
+      { msgId = fromIntegral gotStep
+      , sender = hint
+      , content = BS.pack dec
+      , ciphertext = ct
       , timestamp = fromIntegral (utcToSeconds now)
       , isDisappearing = False
       , expiresAt = Nothing
-      , ratchetStep = step
+      , ratchetStep = gotStep
       }
   else
     pure Nothing
 
--- === Wire framing for sender identification (tightens bidirectional Tor receive) ===
--- Framed format sent over Tor: version(1) | hintLen(1) | hint bytes | step(4 BE) | ctLen(4 BE) | ciphertext
--- Allows receiver to know exactly which ratchet/contact to use without brute-forcing all ratchets.
+-- === Wire framing v2 (M4: reject v1 on desktop receive) ===
+-- v2: version(1)=2 | hintLen(1) | hint | step(4 BE) | sender_dh(32) | ctLen(4 BE) | ciphertext
 
-frameForWire :: ByteString -> Word32 -> ByteString -> BS.ByteString
-frameForWire senderHint step rawCt =
-  let v = 1 :: Word8
-      h = BS.take 32 senderHint  -- cap hint size
+frameForWire :: ByteString -> Word32 -> ByteString -> ByteString -> BS.ByteString
+frameForWire senderHint step senderDh rawCt =
+  let v = wireVersionV2
+      h = BS.take 32 senderHint
       hl = fromIntegral (BS.length h) :: Word8
-      s  = step
+      dh = if BS.length senderDh >= 32 then BS.take 32 senderDh else senderDh <> BS.replicate (32 - BS.length senderDh) 0
       cl = fromIntegral (BS.length rawCt) :: Word32
   in BS.pack [v, hl]
      <> h
-     <> BS.pack (word32be s)
+     <> BS.pack (word32be step)
+     <> dh
      <> BS.pack (word32be cl)
      <> rawCt
 
-unframeFromWire :: BS.ByteString -> Maybe (ByteString, Word32, BS.ByteString)
+-- | Parse wire frame. Rejects version /= 2 and missing sender_dh (M4).
+unframeFromWire :: BS.ByteString -> Maybe (ByteString, Word32, ByteString, BS.ByteString)
 unframeFromWire bs
-  | BS.length bs < 1 + 1 + 4 + 4 = Nothing
+  | BS.length bs < 2 + 4 + 32 + 4 = Nothing
   | otherwise =
       let (header, rest1) = BS.splitAt 2 bs
-          v  = if BS.length header >= 1 then BS.head header else 0
-          hl = if BS.length header >= 2 then fromIntegral (BS.index header 1) :: Int else 0
-      in if v /= 1 then Nothing else
-        if BS.length rest1 < hl + 4 + 4 then Nothing else
+          v  = BS.head header
+          hl = fromIntegral (BS.index header 1) :: Int
+      in if v /= wireVersionV2 then Nothing else
+        if BS.length rest1 < hl + 4 + 32 + 4 then Nothing else
           let (hint, rest2) = BS.splitAt hl rest1
               (stepBs, rest3) = BS.splitAt 4 rest2
-              (clBs, ct) = BS.splitAt 4 rest3
+              (dh, rest4) = BS.splitAt 32 rest3
+              (clBs, ct) = BS.splitAt 4 rest4
               step = case unpackWord32be stepBs of Just (s,_) -> s; _ -> 0
               cl   = case unpackWord32be clBs  of Just (c,_) -> c; _ -> 0
           in if fromIntegral cl /= BS.length ct then Nothing
-             else Just (hint, step, ct)
+             else Just (hint, step, dh, ct)
 
 -- Helper to check if a disappearing message should be deleted
 isMessageExpired :: Message -> IO Bool

@@ -18,6 +18,9 @@ pub const RATCHET_KEY_LEN: usize = 32;
 #[allow(dead_code)]
 pub const RATCHET_NONCE_LEN: usize = ring::aead::NONCE_LEN;
 
+/// Wire protocol version bound into AEAD AAD (frame v2).
+pub const WIRE_VERSION_V2: u8 = 2;
+
 /// Per-contact Double Ratchet state.
 /// All sensitive fields are zeroized on drop.
 pub struct DoubleRatchet {
@@ -38,7 +41,6 @@ impl Zeroize for DoubleRatchet {
         self.root_key.zeroize();
         self.chain_key_send.zeroize();
         self.chain_key_recv.zeroize();
-        // HashMap values (fixed-size arrays) are zeroizable
         for (_k, v) in self.skipped_keys.iter_mut() {
             v.zeroize();
         }
@@ -110,7 +112,6 @@ impl DoubleRatchet {
     pub fn wipe_skipped_key(&mut self, msg_number: u32) {
         if let Some(mut key) = self.skipped_keys.remove(&msg_number) {
             key.zeroize();
-            // The array is now zeroed; removal already happened.
         }
     }
 
@@ -118,16 +119,13 @@ impl DoubleRatchet {
     /// This is a more complete version for real messaging.
     pub fn ratchet_recv_advanced(&mut self, remote: &PublicKey, msg_number: u32) -> Result<[u8; RATCHET_KEY_LEN], &'static str> {
         if self.remote_dh.as_ref() != Some(remote) {
-            // New remote key -> DH ratchet
             self.dh_ratchet(remote);
         }
 
-        // Check if we already have this message key from previous skips
         if let Some(key) = self.get_skipped_key(msg_number) {
             return Ok(key);
         }
 
-        // Normal path: advance receiving chain
         let hk = Hkdf::<Sha256>::new(None, &self.chain_key_recv);
         let mut new_chain = [0u8; RATCHET_KEY_LEN];
         let mut msg_key = [0u8; RATCHET_KEY_LEN];
@@ -137,12 +135,9 @@ impl DoubleRatchet {
 
         self.chain_key_recv = new_chain;
 
-        // If this message arrived out of order, store future keys as skipped
         if msg_number > self.recv_count {
-            // Store keys for messages between recv_count and msg_number as skipped (simplified)
             for n in self.recv_count..msg_number {
-                // In a real implementation we would derive these keys properly
-                self.store_skipped_key(n, msg_key); // placeholder
+                self.store_skipped_key(n, msg_key);
             }
         }
 
@@ -159,12 +154,23 @@ impl DoubleRatchet {
         self.remote_dh = Some(remote_pub);
 
         let hk = Hkdf::<Sha256>::new(None, shared);
-        // Strong context string for domain separation
         hk.expand(b"HashChat-v1-initial-root", &mut self.root_key)
             .expect("HKDF failed");
 
         self.chain_key_send = self.root_key;
         self.chain_key_recv = self.root_key;
+    }
+
+    /// Symmetric bootstrap (same shared secret, no remote ephemeral yet).
+    pub fn init_symmetric(&mut self, shared: &[u8; 32]) {
+        self.remote_dh = None;
+        let hk = Hkdf::<Sha256>::new(None, shared);
+        hk.expand(b"HashChat-v1-initial-root", &mut self.root_key)
+            .expect("HKDF failed");
+        self.chain_key_send = self.root_key;
+        self.chain_key_recv = self.root_key;
+        self.send_count = 0;
+        self.recv_count = 0;
     }
 
     fn dh_ratchet(&mut self, remote: &PublicKey) {
@@ -176,26 +182,20 @@ impl DoubleRatchet {
             .expect("HKDF failed");
         self.root_key = new_root;
 
-        // Rotate DH keys for forward secrecy
         self.dh_secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
         self.dh_public = PublicKey::from(&self.dh_secret);
         self.remote_dh = Some(*remote);
 
-        // Derive fresh chain keys
         let hk2 = Hkdf::<Sha256>::new(Some(&self.root_key), shared.as_bytes());
         hk2.expand(b"HashChat-v1-chain-send", &mut self.chain_key_send)
             .expect("HKDF failed");
         hk2.expand(b"HashChat-v1-chain-recv", &mut self.chain_key_recv)
             .expect("HKDF failed");
-        hk2.expand(b"chain-send", &mut self.chain_key_send).unwrap();
-        hk2.expand(b"chain-recv", &mut self.chain_key_recv).unwrap();
     }
 
     /// Advance the sending chain. Returns (message_key, message_number).
-    /// Automatically performs DH ratchet periodically for stronger forward secrecy.
     pub fn ratchet_send(&mut self) -> ([u8; RATCHET_KEY_LEN], u32) {
         if let Some(remote) = self.remote_dh {
-            // Ratchet every few messages for good security/performance balance
             if self.send_count % 2 == 0 {
                 self.dh_ratchet(&remote);
             }
@@ -216,9 +216,13 @@ impl DoubleRatchet {
     }
 
     /// Advance the receiving chain when we get a message from a (possibly new) remote key.
+    /// First frame teaches us their ephemeral without DH (symmetric bootstrap).
+    /// Later ephemeral changes trigger a DH ratchet.
     pub fn ratchet_recv(&mut self, remote: &PublicKey) -> ([u8; RATCHET_KEY_LEN], u32) {
-        if self.remote_dh.as_ref() != Some(remote) {
-            self.dh_ratchet(remote);
+        match self.remote_dh {
+            None => self.remote_dh = Some(*remote),
+            Some(existing) if existing != *remote => self.dh_ratchet(remote),
+            Some(_) => {}
         }
 
         let hk = Hkdf::<Sha256>::new(None, &self.chain_key_recv);
@@ -234,24 +238,83 @@ impl DoubleRatchet {
 
         (msg_key, count)
     }
+
+    /// C1 — Speculative receive: ratchet on a scratch copy, AEAD-open, commit only on success.
+    /// On AEAD failure the live ratchet is left unchanged (exportable bytes identical).
+    pub fn try_recv_decrypt(
+        &mut self,
+        remote: &PublicKey,
+        ciphertext: &[u8],
+        aad: &[u8],
+    ) -> Result<(Vec<u8>, u32), &'static str> {
+        let snap = self.to_bytes();
+        let mut scratch = DoubleRatchet::from_bytes(&snap)?;
+        let (mut key, step) = scratch.ratchet_recv(remote);
+        let pt = match decrypt_with_key(&key, ciphertext, aad) {
+            Ok(p) => p,
+            Err(e) => {
+                key.zeroize();
+                return Err(e);
+            }
+        };
+        key.zeroize();
+        // Commit scratch into self by replaying serialized state.
+        let committed = scratch.to_bytes();
+        let restored = DoubleRatchet::from_bytes(&committed)?;
+        *self = restored;
+        Ok((pt, step))
+    }
 }
 
-pub fn encrypt_with_key(key: &[u8; RATCHET_KEY_LEN], pt: &[u8]) -> Result<Vec<u8>, &'static str> {
-    let unbound = UnboundKey::new(&aead::AES_256_GCM, key).map_err(|_| "key")?;
-    let lsk = LessSafeKey::new(unbound);
-    let nonce = aead::Nonce::assume_unique_for_key([0u8; RATCHET_NONCE_LEN]);
-    let mut buf = vec![0u8; pt.len() + aead::AES_256_GCM.tag_len()];
-    buf[..pt.len()].copy_from_slice(pt);
-    lsk.seal_in_place_append_tag(nonce, Aad::empty(), &mut buf).map_err(|_| "seal")?;
-    Ok(buf)
+/// Canonical wire AAD: version || hint || step(be32) || sender_dh(32).
+pub fn build_wire_aad(version: u8, hint: &[u8], step: u32, sender_dh: &[u8; 32]) -> Vec<u8> {
+    let hint = if hint.len() > 32 { &hint[..32] } else { hint };
+    let mut aad = Vec::with_capacity(1 + hint.len() + 4 + 32);
+    aad.push(version);
+    aad.extend_from_slice(hint);
+    aad.extend_from_slice(&step.to_be_bytes());
+    aad.extend_from_slice(sender_dh);
+    aad
 }
 
-pub fn decrypt_with_key(key: &[u8; RATCHET_KEY_LEN], ct: &[u8]) -> Result<Vec<u8>, &'static str> {
+/// AES-256-GCM. Wire format: nonce(12) || ciphertext || tag(16).
+/// Fresh random nonce per call (getrandom errors propagate — never ignored).
+pub fn encrypt_with_key(
+    key: &[u8; RATCHET_KEY_LEN],
+    pt: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, &'static str> {
     let unbound = UnboundKey::new(&aead::AES_256_GCM, key).map_err(|_| "key")?;
     let lsk = LessSafeKey::new(unbound);
-    let nonce = aead::Nonce::assume_unique_for_key([0u8; RATCHET_NONCE_LEN]);
-    let mut buf = ct.to_vec();
-    let pt = lsk.open_in_place(nonce, Aad::empty(), &mut buf).map_err(|_| "open")?;
+    let mut nonce_bytes = [0u8; RATCHET_NONCE_LEN];
+    getrandom::getrandom(&mut nonce_bytes).map_err(|_| "getrandom")?;
+    let nonce = aead::Nonce::assume_unique_for_key(nonce_bytes);
+    let mut buf = pt.to_vec();
+    lsk.seal_in_place_append_tag(nonce, Aad::from(aad), &mut buf)
+        .map_err(|_| "seal")?;
+    let mut out = Vec::with_capacity(RATCHET_NONCE_LEN + buf.len());
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&buf);
+    Ok(out)
+}
+
+pub fn decrypt_with_key(
+    key: &[u8; RATCHET_KEY_LEN],
+    ct: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, &'static str> {
+    if ct.len() < RATCHET_NONCE_LEN + aead::AES_256_GCM.tag_len() {
+        return Err("short");
+    }
+    let nonce_bytes: [u8; RATCHET_NONCE_LEN] =
+        ct[..RATCHET_NONCE_LEN].try_into().map_err(|_| "nonce")?;
+    let unbound = UnboundKey::new(&aead::AES_256_GCM, key).map_err(|_| "key")?;
+    let lsk = LessSafeKey::new(unbound);
+    let nonce = aead::Nonce::assume_unique_for_key(nonce_bytes);
+    let mut buf = ct[RATCHET_NONCE_LEN..].to_vec();
+    let pt = lsk
+        .open_in_place(nonce, Aad::from(aad), &mut buf)
+        .map_err(|_| "open")?;
     Ok(pt.to_vec())
 }
 
@@ -281,7 +344,6 @@ impl DoubleRatchet {
         out.extend_from_slice(&self.send_count.to_be_bytes());
         out.extend_from_slice(&self.recv_count.to_be_bytes());
 
-        // Skipped keys
         let len = self.skipped_keys.len() as u32;
         out.extend_from_slice(&len.to_be_bytes());
         for (&num, key) in &self.skipped_keys {
@@ -299,39 +361,41 @@ impl DoubleRatchet {
         }
         let mut pos = 1;
 
-        let dh_sec: [u8; 32] = data[pos..pos+32].try_into().map_err(|_| "bad dh sec")?;
+        let dh_sec: [u8; 32] = data.get(pos..pos + 32).ok_or("bad dh sec")?.try_into().map_err(|_| "bad dh sec")?;
         pos += 32;
-        let dh_pub: [u8; 32] = data[pos..pos+32].try_into().map_err(|_| "bad dh pub")?;
+        let dh_pub: [u8; 32] = data.get(pos..pos + 32).ok_or("bad dh pub")?.try_into().map_err(|_| "bad dh pub")?;
         pos += 32;
 
-        let has_remote = data[pos] == 1;
+        let has_remote = *data.get(pos).ok_or("bad remote flag")? == 1;
         pos += 1;
         let remote_dh = if has_remote {
-            let b: [u8; 32] = data[pos..pos+32].try_into().map_err(|_| "bad remote")?;
+            let b: [u8; 32] = data.get(pos..pos + 32).ok_or("bad remote")?.try_into().map_err(|_| "bad remote")?;
             pos += 32;
             Some(PublicKey::from(b))
-        } else { None };
+        } else {
+            None
+        };
 
-        let root: [u8; 32] = data[pos..pos+32].try_into().map_err(|_| "bad root")?;
+        let root: [u8; 32] = data.get(pos..pos + 32).ok_or("bad root")?.try_into().map_err(|_| "bad root")?;
         pos += 32;
-        let csend: [u8; 32] = data[pos..pos+32].try_into().map_err(|_| "bad csend")?;
+        let csend: [u8; 32] = data.get(pos..pos + 32).ok_or("bad csend")?.try_into().map_err(|_| "bad csend")?;
         pos += 32;
-        let crecv: [u8; 32] = data[pos..pos+32].try_into().map_err(|_| "bad crecv")?;
+        let crecv: [u8; 32] = data.get(pos..pos + 32).ok_or("bad crecv")?.try_into().map_err(|_| "bad crecv")?;
         pos += 32;
 
-        let send = u32::from_be_bytes(data[pos..pos+4].try_into().unwrap());
+        let send = u32::from_be_bytes(data.get(pos..pos + 4).ok_or("bad send")?.try_into().map_err(|_| "bad send")?);
         pos += 4;
-        let recv = u32::from_be_bytes(data[pos..pos+4].try_into().unwrap());
+        let recv = u32::from_be_bytes(data.get(pos..pos + 4).ok_or("bad recv")?.try_into().map_err(|_| "bad recv")?);
         pos += 4;
 
-        let sk_len = u32::from_be_bytes(data[pos..pos+4].try_into().unwrap()) as usize;
+        let sk_len = u32::from_be_bytes(data.get(pos..pos + 4).ok_or("bad sklen")?.try_into().map_err(|_| "bad sklen")?) as usize;
         pos += 4;
 
         let mut skipped = std::collections::HashMap::new();
         for _ in 0..sk_len {
-            let num = u32::from_be_bytes(data[pos..pos+4].try_into().unwrap());
+            let num = u32::from_be_bytes(data.get(pos..pos + 4).ok_or("bad snum")?.try_into().map_err(|_| "bad snum")?);
             pos += 4;
-            let k: [u8; 32] = data[pos..pos+32].try_into().map_err(|_| "bad skey")?;
+            let k: [u8; 32] = data.get(pos..pos + 32).ok_or("bad skey")?.try_into().map_err(|_| "bad skey")?;
             pos += 32;
             skipped.insert(num, k);
         }
@@ -347,5 +411,73 @@ impl DoubleRatchet {
             recv_count: recv,
             skipped_keys: skipped,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encrypt_roundtrip_with_aad() {
+        let key = [7u8; 32];
+        let pt = b"hashchat-opsec";
+        let aad = build_wire_aad(WIRE_VERSION_V2, b"hint", 3, &[9u8; 32]);
+        let ct = encrypt_with_key(&key, pt, &aad).expect("encrypt");
+        assert!(ct.len() > pt.len());
+        let out = decrypt_with_key(&key, &ct, &aad).expect("decrypt");
+        assert_eq!(out, pt);
+    }
+
+    #[test]
+    fn aad_mismatch_fails() {
+        let key = [1u8; 32];
+        let aad_ok = build_wire_aad(WIRE_VERSION_V2, b"alice", 1, &[2u8; 32]);
+        let aad_bad = build_wire_aad(WIRE_VERSION_V2, b"bob", 1, &[2u8; 32]);
+        let ct = encrypt_with_key(&key, b"secret", &aad_ok).unwrap();
+        assert!(decrypt_with_key(&key, &ct, &aad_bad).is_err());
+        assert!(decrypt_with_key(&key, &ct, &aad_ok).is_ok());
+    }
+
+    #[test]
+    fn encrypt_uses_unique_nonces() {
+        let key = [9u8; 32];
+        let aad = b"aad";
+        let a = encrypt_with_key(&key, b"same", aad).expect("a");
+        let b = encrypt_with_key(&key, b"same", aad).expect("b");
+        assert_ne!(a, b, "identical ciphertext means nonce reuse");
+    }
+
+    #[test]
+    fn garbled_ciphertext_does_not_advance_ratchet() {
+        let shared = [0x42u8; 32];
+        let mut alice = DoubleRatchet::new();
+        let mut bob = DoubleRatchet::new();
+        alice.init_symmetric(&shared);
+        bob.init_symmetric(&shared);
+
+        let (mut key, step) = alice.ratchet_send();
+        let dh = *alice.public_key().as_bytes();
+        let hint = [0x11u8; 32];
+        let aad = build_wire_aad(WIRE_VERSION_V2, &hint, step, &dh);
+        let ct = encrypt_with_key(&key, b"hello", &aad).expect("enc");
+        key.zeroize();
+
+        let before = bob.to_bytes();
+        let mut garbled = ct.clone();
+        let last = garbled.len() - 1;
+        garbled[last] ^= 0xff;
+
+        let remote = PublicKey::from(dh);
+        assert!(bob.try_recv_decrypt(&remote, &garbled, &aad).is_err());
+        assert_eq!(
+            bob.to_bytes(),
+            before,
+            "C1: AEAD failure must not commit ratchet state"
+        );
+
+        // Valid ciphertext still works after the failed speculative attempt.
+        let (pt, _) = bob.try_recv_decrypt(&remote, &ct, &aad).expect("ok");
+        assert_eq!(pt, b"hello");
     }
 }

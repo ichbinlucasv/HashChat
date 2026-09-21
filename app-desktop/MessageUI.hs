@@ -13,12 +13,14 @@ import Data.Word (Word32)
 -- Per-profile state the TUI can hold
 type UIState = (ProfileStore, Map String [Message])   -- (ratchets per profile, messages per contact)
 
--- Send a message from the TUI (uses real ratchet encryption)
-uiSendMessage :: Word32 -> ByteString -> ByteString -> Bool -> Maybe NominalDiffTime -> IO Message
+-- Send a message from the TUI (uses real ratchet encryption).
+-- Returns (Message, sender_dh) for wire v2 framing.
+uiSendMessage :: Word32 -> ByteString -> ByteString -> Bool -> Maybe NominalDiffTime -> IO (Message, ByteString)
 uiSendMessage = sendEncryptedMessage
 
--- Receive a message in the TUI
-uiReceiveMessage :: Word32 -> ByteString -> ByteString -> IO (Maybe Message)
+-- Receive a message in the TUI (C1 speculative; AAD-bound).
+-- Args: ratchetId, senderDh, hint, step, ciphertext
+uiReceiveMessage :: Word32 -> ByteString -> ByteString -> Word32 -> ByteString -> IO (Maybe Message)
 uiReceiveMessage = receiveEncryptedMessage
 
 -- Check and clean disappearing messages (call on refresh)

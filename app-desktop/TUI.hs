@@ -34,11 +34,15 @@ import HashChat.Core
   , processDisappearingMessages
   , frameForWire
   , unframeFromWire
+  , ratchetPublicKey
+  , newRatchet
+  , ratchetSend
   )
 import qualified HashChat.Contact as Contact
 import HashChat.Contact (Contact(..), defaultContact, ContactAddress(..), createContactAddress, contactAddressToLink, parseContactAddress, contactToAddress)
 import MessageUI
-import qualified HashChat.Tor as Tor  -- Real Tor hidden service transport scaffolding started (SOCKS5/ProxyConfig foundation for I2P + bridges)
+import qualified HashChat.Tor as Tor
+import HashChat.Profile (ProfileProxyStore, setProfileProxy, defaultProxyForProfile)  -- Real Tor hidden service transport scaffolding started (SOCKS5/ProxyConfig foundation for I2P + bridges)
 import Control.Monad (when, void, foldM)
 import Control.Monad.IO.Class (liftIO)
 import System.Directory (doesFileExist)
@@ -47,6 +51,7 @@ import System.Directory (removePathForcibly, createDirectoryIfMissing, listDirec
 import System.FilePath (combine, takeDirectory)
 import Data.Time.Clock (getCurrentTime)
 import System.IO (hFlush, stdout, hSetEcho, stdin)
+import Text.Read (readMaybe)
 import qualified Data.List
 import Data.List (elemIndex, isInfixOf, isPrefixOf)
 import System.Process (callCommand, spawnProcess, waitForProcess, terminateProcess)
@@ -315,9 +320,9 @@ drainIncoming = do
     processOneIncoming st (_rawHint, framedBlob) = do
       case unframeFromWire framedBlob of
         Nothing -> do
-          putStrLn "[TOR] Malformed incoming frame — dropping."
+          putStrLn "[TOR] Malformed incoming frame (need wire v2 + sender_dh) — dropping."
           pure st
-        Just (hint, _stepHint, rawCt) -> do
+        Just (hint, stepHint, senderDh, rawCt) -> do
           -- Use the sender hint from the wire frame to pick the exact ratchet (tight peer ID)
           let hintStr = BC.unpack (BS.take 32 hint)
           let mRid = case Map.lookup hintStr (ratchets st) of
@@ -328,7 +333,7 @@ drainIncoming = do
               putStrLn $ "[TOR] No ratchet for hint '" ++ hintStr ++ "' — unknown peer."
               pure st
             Just rid -> do
-              mMsg <- receiveEncryptedMessage rid (BS.pack (map (fromIntegral . fromEnum) hintStr)) rawCt
+              mMsg <- receiveEncryptedMessage rid senderDh hint stepHint rawCt
               case mMsg of
                 Just msg -> do
                   let contact = if Map.member hintStr (ratchets st) then hintStr else currentContact st
@@ -420,17 +425,21 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
       then do
         let rest = drop (length ":set-proxy ") inputStr
         let prof = currentProfile s
-        -- Very simple parser for now: "host port" → Socks5Proxy
+        -- H4: only loopback SOCKS (127.0.0.0/8 or ::1)
         case words rest of
           [h, pStr] | Just p <- readMaybe pStr -> do
-            let newCfg = Socks5Proxy h p
-            let newProxies = setProfileProxy prof newCfg (proxies s)
-            liftIO $ putStrLn $ "[D] Proxy for profile '" ++ prof ++ "' set to " ++ show newCfg
-            liftIO $ putStrLn "  (Will be used on next send once full wiring in send path is complete.)"
-            modify $ \st -> st { input = "", proxies = newProxies }
+            if not (Tor.isLoopbackHost h) then do
+              liftIO $ putStrLn $ "[SECURITY] :set-proxy refused (not loopback): " ++ h
+              liftIO $ putStrLn "  Allowed: 127.0.0.0/8 or ::1 only (fail-closed)."
+              modify $ \st -> st { input = "" }
+            else do
+              let newCfg = Tor.Socks5Proxy h p
+              let newProxies = setProfileProxy prof newCfg (proxies s)
+              liftIO $ putStrLn $ "[D] Proxy for profile '" ++ prof ++ "' set to " ++ show newCfg
+              modify $ \st -> st { input = "", proxies = newProxies }
           _ -> do
             liftIO $ putStrLn "[D] Usage: :set-proxy <host> <port>"
-            liftIO $ putStrLn "  Example: :set-proxy 127.0.0.1 9050"
+            liftIO $ putStrLn "  Example: :set-proxy 127.0.0.1 9050 (loopback only)"
             modify $ \st -> st { input = "" }
       else do
         -- Normal message send path (existing)
@@ -456,7 +465,11 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
 
         -- Use the REAL message system (Double Ratchet + AES-GCM)
         now <- liftIO getCurrentTime
-        msg <- liftIO $ sendEncryptedMessage rid (BS.pack []) (TE.encodeUtf8 txt) False Nothing
+        let maybeContact0 = Prelude.lookup contact (map (\c -> (Contact.contactId c, c)) (contacts s))
+        let (hint0, _onion0) = case maybeContact0 of
+              Just c  -> (Contact.contactPubHint c, Contact.onionAddress c)
+              Nothing -> (BS.pack (map (fromIntegral . fromEnum) contact), "unknown.onion")
+        (msg, senderDh) <- liftIO $ sendEncryptedMessage rid hint0 (TE.encodeUtf8 txt) False Nothing
 
         -- Add simple timestamp for display
         let msgWithTime = msg { timestamp = fromIntegral (utcToSeconds now) }
@@ -466,12 +479,12 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
         let updatedMsgs = Map.findWithDefault [] contact (messages st) ++ [msgWithTime]
         liftIO $ saveEncryptedMessages "hashchat_data" prof contact pass updatedMsgs
 
-        -- Real send over Tor using proper Contact onion + pubHint (no more hardcoded strings)
+        -- Real send over Tor using proper Contact onion + pubHint (wire v2 + sender_dh)
         let maybeContact = Prelude.lookup contact (map (\c -> (Contact.contactId c, c)) (contacts s))
         let (hint, targetOnion) = case maybeContact of
               Just c  -> (Contact.contactPubHint c, Contact.onionAddress c)
               Nothing -> (BS.pack (map (fromIntegral . fromEnum) contact), "unknown.onion")
-        let framed = frameForWire hint (ratchetStep msgWithTime) (ciphertext msgWithTime)
+        let framed = frameForWire hint (ratchetStep msgWithTime) senderDh (ciphertext msgWithTime)
         liftIO $ putStrLn $ "[TOR] Sending framed ciphertext to " ++ targetOnion ++ " (real contact mapping + header)"
         -- D finished: Use per-profile proxy if set for current burner, else default (local Tor)
         let currentProxy = Map.findWithDefault defaultProxyForProfile (currentProfile s) (proxies s)
@@ -778,21 +791,19 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
 
         -- Send the voice audio bytes through the ratchet (treated as voice message content)
         now <- liftIO getCurrentTime
-        voiceMsg <- liftIO $ sendEncryptedMessage rid (BS.pack []) voiceChunk False Nothing   -- voiceChunk as the "plaintext" content for this demo
+        let maybeContactV = Prelude.lookup contact (map (\c -> (Contact.contactId c, c)) (contacts s))
+        let (hintV, targetOnion) = case maybeContactV of
+              Just c  -> (Contact.contactPubHint c, Contact.onionAddress c)
+              Nothing -> (BS.pack (map (fromIntegral . fromEnum) contact), "unknown.onion")
+        (voiceMsg, senderDhV) <- liftIO $ sendEncryptedMessage rid hintV voiceChunk False Nothing
 
         let voiceMsgWithTime = voiceMsg { timestamp = fromIntegral (utcToSeconds now) }
 
         liftIO $ saveEncryptedRatchet prof contact rid pass
 
-        -- Frame and send with VOICE indicator (reuse existing framing)
-        let maybeContact = Prelude.lookup contact (map (\c -> (Contact.contactId c, c)) (contacts s))
-        let (hint, targetOnion) = case maybeContact of
-              Just c  -> (Contact.contactPubHint c, Contact.onionAddress c)
-              Nothing -> (BS.pack (map (fromIntegral . fromEnum) contact), "unknown.onion")
-
         -- Prefix with VOICE magic so receiver knows it's a voice chunk (matches existing receive logic)
         let voicePrefixed = BS.pack [0x56,0x4F,0x49,0x43,0x45] <> ciphertext voiceMsgWithTime
-        let framedVoice = frameForWire hint (ratchetStep voiceMsgWithTime) voicePrefixed
+        let framedVoice = frameForWire hintV (ratchetStep voiceMsgWithTime) senderDhV voicePrefixed
 
         let currentProxy = Map.findWithDefault defaultProxyForProfile (currentProfile s) (proxies s)
         result <- liftIO $ try (Tor.sendOverProxy currentProxy targetOnion framedVoice)
@@ -864,9 +875,12 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'G') [])) = do
           -- For each member ratchet, advance sender key and encrypt (demo: use first)
           rid <- pure (head rats)
           (msgKey, step) <- liftIO $ ratchetSend rid   -- real Double Ratchet send
-          let framed = frameForWire (BS.pack (map (fromIntegral . fromEnum) gname)) step (BS.pack (map (fromIntegral . fromEnum) (T.unpack txt)))
+          senderDhG <- liftIO $ ratchetPublicKey rid
+          let gHint = BS.pack (map (fromIntegral . fromEnum) gname)
+              framed = frameForWire gHint step senderDhG (BS.pack (map (fromIntegral . fromEnum) (T.unpack txt)))
           liftIO $ putStrLn $ "[GROUP] Sending to " ++ gname ++ " using sender-key ratchet (step " ++ show step ++ ")"
-          _ <- liftIO $ Tor.sendCiphertextOverTor "group-relay.onion" framed
+          -- H4: require a plausible v3 .onion length; group-relay placeholder is fail-closed by design
+          _ <- liftIO $ Tor.sendCiphertextOverTor Nothing "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion" framed
           let msg = Message { msgId = fromIntegral step, sender = BS.pack (map (fromIntegral . fromEnum) "group"), content = TE.encodeUtf8 txt, ciphertext = framed, timestamp = 0, isDisappearing = False, expiresAt = Nothing, ratchetStep = step }
           let updatedMsgs = Map.insertWith (++) gname [msg] (messages s)
           liftIO $ saveEncryptedMessages "hashchat_data" (currentProfile s) gname (sessionPass s) (updatedMsgs Map.! gname)
