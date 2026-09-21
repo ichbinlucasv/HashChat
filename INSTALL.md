@@ -525,17 +525,17 @@ Prefer Qubes disposables or Tails for high-risk builds.
 
 ## Haskell desktop removal criteria
 
-The Haskell tree (`hashchat.cabal`, `src/haskell/`, `app-desktop/`) is **not deleted in this pass** (too risky overnight). It remains compile-capable but **demoted**.
+The Haskell tree (`hashchat.cabal`, `src/haskell/`, `app-desktop/`) is **not deleted** (still too risky as a drive-by). It remains compile-capable but **demoted**. Status below reflects the Rust TUI as of the overnight Extreme/TUI posture pass.
 
 Remove the Haskell desktop path only when **all** of the following hold:
 
-1. Rust `hashchat-tui --features tui` covers the documented two-peer Tor path (`:listen`, contacts, send/recv) without relying on Brick/Cabal.
-2. Distro installers, `./run-tui`, `./build.sh`, Flatpak/Nix, and CI no longer reference Cabal as a user or release path.
-3. No open blocker that requires the Brick TUI for security review, release signing, or compatibility testing.
-4. A dedicated PR on `codeberg-primary` documents the deletion, updates SBOM/scripts that still mention Haskell, and confirms `cargo test --lib` + release TUI build stay green.
-5. Maintainer explicitly approves tree removal (not a drive-by cleanup).
+1. **MET** — Rust `hashchat-tui --features tui` covers the documented two-peer Tor path (`:listen`, contacts, send/recv, pending retry) without relying on Brick/Cabal.
+2. **PARTIAL / still open** — Distro installers and `./run-tui` prefer Rust and never fall back to Cabal while `cargo` can build. Opt-in Haskell remains via `HASHCHAT_ALLOW_HASKELL=1` / `./build.sh --haskell`. Flatpak/Nix/SBOM scripts still mention Cabal in transitional notes — not yet a Cabal-free release surface.
+3. **MET (current judgment)** — No open blocker that *requires* the Brick TUI for security review, release signing, or compatibility testing; Rust TUI is the review/demo path.
+4. **OPEN** — A dedicated PR on `codeberg-primary` that documents deletion, updates SBOM/scripts that still mention Haskell, and confirms `cargo test --lib` + release TUI build stay green has **not** been filed.
+5. **OPEN** — Maintainer has **not** explicitly approved tree removal.
 
-Until then: keep Cabal targets building if present; never recommend them for new installs.
+Until then: keep Cabal targets building if present; never recommend them for new installs. Do **not** delete Haskell in overnight polish commits.
 
 ---
 **Legal / funding**

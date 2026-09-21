@@ -1,7 +1,6 @@
-feat(persist): durable NetConfig (mode/dns/posture) in session blob v3
+feat(extreme): first-class TUI metadata gates + retirement checklist
 
-Persist network prefs inside the encrypted session wrap so :mode /
-:mode extreme survive restart. Load still accepts v1/v2 (defaults);
-save always writes v3. Env seeds cold start / new identity; blob wins
-after unlock. Extreme Tor-only gating kept fail-closed for listen,
-send, and :my-contact.
+Centralize Extreme refusals on NetConfig (contact-link export, groups,
+voice) and wire the Rust TUI so :my-contact is refused, :sas stays short,
+:status/:help announce locks, and group/voice stubs fail closed. Docs
+reflect honest TUI gating and Haskell removal criteria progress. No push.

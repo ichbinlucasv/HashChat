@@ -360,6 +360,7 @@ impl App {
 
     fn show_sas_command(&mut self, args: &str) {
         let args = args.trim();
+        let extreme = self.net.is_extreme();
         if args.is_empty() {
             if let Some((sas, tail)) = self.selected_contact_record().map(|c| {
                 (
@@ -367,8 +368,14 @@ impl App {
                     Self::onion_tail(&c.onion),
                 )
             }) {
-                self.messages
-                    .push(format!("Peer SAS {sas} (compare out-of-band) · …{tail}"));
+                // Extreme: short SAS only — avoid onion material in scrollback.
+                if extreme {
+                    self.messages
+                        .push(format!("Peer SAS {sas} (compare out-of-band)"));
+                } else {
+                    self.messages
+                        .push(format!("Peer SAS {sas} (compare out-of-band) · …{tail}"));
+                }
                 self.status_msg = format!("SAS {sas}");
             } else if !self.my_sas.is_empty() {
                 let mine = self.my_sas.clone();
@@ -383,9 +390,17 @@ impl App {
         match parse_signed_contact_link(args) {
             Ok(peer) => {
                 let sas = sas_for_signed(&peer);
-                let tail = Self::onion_tail(&peer.onion);
-                self.messages
-                    .push(format!("Link SAS {sas} · …{tail} (not added — use :add-contact)"));
+                // Never echo the signed URI; Extreme also skips onion tails.
+                if extreme {
+                    self.messages.push(format!(
+                        "Link SAS {sas} (not added — Extreme: use :add-contact privately)"
+                    ));
+                } else {
+                    let tail = Self::onion_tail(&peer.onion);
+                    self.messages.push(format!(
+                        "Link SAS {sas} · …{tail} (not added — use :add-contact)"
+                    ));
+                }
                 self.status_msg = format!("SAS {sas}");
             }
             Err(_) => {
@@ -407,7 +422,12 @@ impl App {
                 .as_ref()
                 .map(|s| s.identity.onion.as_str())
                 .unwrap_or("?");
-            self.status_msg = format!("Already listening as {onion}");
+            if self.net.is_extreme() {
+                let tail = Self::onion_tail(onion);
+                self.status_msg = format!("Already listening (Extreme · …{tail})");
+            } else {
+                self.status_msg = format!("Already listening as {onion}");
+            }
             return;
         }
         if self.session.is_none() {
@@ -435,18 +455,34 @@ impl App {
                 }
                 match self.persist_session() {
                     Ok(()) => {
-                        self.status_msg = format!(
-                            "Listening on {} (local :{})",
-                            hs.onion, hs.local_port
-                        );
-                        self.messages.push(
-                            "Hidden service published; accept loop running (framed wire v2)."
-                                .into(),
-                        );
-                        self.messages.push(
-                            "Share :my-contact; peer must :add-contact your link (and you theirs)."
-                                .into(),
-                        );
+                        if self.net.is_extreme() {
+                            let tail = Self::onion_tail(&hs.onion);
+                            self.status_msg = format!(
+                                "Listening (Extreme · …{tail} · local :{})",
+                                hs.local_port
+                            );
+                            self.messages.push(
+                                "Hidden service published (Extreme: Tor-only; contact-link export locked)."
+                                    .into(),
+                            );
+                            self.messages.push(
+                                "Peer exchange: use :add-contact with an out-of-band link; :my-contact is refused under Extreme."
+                                    .into(),
+                            );
+                        } else {
+                            self.status_msg = format!(
+                                "Listening on {} (local :{})",
+                                hs.onion, hs.local_port
+                            );
+                            self.messages.push(
+                                "Hidden service published; accept loop running (framed wire v2)."
+                                    .into(),
+                            );
+                            self.messages.push(
+                                "Share :my-contact; peer must :add-contact your link (and you theirs)."
+                                    .into(),
+                            );
+                        }
                         self.hs = Some(hs);
                         self.refresh_identity_display();
                         self.retry_pending(false);
@@ -859,10 +895,13 @@ impl App {
                 let saved = self.persist_net_after_mode_change();
                 let tag = if saved { "saved" } else { "not saved" };
                 self.status_msg = format!(
-                    "Posture extreme (Tor-only, {tag}). {}",
+                    "Posture extreme ({tag}). {}",
                     self.net.status_line()
                 );
                 self.messages.push(self.status_msg.clone());
+                if let Some(note) = self.net.extreme_lock_summary() {
+                    self.messages.push(note.into());
+                }
             }
             "standard" | "normal" => {
                 self.net.set_posture(PostureProfile::Standard);
@@ -880,9 +919,16 @@ impl App {
                         .into(),
                 );
                 self.messages.push(
-                    "Default Tor. I2P/clearnet refuse messenger sockets until implemented. Extreme locks Tor-only."
+                    "Default Tor. I2P/clearnet refuse messenger sockets until implemented."
                         .into(),
                 );
+                self.messages.push(
+                    "Extreme: Tor-only; refuses :my-contact export, groups, voice; SAS ok (short)."
+                        .into(),
+                );
+                if let Some(note) = self.net.extreme_lock_summary() {
+                    self.messages.push(note.into());
+                }
             }
             other => {
                 self.status_msg = format!("Unknown :mode argument: {other} (:mode help)");
@@ -930,7 +976,12 @@ impl App {
                     "Local sensitive data erased. Unlock with a new passphrase to continue.".into();
             }
             ":my-contact" => {
-                if let Err(e) = self.net.require_messenger_transport() {
+                if self.net.extreme_blocks_contact_export() {
+                    self.status_msg =
+                        "extreme posture refuses contact-link export (minimize link sharing)"
+                            .into();
+                    self.messages.push(self.status_msg.clone());
+                } else if let Err(e) = self.net.require_messenger_transport() {
                     self.status_msg = format!(":my-contact refused: {e}");
                     self.messages.push(self.status_msg.clone());
                 } else if self.my_contact_link.is_empty() {
@@ -948,12 +999,14 @@ impl App {
             ":status" | ":tor" => {
                 self.check_tor(true);
                 let probe = tor_probe(SOCKS_HOST, self.socks_port, CONTROL_PORT);
-                let onion = self
+                let onion_disp = self
                     .session
                     .as_ref()
                     .map(|s| {
                         if s.identity.onion.is_empty() {
                             "-".into()
+                        } else if self.net.is_extreme() {
+                            format!("…{}", Self::onion_tail(&s.identity.onion))
                         } else {
                             s.identity.onion.clone()
                         }
@@ -963,7 +1016,7 @@ impl App {
                 self.messages.push(format!(
                     "{} · onion={} · listening={} · pending={}",
                     probe.note,
-                    onion,
+                    onion_disp,
                     listening,
                     self.session
                         .as_ref()
@@ -971,6 +1024,9 @@ impl App {
                         .unwrap_or(0)
                 ));
                 self.messages.push(self.net.status_line());
+                if let Some(note) = self.net.extreme_lock_summary() {
+                    self.messages.push(note.into());
+                }
                 self.status_msg = self.tor_status.label(listening);
             }
             ":help" => {
@@ -997,9 +1053,34 @@ impl App {
                     "Keys: Tab focus · ↑↓ select contact · Enter select/send. Status never shows plaintext bodies."
                         .into(),
                 );
+                if let Some(note) = self.net.extreme_lock_summary() {
+                    self.messages.push(note.into());
+                } else {
+                    self.messages.push(
+                        "Posture: standard (use :mode extreme for Tor-only + metadata locks)."
+                            .into(),
+                    );
+                }
                 self.status_msg = "Help listed in chat.".into();
             }
             "" => {}
+            cmd if matches!(cmd, ":group" | ":groups" | ":voice" | ":record") => {
+                // No group/voice commands in this TUI; Extreme still refuses explicitly.
+                if matches!(cmd, ":voice" | ":record") {
+                    if self.net.extreme_blocks_voice() {
+                        self.status_msg = "extreme posture refuses voice".into();
+                    } else {
+                        self.status_msg =
+                            "Voice not available in this TUI (desktop text/Tor path only).".into();
+                    }
+                } else if self.net.extreme_blocks_groups() {
+                    self.status_msg = "extreme posture refuses groups".into();
+                } else {
+                    self.status_msg =
+                        "Groups not available in this TUI (desktop text/Tor path only).".into();
+                }
+                self.messages.push(self.status_msg.clone());
+            }
             other if other.starts_with(":add-contact ") => {
                 let link = other.strip_prefix(":add-contact ").unwrap_or("").trim();
                 self.add_contact_link(link);

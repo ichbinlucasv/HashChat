@@ -196,12 +196,17 @@ impl NetConfig {
             (DnsPreference::Custom, Some(addr)) => format!("dns=custom({addr})"),
             (d, _) => format!("dns={d}"),
         };
-        format!(
+        let base = format!(
             "mode={} · {} · posture={}",
             self.mode,
             dns,
             self.posture.as_str()
-        )
+        );
+        if self.is_extreme() {
+            format!("{base} · locks=tor-only,no-contact-export,no-groups,no-voice")
+        } else {
+            base
+        }
     }
 
     /// Select transport mode. Extreme posture refuses anything but Tor.
@@ -307,6 +312,38 @@ impl NetConfig {
     pub fn is_tor(&self) -> bool {
         self.mode == NetworkMode::Tor
     }
+
+    /// True when Extreme posture is active.
+    pub fn is_extreme(&self) -> bool {
+        self.posture == PostureProfile::Extreme
+    }
+
+    /// Extreme minimizes link sharing: refuse exporting signed contact URIs to
+    /// scrollback / clipboard-style display. Local SAS comparison remains OK.
+    pub fn extreme_blocks_contact_export(&self) -> bool {
+        self.is_extreme()
+    }
+
+    /// Groups are out of Extreme threat budget (TUI has no group commands yet;
+    /// helper is shared so future call sites stay consistent).
+    pub fn extreme_blocks_groups(&self) -> bool {
+        self.is_extreme()
+    }
+
+    /// Voice is out of Extreme threat budget (same shared-helper rationale).
+    pub fn extreme_blocks_voice(&self) -> bool {
+        self.is_extreme()
+    }
+
+    /// Short locked-feature note for `:status` / `:help` (no secrets).
+    pub fn extreme_lock_summary(&self) -> Option<&'static str> {
+        if !self.is_extreme() {
+            return None;
+        }
+        Some(
+            "Extreme active — locked: Tor-only mode; :my-contact / contact-link export; groups; voice. SAS ok (short). Prefer onion tails over full addresses in scrollback.",
+        )
+    }
 }
 
 fn write_persist_str(out: &mut Vec<u8>, s: &str) {
@@ -336,6 +373,9 @@ pub enum NetModeError {
     InvalidDns,
     InvalidPosture,
     ExtremeTorOnly,
+    ExtremeContactExport,
+    ExtremeGroups,
+    ExtremeVoice,
     CustomDnsRequired,
     I2pNotImplemented,
     ClearnetRefused,
@@ -348,6 +388,11 @@ impl NetModeError {
             NetModeError::InvalidDns => "invalid DNS preference (use system|quad9|custom)",
             NetModeError::InvalidPosture => "invalid posture (use standard|extreme)",
             NetModeError::ExtremeTorOnly => "extreme posture locks Tor-only",
+            NetModeError::ExtremeContactExport => {
+                "extreme posture refuses contact-link export (minimize link sharing)"
+            }
+            NetModeError::ExtremeGroups => "extreme posture refuses groups",
+            NetModeError::ExtremeVoice => "extreme posture refuses voice",
             NetModeError::CustomDnsRequired => "custom DNS requires an address",
             NetModeError::I2pNotImplemented => {
                 "I2P mode not implemented; messenger traffic refused"
@@ -506,5 +551,41 @@ mod tests {
         let cfg = NetConfig::default();
         let loaded = NetConfig::from_persist_bytes(&cfg.to_persist_bytes()).unwrap();
         assert_eq!(loaded, cfg);
+    }
+
+    #[test]
+    fn extreme_blocks_contact_export_and_features() {
+        let mut cfg = NetConfig::default();
+        assert!(!cfg.extreme_blocks_contact_export());
+        assert!(!cfg.extreme_blocks_groups());
+        assert!(!cfg.extreme_blocks_voice());
+        assert!(cfg.extreme_lock_summary().is_none());
+
+        cfg.set_posture(PostureProfile::Extreme);
+        assert!(cfg.is_extreme());
+        assert!(cfg.extreme_blocks_contact_export());
+        assert!(cfg.extreme_blocks_groups());
+        assert!(cfg.extreme_blocks_voice());
+        let summary = cfg.extreme_lock_summary().unwrap();
+        assert!(summary.to_ascii_lowercase().contains("extreme"));
+        assert!(summary.to_ascii_lowercase().contains("contact"));
+        assert_eq!(
+            NetModeError::ExtremeContactExport.as_str().contains("contact-link"),
+            true
+        );
+        assert!(NetModeError::ExtremeGroups.as_str().contains("groups"));
+        assert!(NetModeError::ExtremeVoice.as_str().contains("voice"));
+    }
+
+    #[test]
+    fn extreme_status_line_lists_locks() {
+        let mut cfg = NetConfig::default();
+        cfg.set_posture(PostureProfile::Extreme);
+        let line = cfg.status_line();
+        assert!(line.contains("posture=extreme"));
+        assert!(line.contains("no-contact-export"));
+        assert!(line.contains("tor-only"));
+        assert!(!line.contains("cookie"));
+        assert!(!line.contains("pass"));
     }
 }

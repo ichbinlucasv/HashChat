@@ -2,7 +2,7 @@
 
 **Snapshot:** 22 September 2026 (Europe/Zurich)  
 **Branch:** `codeberg-primary`  
-**Tip:** `5420e6439ffe3dff36825fad985679f72b5980a2`
+**Tip:** `298a7719718ccb69b8b490ffd207c0012e13c1f4`
 
 ## Executive summary
 
@@ -19,7 +19,8 @@ The Rust desktop path moved from scaffold to a usable, Tor-first two-peer TUI. T
 - **Nuclear wipe hardening — `958327a`:** added in-memory zeroization for session material and a prominent TUI confirmation flow; the threat-model limits of wipe remain documented.
 - **Mid-session DH forward secrecy — `893a85c`:** restored periodic send-side DH ratcheting after bootstrap without desynchronizing peers; persisted ratchet format v2 remains backward-loadable from v1, with the Android ratchet copy synchronized.
 - **TUI polish — `c542aff`:** added contact selection and short SAS presentation, selected-peer context, `:sas`, clearer `:help`, and Tor/SOCKS-gated `:retry` behavior without exposing plaintext bodies in status text.
-- **Durable NetConfig — `5420e64`:** session blob v3 stores mode / DNS preference / posture inside the passphrase wrap; TUI `:mode` / `:mode extreme` changes survive restart. Env still seeds cold start / new identity; loaded blob wins after unlock. `:my-contact` / listen / send remain transport-gated (fail-closed).
+- **Durable NetConfig — `c36caa2`:** session blob v3 stores mode / DNS preference / posture inside the passphrase wrap; TUI `:mode` / `:mode extreme` changes survive restart. Env still seeds cold start / new identity; loaded blob wins after unlock. `:my-contact` / listen / send remain transport-gated (fail-closed).
+- **Extreme TUI metadata gates — `298a771`:** `NetConfig::extreme_blocks_contact_export` (plus groups/voice helpers) centralize Extreme refusals. Rust TUI refuses `:my-contact` under Extreme, keeps short `:sas`, shortens onion display in `:status`/listen status, announces locks in `:help`/`:status`, and refuses `:group`/`:voice` stubs. Docs: THREATMODEL + EXTREME_PROFILE honesty pass; INSTALL Haskell removal criteria marked MET/PARTIAL/OPEN; ROADMAP item 0 one-line status.
 
 ## How to run
 
@@ -40,7 +41,7 @@ cargo build --release --locked --bin hashchat-tui --features tui
 
 Inside the TUI, unlock or create an identity, use `:listen`, then exchange signed `hashchat://` contacts with the other peer. The default transport is Tor and the application fails closed if the required Tor path is unavailable. Do not copy Tor cookies, onion private material, passphrases, or message bodies into logs, tickets, or chat.
 
-The tip commit records `cargo test --lib` passing with 60 tests and a successful `cargo build --bin hashchat-tui --features tui`.
+The tip commit records `cargo test --lib` passing with 62 tests and a successful `cargo build --bin hashchat-tui --features tui`.
 
 ## Remaining backlog
 
@@ -51,8 +52,8 @@ The tip commit records `cargo test --lib` passing with 60 tests and a successful
 
 ### Rust/TUI and posture
 
-- Extreme profile remains first-class; further metadata-surface gating beyond contact-link / listen / send can be tightened as needed.
-- Complete the Haskell retirement criteria; keep it transitional and non-recommended until removal is deliberate and documented.
+- Extreme TUI metadata surfaces gated (contact export / groups / voice stubs / short SAS). Remaining: deeper Extreme persistence minimization and Android contact-QR parity — not claimed done here.
+- Haskell retirement: criteria 1+3 met, 2 partial, 4+5 open (INSTALL.md). Keep transitional / non-recommended; do not delete.
 
 ### Android and cross-device parity
 

@@ -1,6 +1,6 @@
 # Extreme Profile — Ultra-Stripped Mode (Tier 3 Design Document)
 
-**Status**: Design + stub only. Not implemented.
+**Status**: Design doc + active runtime gates (Android + Rust TUI). Not a separate stripped binary.
 
 ## Philosophy
 For the most hostile environments, users may want to trade almost all features for the smallest possible attack surface and metadata footprint.
@@ -41,29 +41,19 @@ See ROADMAP.md "Post-v0.2 Philosophy Decision".
 
 If we choose "Accept Android is weaker", this Extreme profile becomes a first-class supported mode for the highest-risk users.
 
-**Wave 5 Implementation Progress**:
-- Android: `EXTREME_MODE` flag + hard gates now active on voice recording, group QR/join, cross-device export, and remaining demo-pass group paths.
-- Decoy profile fully disabled under Extreme.
-- TUI: Consistency notes added for future gating.
+**Wave 5+ Implementation Progress**:
+- Android: `EXTREME_MODE` flag + hard gates on voice recording, group QR/join, cross-device export, and remaining demo-pass group paths; decoy disabled under Extreme.
+- Rust TUI (overnight Extreme-as-first-class pass): `NetConfig` helpers (`extreme_blocks_contact_export`, groups/voice) drive consistent refusals. Under Extreme: Tor-only; `:my-contact` refused; `:sas` allowed as short local verification (no signed URI echo; onion tails avoided in scrollback); `:listen` / send / `:retry` stay Tor-gated; `:group`/`:voice` stubs refuse; `:status`/`:help` announce locks. Session persistence and onion listen still exist — this is **not** the full design-doc strip (no compile-time Extreme binary).
 - pre-tag-check and CI notes reference Extreme requirements.
 - Real zeroize added to VoiceStream as part of minimal surface work.
 
-This is no longer pure design — first real code enforcement exists.
+This is no longer pure design — real code enforcement exists on both platforms for the surfaces above.
 
-**Owner**: Continue expanding gates in subsequent waves. Update after philosophy decision.
+**Owner**: Continue expanding gates (Android contact-QR parity; further persistence minimization if philosophy decision chooses Option A). Update after philosophy decision.
 
-Wave 7 Simplex-style Contact Sharing update:
-- ContactAddress + ConnectionRequest types added (public onion + public key model, Simplex-inspired).
-- Extreme mode awareness: profile sharing should be disabled by default when EXTREME_MODE is active.
+Contact sharing (Simplex-inspired):
+- Contact links = public data only (onion + public identity key). Private key never leaves device.
+- Extreme: Rust TUI refuses exporting/displaying the signed contact link (`:my-contact`). Peer add via `:add-contact` with an out-of-band link remains possible (operator judgment). Android QR generate/scan must stay hard-disabled under Extreme.
+- Document in THREATMODEL that the QR/link itself is a metadata vector when shared.
 
-New recommendations (using Simplex as reference while leveraging HashChat strengths):
-- Contact QR = public data only (onion + public identity key). Private key never leaves device.
-- Primary way to add friends should be scanning/sharing these contact QRs (not manual entry).
-- After scanning a contact QR, the app should initiate a secure introduction using the existing Double Ratchet system.
-- In Extreme mode, generating or scanning contact QRs must be hard-disabled.
-- TUI: At minimum show the text link for the contact address; later generate real QR image.
-- Android: Add full generate + scan flow for individual contact QRs (similar to existing group QR).
-- Consider making contact addresses rotatable for stronger metadata resistance over time.
-- Clearly document in THREATMODEL the risks of the QR itself being a metadata vector when shared.
-
-Last updated: Wave 7 deep implementation of Simplex-style profile sharing on top of HashChat architecture.
+Last updated: overnight Extreme TUI metadata-surface gates (post durable NetConfig).
