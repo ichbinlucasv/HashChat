@@ -11,13 +11,17 @@ use std::ptr;
 mod ratchet;
 mod longterm_identity;
 mod contact_link;
+mod envelope;
+mod session_persist;
 
 pub use longterm_identity::LongTermIdentity;
+pub use longterm_identity::{export_encrypted as longterm_export_encrypted, import_encrypted as longterm_import_encrypted};
 pub use contact_link::{
     SignedContact, ContactLinkError, format_signed_contact_link, parse_signed_contact_link,
     parse_unsigned_contact_link_insecure, bootstrap_ratchet_from_signed_link, sas_fingerprint,
     sas_for_signed, canonical_payload,
 };
+pub use session_persist::{IdentityOnionState, PersistMode, save_disk, load_disk, wipe_disk, state_exists};
 
 // long-13: gated quantum module. Only compiled with `cargo build --features quantum`.
 // The module itself documents the strict constant-time / zeroize / side-channel
@@ -59,6 +63,9 @@ pub extern "C" fn rust_hmac_verify(msg: *const u8, len: usize) -> bool {
 pub extern "C" fn rust_wipe_files() {
     let _ = fs::remove_dir_all("tor/hidden_service");
     let _ = fs::remove_file("hashchat.db");
+    // H2: wipe passphrase-wrapped identity/onion state + any leftover machine.key
+    let _ = session_persist::wipe_disk(std::path::Path::new("hashchat_data"));
+    let _ = fs::remove_dir_all("hashchat_data");
 }
 
 #[no_mangle]
@@ -614,6 +621,9 @@ pub extern "C" fn rust_encrypt_blob_with_passphrase(
     unsafe {
         let pass = std::slice::from_raw_parts(passphrase, pass_len);
         let plaintext = std::slice::from_raw_parts(data, data_len);
+        if pass.is_empty() {
+            return false; // H2: refuse empty passphrase on secure blob path
+        }
 
         let mut salt = [0u8; SALT_LEN];
         let mut nonce_bytes = [0u8; NONCE_LEN];
@@ -668,6 +678,9 @@ pub extern "C" fn rust_decrypt_blob_with_passphrase(
         }
         let envelope = std::slice::from_raw_parts(data, data_len);
         let pass = std::slice::from_raw_parts(passphrase, pass_len);
+        if pass.is_empty() {
+            return false; // H2: refuse empty passphrase on secure blob path
+        }
 
         if envelope[0] != 1 {
             return false;
@@ -917,4 +930,204 @@ pub extern "C" fn rust_contact_sas(
         *sas_len = sas_bytes.len();
     }
     true
+}
+
+// =============================================================================
+// H2: Passphrase-wrapped identity + onion at-rest persistence FFI
+// =============================================================================
+
+use std::path::Path;
+
+/// Export long-term identity seed under Argon2id passphrase envelope.
+#[no_mangle]
+pub extern "C" fn rust_longterm_export_encrypted(
+    seed: *const u8,
+    passphrase: *const u8,
+    pass_len: usize,
+    out: *mut u8,
+    out_len: *mut usize,
+) -> bool {
+    if seed.is_null() || passphrase.is_null() || out_len.is_null() {
+        return false;
+    }
+    unsafe {
+        let seed_arr: [u8; 32] = match std::slice::from_raw_parts(seed, 32).try_into() {
+            Ok(a) => a,
+            Err(_) => return false,
+        };
+        let pass = std::slice::from_raw_parts(passphrase, pass_len);
+        let id = LongTermIdentity::from_seed(seed_arr);
+        match longterm_export_encrypted(&id, pass) {
+            Ok(blob) => {
+                if out.is_null() || *out_len < blob.len() {
+                    *out_len = blob.len();
+                    return false;
+                }
+                std::ptr::copy_nonoverlapping(blob.as_ptr(), out, blob.len());
+                *out_len = blob.len();
+                true
+            }
+            Err(_) => false,
+        }
+    }
+}
+
+/// Import long-term identity from Argon2id envelope into out_seed (32 bytes).
+#[no_mangle]
+pub extern "C" fn rust_longterm_import_encrypted(
+    passphrase: *const u8,
+    pass_len: usize,
+    data: *const u8,
+    data_len: usize,
+    out_seed: *mut u8,
+) -> bool {
+    if passphrase.is_null() || data.is_null() || out_seed.is_null() {
+        return false;
+    }
+    unsafe {
+        let pass = std::slice::from_raw_parts(passphrase, pass_len);
+        let envelope = std::slice::from_raw_parts(data, data_len);
+        match longterm_import_encrypted(envelope, pass) {
+            Ok(id) => {
+                let seed = id.seed_bytes();
+                std::ptr::copy_nonoverlapping(seed.as_ptr(), out_seed, 32);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+}
+
+/// Save identity+onion state under passphrase wrap (default) or insecure-dev machine.key.
+/// `insecure_dev != 0` enables PersistMode::InsecureDevMachineKey.
+/// `onion` / `onion_key` are length-prefixed buffers (may be empty / null if len 0).
+#[no_mangle]
+pub extern "C" fn rust_identity_state_save(
+    data_dir: *const c_char,
+    insecure_dev: u8,
+    passphrase: *const u8,
+    pass_len: usize,
+    seed: *const u8,
+    onion: *const u8,
+    onion_len: usize,
+    onion_key: *const u8,
+    onion_key_len: usize,
+) -> bool {
+    if data_dir.is_null() || seed.is_null() {
+        return false;
+    }
+    if passphrase.is_null() && pass_len != 0 {
+        return false;
+    }
+    unsafe {
+        let dir = match CStr::from_ptr(data_dir).to_str() {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        let pass = if pass_len == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(passphrase, pass_len)
+        };
+        let seed_arr: [u8; 32] = match std::slice::from_raw_parts(seed, 32).try_into() {
+            Ok(a) => a,
+            Err(_) => return false,
+        };
+        let onion_s = if onion_len == 0 || onion.is_null() {
+            String::new()
+        } else {
+            match std::str::from_utf8(std::slice::from_raw_parts(onion, onion_len)) {
+                Ok(s) => s.to_string(),
+                Err(_) => return false,
+            }
+        };
+        let okey = if onion_key_len == 0 || onion_key.is_null() {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts(onion_key, onion_key_len).to_vec()
+        };
+        let state = IdentityOnionState {
+            seed: seed_arr,
+            onion: onion_s,
+            onion_key: okey,
+        };
+        let mode = PersistMode::from_flags(insecure_dev != 0);
+        save_disk(Path::new(dir), mode, pass, &state).is_ok()
+    }
+}
+
+/// Load identity+onion state. Writes seed(32), onion into out_onion (*onion_len capacity),
+/// onion_key into out_onion_key (*onion_key_len capacity). Updates lengths to actual.
+#[no_mangle]
+pub extern "C" fn rust_identity_state_load(
+    data_dir: *const c_char,
+    insecure_dev: u8,
+    passphrase: *const u8,
+    pass_len: usize,
+    out_seed: *mut u8,
+    out_onion: *mut u8,
+    onion_len: *mut usize,
+    out_onion_key: *mut u8,
+    onion_key_len: *mut usize,
+) -> bool {
+    if data_dir.is_null() || out_seed.is_null() || onion_len.is_null() || onion_key_len.is_null()
+    {
+        return false;
+    }
+    unsafe {
+        let dir = match CStr::from_ptr(data_dir).to_str() {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        let pass = if pass_len == 0 {
+            &[][..]
+        } else {
+            if passphrase.is_null() {
+                return false;
+            }
+            std::slice::from_raw_parts(passphrase, pass_len)
+        };
+        let mode = PersistMode::from_flags(insecure_dev != 0);
+        let state = match load_disk(Path::new(dir), mode, pass) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        std::ptr::copy_nonoverlapping(state.seed.as_ptr(), out_seed, 32);
+        let ob = state.onion.as_bytes();
+        if out_onion.is_null() || *onion_len < ob.len() {
+            *onion_len = ob.len();
+            *onion_key_len = state.onion_key.len();
+            return false;
+        }
+        if out_onion_key.is_null() || *onion_key_len < state.onion_key.len() {
+            *onion_len = ob.len();
+            *onion_key_len = state.onion_key.len();
+            return false;
+        }
+        std::ptr::copy_nonoverlapping(ob.as_ptr(), out_onion, ob.len());
+        *onion_len = ob.len();
+        if !state.onion_key.is_empty() {
+            std::ptr::copy_nonoverlapping(
+                state.onion_key.as_ptr(),
+                out_onion_key,
+                state.onion_key.len(),
+            );
+        }
+        *onion_key_len = state.onion_key.len();
+        true
+    }
+}
+
+/// Returns true if hashchat_data/state.enc (or given dir) exists.
+#[no_mangle]
+pub extern "C" fn rust_identity_state_exists(data_dir: *const c_char) -> bool {
+    if data_dir.is_null() {
+        return false;
+    }
+    unsafe {
+        match CStr::from_ptr(data_dir).to_str() {
+            Ok(s) => state_exists(Path::new(s)),
+            Err(_) => false,
+        }
+    }
 }

@@ -345,5 +345,7 @@ launchTorIfNeeded cfg torrcPath = do
   putStrLn "Then the control port will be available."
   -- Future: use process to spawn tor with our torrc and wait for bootstrap.
 
--- Security note: Never log or persist the actual private key of the hidden service
+-- Security note (H2): Never log or write onion private keys as plaintext under
+-- hashchat_data/. App-held onion key material belongs in Argon2id-wrapped state.enc
+-- (session_persist). Prefer ADD_ONION DiscardPK unless keys are passphrase-wrapped.
 -- in plaintext. It should be stored encrypted or handled entirely by Tor.

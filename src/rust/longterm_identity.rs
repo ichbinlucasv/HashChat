@@ -5,6 +5,9 @@
 //! - x25519 static secret (authenticated static-DH bootstrap — NOT X3DH)
 //!
 //! Only public keys are ever placed in contact links. Private material stays local.
+//! At rest (audit H2): wrap the seed with Argon2id + AES-256-GCM via
+//! [`export_encrypted`] / [`import_encrypted`], or use [`crate::session_persist`]
+//! for identity+onion state. Empty passphrase is refused on the secure path.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use hkdf::Hkdf;
@@ -112,5 +115,54 @@ mod tests {
         let ab = a.x25519_dh(&b.x25519_public());
         let ba = b.x25519_dh(&a.x25519_public());
         assert_eq!(ab, ba);
+    }
+}
+
+// ============================================================================
+// Encrypted at-rest export (Argon2id envelope — audit H2)
+// ============================================================================
+
+use crate::envelope;
+
+/// Export the long-term seed as an Argon2id + AES-256-GCM envelope.
+/// Empty passphrase is refused.
+pub fn export_encrypted(
+    identity: &LongTermIdentity,
+    passphrase: &[u8],
+) -> Result<Vec<u8>, &'static str> {
+    envelope::seal(passphrase, &identity.seed_bytes())
+}
+
+/// Import a long-term identity from an Argon2id envelope.
+pub fn import_encrypted(
+    data: &[u8],
+    passphrase: &[u8],
+) -> Result<LongTermIdentity, &'static str> {
+    let plain = envelope::open(passphrase, data)?;
+    if plain.len() != 32 {
+        return Err("invalid long-term identity seed length");
+    }
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&plain);
+    Ok(LongTermIdentity::from_seed(seed))
+}
+
+#[cfg(test)]
+mod envelope_tests {
+    use super::*;
+
+    #[test]
+    fn identity_export_import_roundtrip() {
+        let id = LongTermIdentity::from_seed([9u8; 32]);
+        let blob = export_encrypted(&id, b"test-pass-phrase").unwrap();
+        let restored = import_encrypted(&blob, b"test-pass-phrase").unwrap();
+        assert_eq!(id.ed25519_public_bytes(), restored.ed25519_public_bytes());
+        assert_eq!(id.x25519_public_bytes(), restored.x25519_public_bytes());
+    }
+
+    #[test]
+    fn identity_empty_passphrase_refused() {
+        let id = LongTermIdentity::from_seed([1u8; 32]);
+        assert!(export_encrypted(&id, b"").is_err());
     }
 }

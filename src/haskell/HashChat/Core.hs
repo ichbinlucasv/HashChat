@@ -29,6 +29,13 @@ module HashChat.Core
   , mlockSensitiveRatchets
   , saveEncryptedMessages
   , loadEncryptedMessages
+  -- H2: passphrase-wrapped identity + onion at-rest (Rust session_persist)
+  , generateLongTermSeed
+  , saveIdentityOnionState
+  , loadIdentityOnionState
+  , identityStateExists
+  , signContactLinkFromSeed
+  , insecureDevPersistEnabled
   ) where
 
 import Control.Concurrent.STM
@@ -45,6 +52,8 @@ import Data.Word (Word8, Word16, Word32, Word64)
 import Database.SQLite.Simple
 import Foreign.Ptr
 import Foreign.C.Types (CChar)
+import Foreign.C.String (withCString, CString)
+import System.Environment (lookupEnv)
 import Foreign.Marshal.Alloc (malloc)
 import Foreign.Marshal.Array (withArray, peekArray, mallocArray, newArray)
 import Foreign.Storable (peek, poke)
@@ -112,6 +121,17 @@ foreign import ccall unsafe "rust_contact_link_verify" rust_contact_link_verify
 foreign import ccall unsafe "rust_longterm_generate" rust_longterm_generate
   :: Ptr Word8 -> IO Bool
 
+-- H2: passphrase-wrapped identity+onion persist + signed contact link from seed
+foreign import ccall unsafe "rust_identity_state_save" rust_identity_state_save
+  :: CString -> Word8 -> Ptr Word8 -> Int -> Ptr Word8
+  -> Ptr Word8 -> Int -> Ptr Word8 -> Int -> IO Bool
+foreign import ccall unsafe "rust_identity_state_load" rust_identity_state_load
+  :: CString -> Word8 -> Ptr Word8 -> Int -> Ptr Word8
+  -> Ptr Word8 -> Ptr Int -> Ptr Word8 -> Ptr Int -> IO Bool
+foreign import ccall unsafe "rust_identity_state_exists" rust_identity_state_exists
+  :: CString -> IO Bool
+foreign import ccall unsafe "rust_contact_link_sign" rust_contact_link_sign
+  :: Ptr Word8 -> CString -> Ptr Word8 -> Ptr Int -> IO Bool
 
 initProfile :: IO ProfileKey
 initProfile = do
@@ -602,3 +622,95 @@ readMaybe s = case reads s of
   [(x, "")] -> Just x
   _ -> Nothing
 
+
+-- =============================================================================
+-- H2: Identity + onion at-rest (Rust session_persist via FFI)
+-- Default: Argon2id(passphrase) wrap. Empty passphrase refused by Rust.
+-- Insecure-dev: HASHCHAT_INSECURE_DEV_PERSIST=1 or insecureDev=True → machine.key
+-- =============================================================================
+
+generateLongTermSeed :: IO (Maybe ByteString)
+generateLongTermSeed = do
+  out <- mallocArray 32
+  ok <- rust_longterm_generate out
+  if ok then Just . pack <$> peekArray 32 out else pure Nothing
+
+-- | Save identity seed + onion (+ optional onion private key bytes) under passphrase wrap.
+--   Never writes onion private material as a plaintext sibling file.
+saveIdentityOnionState
+  :: FilePath -> Bool -> ByteString -> ByteString -> String -> ByteString -> IO Bool
+saveIdentityOnionState dataDir insecureDev pass seed onion onionKey =
+  if BS.length seed /= 32
+    then pure False
+    else withCString dataDir $ \dir ->
+           withArray (unpack pass) $ \pp ->
+             withArray (unpack seed) $ \sp ->
+               withArray (unpack (BC.pack onion)) $ \op ->
+                 withArray (unpack onionKey) $ \okp ->
+                   rust_identity_state_save
+                     dir
+                     (if insecureDev then 1 else 0)
+                     pp (BS.length pass)
+                     sp
+                     op (length onion)
+                     okp (BS.length onionKey)
+
+loadIdentityOnionState
+  :: FilePath -> Bool -> ByteString -> IO (Maybe (ByteString, String, ByteString))
+loadIdentityOnionState dataDir insecureDev pass = do
+  seedPtr <- mallocArray 32
+  let onionCap = 256
+      keyCap = 4096
+  onionPtr <- mallocArray onionCap
+  keyPtr <- mallocArray keyCap
+  onionLenPtr <- malloc
+  keyLenPtr <- malloc
+  poke onionLenPtr onionCap
+  poke keyLenPtr keyCap
+  ok <- withCString dataDir $ \dir ->
+          withArray (unpack pass) $ \pp ->
+            rust_identity_state_load
+              dir
+              (if insecureDev then 1 else 0)
+              pp (BS.length pass)
+              seedPtr
+              onionPtr onionLenPtr
+              keyPtr keyLenPtr
+  if not ok
+    then pure Nothing
+    else do
+      seed <- pack <$> peekArray 32 seedPtr
+      oLen <- peek onionLenPtr
+      kLen <- peek keyLenPtr
+      onionBs <- peekArray oLen onionPtr
+      keyBs <- peekArray kLen keyPtr
+      pure $ Just (seed, BC.unpack (pack onionBs), pack keyBs)
+
+identityStateExists :: FilePath -> IO Bool
+identityStateExists dataDir =
+  withCString dataDir rust_identity_state_exists
+
+-- | Build signed contact link from a persisted 32-byte seed + onion.
+signContactLinkFromSeed :: ByteString -> String -> IO (Maybe String)
+signContactLinkFromSeed seed onion
+  | BS.length seed /= 32 = pure Nothing
+  | otherwise = do
+      let cap = 1024
+      outPtr <- mallocArray cap
+      outLenPtr <- malloc
+      poke outLenPtr cap
+      ok <- withArray (unpack seed) $ \sp ->
+              withCString onion $ \op ->
+                rust_contact_link_sign sp op outPtr outLenPtr
+      if not ok
+        then pure Nothing
+        else do
+          n <- peek outLenPtr
+          bs <- peekArray n outPtr
+          pure $ Just (BC.unpack (pack bs))
+
+-- | True when insecure-dev machine.key path is explicitly enabled.
+insecureDevPersistEnabled :: IO Bool
+insecureDevPersistEnabled = do
+  m <- lookupEnv "HASHCHAT_INSECURE_DEV_PERSIST"
+  pure (maybe False (const True) m)

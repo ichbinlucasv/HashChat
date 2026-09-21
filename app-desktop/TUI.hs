@@ -37,6 +37,12 @@ import HashChat.Core
   , ratchetPublicKey
   , newRatchet
   , ratchetSend
+  , generateLongTermSeed
+  , saveIdentityOnionState
+  , loadIdentityOnionState
+  , identityStateExists
+  , signContactLinkFromSeed
+  , insecureDevPersistEnabled
   )
 import qualified HashChat.Contact as Contact
 import HashChat.Contact (Contact(..), defaultContact, ContactAddress(..), generateContactAddress, contactAddressToLink, parseContactAddress, parseContactAddressInsecure, contactSas, contactToAddress)
@@ -94,6 +100,8 @@ data AppState = AppState
   , currentGroup    :: Maybe String                         -- active group for multi-member chat
   -- D: Per-profile proxy store (Wave 9 skeleton now being wired)
   , proxies         :: ProfileProxyStore                    -- profile -> SOCKS5/I2P/VPN config
+  -- H2: long-term identity seed (32B) loaded/saved via Rust Argon2id wrap
+  , longtermSeed    :: BS.ByteString
   }
 
 initialState :: AppState
@@ -118,6 +126,7 @@ initialState = AppState
   , groups          = Map.empty
   , currentGroup    = Nothing
   , proxies         = Map.empty   -- D: starts with default (local Tor) for all profiles
+  , longtermSeed    = BS.empty
   }
 
 -- === Real Encrypted Ratchet Persistence (Argon2id + AES-GCM) ===
@@ -389,12 +398,23 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
             liftIO $ putStrLn "=== MY CONTACT (signed static-DH + SAS) ==="
             liftIO $ putStrLn "WARNING: PUBLIC DATA ONLY. Private keys never leave this device."
             liftIO $ putStrLn "Bootstrap model: Ed25519-signed static X25519 DH (NOT X3DH). Compare SAS out-of-band."
-            let demoOnion = "myhashchatv3demoaddressforqr.onion"
-            addr <- liftIO $ generateContactAddress demoOnion
-            let link = contactAddressToLink addr
-            let sas  = contactSas addr
-            liftIO $ putStrLn $ "hashchat://contact link (copy or QR this): " ++ link
-            liftIO $ putStrLn $ "SAS fingerprint (compare verbally / OOB): " ++ sas
+            stNow <- get
+            let seed = longtermSeed stNow
+            onionAddr <- liftIO $ do
+              -- Prefer live Tor onion hostname if present; else offline placeholder
+              let hn = "tor/hidden_service/hostname"
+              ex <- doesFileExist hn
+              if ex then Prelude.head . lines <$> Prelude.readFile hn
+                    else pure "offline.onion"
+            if BS.length seed /= 32
+              then liftIO $ putStrLn "[SECURITY] No persisted long-term identity seed. Unlock with a passphrase first (H2)."
+              else do
+                mLink <- liftIO $ signContactLinkFromSeed seed onionAddr
+                case mLink of
+                  Just link -> do
+                    liftIO $ putStrLn $ "hashchat://contact link (copy or QR this): " ++ link
+                    liftIO $ putStrLn "[H2] Link signed with passphrase-wrapped long-term identity."
+                  Nothing -> liftIO $ putStrLn "[SECURITY] Failed to sign contact link from seed."
             liftIO $ putStrLn "============================================================"
             modify $ \st -> st { input = "", inputHistory = inputHistory st ++ [txt] }
       else if ":add-contact " `Data.List.isPrefixOf` inputStr
@@ -572,6 +592,7 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'w') [])) = do
     , inputHistory   = []
     , ratchets       = Map.empty
     , sessionPass    = BS.pack (replicate 64 0x00)  -- overwrite passphrase
+    , longtermSeed   = BS.replicate 32 0x00         -- overwrite identity seed
     , profiles       = Map.empty
     , historyIndex   = -1
     }
@@ -1019,16 +1040,69 @@ app = App
       liftIO $ putStrLn "[SECURITY] mlockall + sensitive ratchet mlock attempted at startup."
       pass <- liftIO $ promptPassphrase "Passphrase: "
 
-      let finalPass = if pass == TE.encodeUtf8 (T.pack "demo")
-                      then BS.pack (replicate 32 0x42)  -- obvious insecure default for demos only
-                      else pass
+      -- H2: empty passphrase refused on secure path (paranoid default)
+      insecureDev <- liftIO insecureDevPersistEnabled
+      let passEmpty = BS.null pass
+      finalPass <- if passEmpty && not insecureDev
+        then do
+          liftIO $ putStrLn "[SECURITY] Empty passphrase refused (H2). Set a real passphrase, or HASHCHAT_INSECURE_DEV_PERSIST=1 for machine.key (dev only)."
+          liftIO $ putStrLn "[SECURITY] Falling back to a one-shot unlock is disabled — re-enter a non-empty passphrase."
+          pass2 <- liftIO $ promptPassphrase "Passphrase (non-empty): "
+          if BS.null pass2 && not insecureDev
+            then do
+              liftIO $ putStrLn "[SECURITY] Still empty — aborting identity persist unlock; ratchets will not load."
+              pure BS.empty
+            else pure pass2
+        else if pass == TE.encodeUtf8 (T.pack "demo")
+          then do
+            liftIO $ putStrLn "[SECURITY] WARNING: 'demo' passphrase is weak. Do not use for real identities."
+            pure $ BS.pack (replicate 32 0x42)
+          else pure pass
 
-      liftIO $ putStrLn "[SECURITY] Unlocking ratchets with Argon2id + AES-GCM..."
+      liftIO $ putStrLn "[SECURITY] Unlocking identity + ratchets with Argon2id + AES-GCM..."
+      when insecureDev $
+        liftIO $ putStrLn "[SECURITY] HASHCHAT_INSECURE_DEV_PERSIST set — using raw machine.key wrap (INSECURE, CI/dev only)."
 
-      -- Note: Full mlockall on the passphrase is available via mlockMemory (see Core.hs)
-      -- For now we rely on the global mlockall call during wipe and strong OPSEC recommendations.
+      -- H2: load or create passphrase-wrapped long-term identity + onion address
+      let dataDir = "hashchat_data"
+          onionStr = Tor.getOnionAddress onion
+      seedLoaded <- if BS.null finalPass && not insecureDev
+        then pure BS.empty
+        else do
+          exists <- liftIO $ identityStateExists dataDir
+          if exists
+            then do
+              mState <- liftIO $ loadIdentityOnionState dataDir insecureDev finalPass
+              case mState of
+                Just (seed, _o, _k) -> do
+                  liftIO $ putStrLn "[H2] Restored long-term identity from Argon2id-wrapped state.enc"
+                  pure seed
+                Nothing -> do
+                  liftIO $ putStrLn "[SECURITY] Failed to decrypt identity state (wrong passphrase?). Generating fresh."
+                  mSeed <- liftIO generateLongTermSeed
+                  case mSeed of
+                    Just seed -> do
+                      ok <- liftIO $ saveIdentityOnionState dataDir insecureDev finalPass seed onionStr BS.empty
+                      if ok then liftIO $ putStrLn "[H2] Fresh identity saved (passphrase-wrapped)."
+                            else liftIO $ putStrLn "[SECURITY] Failed to save identity state."
+                      pure seed
+                    Nothing -> pure BS.empty
+            else do
+              mSeed <- liftIO generateLongTermSeed
+              case mSeed of
+                Just seed -> do
+                  ok <- liftIO $ saveIdentityOnionState dataDir insecureDev finalPass seed onionStr BS.empty
+                  if ok
+                    then liftIO $ putStrLn "[H2] Created passphrase-wrapped identity+onion state (no machine.key)."
+                    else liftIO $ putStrLn "[SECURITY] Failed to save identity state."
+                  pure seed
+                Nothing -> do
+                  liftIO $ putStrLn "[SECURITY] CSPRNG identity generation failed."
+                  pure BS.empty
 
-      loadedRatchets <- liftIO $ loadEncryptedRatchets "Default" finalPass
+      loadedRatchets <- if BS.null finalPass && not insecureDev
+        then pure Map.empty
+        else liftIO $ loadEncryptedRatchets "Default" finalPass
 
       -- Load message history using real encrypted persistence
       loadedMessages <- foldM (\acc (c, _) -> do
@@ -1043,6 +1117,7 @@ app = App
         , sessionPass     = finalPass
         , messages        = loadedMessages
         , securityPosture = realPosture
+        , longtermSeed    = seedLoaded
         }
 
       liftIO $ putStrLn $ "[OK] Loaded " ++ show (Map.size loadedRatchets) ++ " ratchet(s) with forward secrecy continuity."

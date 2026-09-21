@@ -41,6 +41,21 @@ We take reports seriously and will respond within 48 hours.
 5. **Android**:
    - Never commit native libraries built for release without stripping symbols.
 
+
+## At-rest crypto (desktop)
+
+**Default (paranoid):** long-term identity seed + onion material are wrapped with
+**Argon2id(passphrase) → AES-256-GCM** into `hashchat_data/state.enc`.
+Empty passphrase is refused. No raw `machine.key` is written on this path.
+
+**Insecure-dev only:** set `HASHCHAT_INSECURE_DEV_PERSIST=1` to use a raw
+`hashchat_data/machine.key` (mode 0600) wrap — for local CI/dev, never production.
+Onion / identity private material must not appear as sibling plaintext files under
+`hashchat_data/` (Tor may still keep HS keys under `tor/hidden_service/` when Tor
+itself persists them; prefer `DiscardPK` / passphrase-wrapped copies in app state).
+
+Ratchets and message logs already use the same Argon2id envelope family.
+
 ## Responsible Disclosure
 
 We appreciate responsible disclosure and will credit researchers (unless they prefer anonymity).

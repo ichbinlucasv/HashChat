@@ -157,7 +157,7 @@ createContactAddress onion edSeed x25519Pub = do
     }
 
 -- | Demo/TUI helper: fresh random ed25519 seed + x25519 pub, return signed address.
--- Production should persist the seed via Argon2id envelope (see longterm_identity.rs).
+-- Production persists the seed via Argon2id envelope (session_persist / longterm_identity.rs, audit H2).
 generateContactAddress :: String -> IO ContactAddress
 generateContactAddress onion = do
   drg0 <- getSystemDRG

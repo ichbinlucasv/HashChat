@@ -29,7 +29,8 @@
 ### 1. Cryptographic Protections
 - Double Ratchet with DH ratcheting + KDF chains (forward + future secrecy).
 - AES-256-GCM for all message encryption.
-- Argon2id + AES-256-GCM for all persistent sensitive state (ratchets + message logs).
+- Argon2id + AES-256-GCM for all persistent sensitive state (ratchets + message logs + **identity/onion state**, audit H2).
+- Desktop default at-rest path is **passphrase-wrapped** (`state.enc`). Raw `machine.key` exists only behind `HASHCHAT_INSECURE_DEV_PERSIST` (insecure-dev). Empty passphrase refused on the secure path.
 - Per-contact isolated ratchet state.
 - Skipped message key handling for out-of-order delivery.
 
@@ -52,7 +53,7 @@
 - **ContactAddress / profile sharing**: Implemented hashchat://contact/v1/<onion>/<len:hexpub> links + parse/generate roundtrip in Haskell (Contact.hs). Wired into both thin CLI and real Brick TUI (app-desktop/TUI.hs) with :my-contact / :add-contact. ConnectionRequest mirror for the "scanner replies" flow.
   - **Metadata reality**: Only public onion + public identity key in the QR/link. Private material never leaves device. Matches Simplex model and our burner philosophy.
   - **Progress on this gap (E)**: Desktop TUI now uses proper cryptographically secure random (via cryptonite) for the pub in generated contact QR links. Android has a basic generator. 
-  - Remaining: Real persisted per-profile long-term signing/identity keypair (XEd25519 or similar) generated and stored securely (Rust + Keystore on Android, equivalent on desktop), with only the public part exported for QR. This is still the biggest open item for full Simplex-style profile sharing strength.
+  - Progress (H2): Desktop now persists long-term identity seed + onion address via Rust `session_persist` (Argon2id passphrase wrap by default; insecure-dev `machine.key` opt-in). Public contact links signed from that seed (H1). Android Keystore-backed identity persist remains a follow-up.
   - Extreme mode: generation should be refused (notes added; full gate pending deeper Android/TUI posture integration).
 - **Transport (SOCKS5 foundation + I2P/bridges path)**: Generalized sendCiphertextOverTor + sendOverProxy(ProxyConfig) in Tor.hs. TUI and callsites updated to use it. Default = local Tor 9050.
   - **I2P**: Documented as next: run i2pd, point Socks5Proxy at its SOCKS port (usually 4444 or 9050-equivalent). Garlic routing gives different metadata/latency profile vs Tor (stronger against some correlation, weaker exit diversity).
@@ -73,7 +74,7 @@ These close more of the original expert table (transport priorities, Simplex QR 
   - Deletes `hashchat_data/`, Tor hidden service keys, databases.
   - Destroys in-memory ratchet objects.
 
-- Encrypted-at-rest everything (ratchets + messages) using user passphrase + Argon2id.
+- Encrypted-at-rest everything (ratchets + messages + identity/onion state) using user passphrase + Argon2id (H2).
 - Minimal attack surface: No network stack in the main process until transport is added. Pure local TUI + FFI to Rust.
 
 **Limitations (Honest):**
