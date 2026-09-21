@@ -13,6 +13,9 @@ mod longterm_identity;
 mod contact_link;
 mod envelope;
 mod session_persist;
+mod tor_socks;
+mod hidden_service;
+mod wire;
 
 pub use longterm_identity::LongTermIdentity;
 pub use longterm_identity::{export_encrypted as longterm_export_encrypted, import_encrypted as longterm_import_encrypted};
@@ -25,6 +28,16 @@ pub use session_persist::{
     IdentityOnionState, PersistedContact, SessionState, PersistMode,
     save_disk, load_disk, save_session, load_session, commit_outgoing, wipe_disk, state_exists,
 };
+pub use ratchet::{
+    DoubleRatchet, build_wire_aad, encrypt_with_key, decrypt_with_key, WIRE_VERSION_V2,
+};
+pub use tor_socks::{
+    is_loopback_host, is_onion_destination, probe as tor_probe, socks5_send, TorProbe,
+};
+pub use hidden_service::{
+    start_hidden_service_with_key, cookie_path_from_protocolinfo, HiddenService,
+};
+pub use wire::{frame_v2, unframe_v2};
 
 // long-13: gated quantum module. Only compiled with `cargo build --features quantum`.
 // The module itself documents the strict constant-time / zeroize / side-channel
@@ -135,7 +148,6 @@ pub extern "C" fn rust_secure_compare(a: *const u8, b: *const u8, len: usize) ->
 
 // ==================== Double Ratchet FFI (for message system) ====================
 
-use crate::ratchet::DoubleRatchet;
 
 static mut RATCHET_STORE: Vec<DoubleRatchet> = Vec::new();
 

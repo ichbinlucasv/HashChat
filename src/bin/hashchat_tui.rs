@@ -2,11 +2,11 @@
 //!
 //! Build: `cargo build --bin hashchat-tui --features tui`
 //!
-//! Uses existing crate APIs: session_persist, contact_link, LongTermIdentity, wipe.
+//! Uses crate APIs: session_persist, contact_link, LongTermIdentity, wipe,
+//! Tor ControlPort cookie auth + ADD_ONION listen, SOCKS send (fail-closed).
 //! Transport policy: Tor SOCKS only — no clearnet fallback.
 
 use std::io::{self, stdout};
-use std::net::TcpStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -16,9 +16,12 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use hashchat_rust::{
-    format_signed_contact_link, sas_fingerprint, wipe_local_sensitive, IdentityOnionState,
-    LongTermIdentity, PersistMode, PersistedContact, SessionState, load_session, save_session,
-    state_exists,
+    bootstrap_ratchet_from_signed_link, build_wire_aad, commit_outgoing, encrypt_with_key,
+    format_signed_contact_link, frame_v2, is_onion_destination, load_session,
+    parse_signed_contact_link, sas_fingerprint, save_session, socks5_send,
+    start_hidden_service_with_key, state_exists, tor_probe, unframe_v2, wipe_local_sensitive,
+    DoubleRatchet, HiddenService, IdentityOnionState, LongTermIdentity, PersistMode,
+    PersistedContact, SessionState, WIRE_VERSION_V2,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -36,6 +39,10 @@ const TEXT: Color = Color::Rgb(245, 245, 245);
 const DIM: Color = Color::Rgb(160, 160, 160);
 const DANGER: Color = Color::Rgb(255, 77, 77);
 const OK: Color = Color::Rgb(61, 220, 151);
+
+const SOCKS_HOST: &str = "127.0.0.1";
+const SOCKS_PORTS: [u16; 2] = [9050, 9150];
+const CONTROL_PORT: u16 = 9051;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -67,6 +74,8 @@ struct App {
     messages: Vec<String>,
     tor_status: TorStatus,
     last_tor_check: Instant,
+    socks_port: u16,
+    hs: Option<HiddenService>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -83,11 +92,16 @@ enum TorStatus {
 }
 
 impl TorStatus {
-    fn label(self) -> &'static str {
-        match self {
-            TorStatus::Checking => "Tor: checking…",
-            TorStatus::Available => "Tor: SOCKS ready",
-            TorStatus::Unavailable => "Tor: SOCKS unavailable",
+    fn label(self, listening: bool) -> String {
+        let base = match self {
+            TorStatus::Checking => "Tor: checking…".to_string(),
+            TorStatus::Available => "Tor: SOCKS ready".to_string(),
+            TorStatus::Unavailable => "Tor: SOCKS unavailable".to_string(),
+        };
+        if listening {
+            format!("{base} · listening")
+        } else {
+            base
         }
     }
 
@@ -124,6 +138,8 @@ impl App {
             messages: Vec::new(),
             tor_status: TorStatus::Checking,
             last_tor_check: Instant::now() - Duration::from_secs(60),
+            socks_port: 9050,
+            hs: None,
         }
     }
 
@@ -136,14 +152,13 @@ impl App {
         let id = session.identity.identity();
         let onion = session.identity.onion.clone();
         if onion.is_empty() {
-            // SAS without onion still useful for identity material; link needs Tor HS.
             self.my_sas = sas_fingerprint(
                 &id.ed25519_public_bytes(),
                 &id.x25519_public_bytes(),
                 "onion-pending.onion",
             );
             self.my_contact_link =
-                "(contact link available after Tor hidden service is configured)".into();
+                "(contact link available after :listen publishes a v3 onion)".into();
             return;
         }
         self.my_sas = sas_fingerprint(
@@ -158,6 +173,21 @@ impl App {
                     "(contact link unavailable — check onion address)".into();
             }
         }
+    }
+
+    fn persist_session(&mut self) -> Result<(), &'static str> {
+        let Some(session) = self.session.as_ref() else {
+            return Err("no session");
+        };
+        if self.passphrase.is_empty() {
+            return Err("passphrase required");
+        }
+        save_session(
+            Path::new(DATA_DIR),
+            PersistMode::Passphrase,
+            self.passphrase.as_bytes(),
+            session,
+        )
     }
 
     fn try_unlock(&mut self) {
@@ -200,9 +230,9 @@ impl App {
                             self.refresh_identity_display();
                             self.screen = Screen::Main;
                             self.status_msg =
-                                "Session created. Tor required for messaging.".into();
+                                "Session created. Use :listen when Tor ControlPort is ready.".into();
                             self.messages.push(
-                                "Session initialized. Use :my-contact for your signed link."
+                                "Session initialized. :listen then :my-contact to share a signed link."
                                     .into(),
                             );
                         }
@@ -222,8 +252,9 @@ impl App {
                     self.status_msg = "Session unlocked.".into();
                     if let Some(s) = self.session.as_ref() {
                         self.messages.push(format!(
-                            "Loaded {} contact(s). Transport: Tor only.",
-                            s.contacts.len()
+                            "Loaded {} contact(s), {} pending. Transport: Tor only.",
+                            s.contacts.len(),
+                            s.pending.len()
                         ));
                     }
                 }
@@ -234,8 +265,6 @@ impl App {
                 }
             }
         }
-        // Keep passphrase in memory only while session is active for re-saves;
-        // wipe confirm buffer.
         self.passphrase_confirm.zeroize();
         self.passphrase_confirm.clear();
     }
@@ -264,11 +293,319 @@ impl App {
         session.contacts.get(idx)
     }
 
+    fn listen(&mut self) {
+        if self.hs.is_some() {
+            let onion = self
+                .session
+                .as_ref()
+                .map(|s| s.identity.onion.as_str())
+                .unwrap_or("?");
+            self.status_msg = format!("Already listening as {onion}");
+            return;
+        }
+        if self.session.is_none() {
+            self.status_msg = "Unlock a session first.".into();
+            return;
+        }
+        let existing = self
+            .session
+            .as_ref()
+            .map(|s| s.identity.onion_key.clone())
+            .unwrap_or_default();
+        let existing_ref = if existing.is_empty() {
+            None
+        } else {
+            Some(existing.as_slice())
+        };
+        match start_hidden_service_with_key(SOCKS_HOST, CONTROL_PORT, existing_ref) {
+            Ok((hs, privkey)) => {
+                if let Some(session) = self.session.as_mut() {
+                    session.identity.onion = hs.onion.clone();
+                    if !privkey.is_empty() {
+                        session.identity.onion_key.zeroize();
+                        session.identity.onion_key = privkey;
+                    }
+                }
+                match self.persist_session() {
+                    Ok(()) => {
+                        self.status_msg = format!(
+                            "Listening on {} (local :{})",
+                            hs.onion, hs.local_port
+                        );
+                        self.messages.push(format!(
+                            "Hidden service published. Control connection held open."
+                        ));
+                        self.hs = Some(hs);
+                        self.refresh_identity_display();
+                        self.retry_pending();
+                    }
+                    Err(_) => {
+                        // Drop HS if we cannot persist onion material (fail closed on H2).
+                        drop(hs);
+                        self.status_msg =
+                            "Listen aborted: could not persist onion material.".into();
+                    }
+                }
+            }
+            Err(e) => {
+                // OPSEC: surface short reason only (no cookie bytes / paths with secrets).
+                self.status_msg = format!(":listen failed: {e}");
+                self.messages.push(self.status_msg.clone());
+            }
+        }
+    }
+
+    fn retry_pending(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        if session.pending.is_empty() {
+            return;
+        }
+        let waiting: Vec<(String, Vec<u8>)> = session.pending.drain(..).collect();
+        let mut fail = 0usize;
+        let mut ok = 0usize;
+        let mut remain = Vec::new();
+        for (onion, frame) in waiting {
+            match socks5_send(SOCKS_HOST, self.socks_port, &onion, 80, &frame) {
+                Ok(()) => ok += 1,
+                Err(_) => {
+                    remain.push((onion, frame));
+                    fail += 1;
+                }
+            }
+        }
+        for (o, f) in remain {
+            session.queue_pending(o, f);
+        }
+        let _ = self.persist_session();
+        self.status_msg = if fail == 0 {
+            format!("Delivered {ok} queued frame(s)")
+        } else {
+            format!("{ok} delivered, {fail} still queued")
+        };
+    }
+
+    fn drain_incoming(&mut self) {
+        let frames: Vec<Vec<u8>> = {
+            let Some(hs) = self.hs.as_ref() else {
+                return;
+            };
+            let mut out = Vec::new();
+            while let Some(f) = hs.try_recv() {
+                out.push(f);
+            }
+            out
+        };
+        for frame in frames {
+            match self.try_decrypt_incoming(&frame) {
+                Ok((peer, text)) => {
+                    self.messages.push(format!("[{peer}] {text}"));
+                    self.status_msg = format!("Received {} bytes from {peer}", frame.len());
+                }
+                Err(e) => {
+                    self.messages
+                        .push(format!("Incoming frame dropped ({e})"));
+                }
+            }
+        }
+    }
+
+    fn try_decrypt_incoming(&mut self, transport_frame: &[u8]) -> Result<(String, String), String> {
+        let (hint, step, sender_dh, ct) =
+            unframe_v2(transport_frame).map_err(|_| "malformed wire frame".to_string())?;
+        let pass = self.passphrase.as_bytes().to_vec();
+        let session = self.session.as_mut().ok_or_else(|| "no session".to_string())?;
+        let contacts = session.contacts.clone();
+        for c in &contacts {
+            let ratchet_bytes = session
+                .ratchets
+                .iter()
+                .find(|(id, _)| id == &c.id)
+                .map(|(_, b)| b.clone());
+            let Some(rb) = ratchet_bytes else {
+                continue;
+            };
+            let mut r = DoubleRatchet::from_bytes(&rb).map_err(|_| "ratchet restore".to_string())?;
+            let aad = build_wire_aad(WIRE_VERSION_V2, &hint, step, &sender_dh);
+            let remote = x25519_dalek::PublicKey::from(sender_dh);
+            match r.try_recv_decrypt(&remote, &ct, &aad) {
+                Ok((mut pt, _)) => {
+                    let text = String::from_utf8_lossy(&pt).to_string();
+                    pt.zeroize();
+                    session.set_ratchet_bytes(&c.id, r.to_bytes());
+                    let label = if c.display_name.is_empty() {
+                        c.id.clone()
+                    } else {
+                        c.display_name.clone()
+                    };
+                    let _ = save_session(
+                        Path::new(DATA_DIR),
+                        PersistMode::Passphrase,
+                        &pass,
+                        session,
+                    );
+                    return Ok((label, text));
+                }
+                Err(_) => continue,
+            }
+        }
+        Err("no matching ratchet".into())
+    }
+
+    fn add_contact_link(&mut self, link: &str) {
+        if self.session.is_none() {
+            self.status_msg = "Unlock first.".into();
+            return;
+        }
+        let local = self.session.as_ref().unwrap().identity.identity();
+        let boot = bootstrap_ratchet_from_signed_link(&local, link);
+        let parsed = parse_signed_contact_link(link);
+        match (boot, parsed) {
+            (Ok((ratchet, sas)), Ok(peer)) => {
+                let session = self.session.as_mut().unwrap();
+                let id = format!("c{}", session.contacts.len() + 1);
+                let onion_tail: String = peer.onion.chars().rev().take(12).collect::<String>().chars().rev().collect();
+                session.contacts.push(PersistedContact {
+                    id: id.clone(),
+                    display_name: sas.clone(),
+                    onion: peer.onion.clone(),
+                    x25519: peer.x25519,
+                    ed25519: peer.ed25519,
+                });
+                session.set_ratchet_bytes(&id, ratchet.to_bytes());
+                match self.persist_session() {
+                    Ok(()) => {
+                        self.status_msg = format!("Added contact (SAS {sas})");
+                        self.messages
+                            .push(format!("Contact {sas} — onion ends …{onion_tail}"));
+                        let n = self.contact_names().len();
+                        if n > 0 {
+                            self.selected_contact = Some(n - 1);
+                            self.contacts_state.select(Some(n - 1));
+                        }
+                    }
+                    Err(_) => self.status_msg = "Failed to persist contact.".into(),
+                }
+            }
+            (Err(_), _) => {
+                self.status_msg = "Contact refused (bad signature or format).".into();
+            }
+            (_, Err(_)) => {
+                self.status_msg = "Contact parse failed after verify.".into();
+            }
+        }
+    }
+
+    fn send_text(&mut self, text: &str) {
+        if self.tor_status != TorStatus::Available {
+            self.messages.push(
+                "Send refused: Tor SOCKS not available (Tor-only policy).".into(),
+            );
+            return;
+        }
+        let contact = match self.selected_contact_record() {
+            Some(c) => c.clone(),
+            None => {
+                self.messages
+                    .push("Select a contact before sending.".into());
+                return;
+            }
+        };
+        if !is_onion_destination(&contact.onion) {
+            self.messages
+                .push("Send refused: contact has no valid v3 .onion.".into());
+            return;
+        }
+
+        let session = match self.session.as_mut() {
+            Some(s) => s,
+            None => return,
+        };
+        let local = session.identity.identity();
+        let mut ratchet = if let Some((_, bytes)) =
+            session.ratchets.iter().find(|(id, _)| id == &contact.id)
+        {
+            match DoubleRatchet::from_bytes(bytes) {
+                Ok(r) => r,
+                Err(_) => {
+                    self.messages.push("Ratchet restore failed.".into());
+                    return;
+                }
+            }
+        } else if contact.x25519 != [0u8; 32] {
+            let shared = local.x25519_dh(&x25519_dalek::PublicKey::from(contact.x25519));
+            let mut r = DoubleRatchet::new();
+            r.init_symmetric(&shared);
+            r
+        } else {
+            self.messages.push(
+                "No ratchet for contact — add via :add-contact <signed link>.".into(),
+            );
+            return;
+        };
+
+        let hint = local.x25519_public_bytes();
+        let (mut msg_key, step) = ratchet.ratchet_send();
+        let sender_dh = ratchet.public_key().to_bytes();
+        let aad = build_wire_aad(WIRE_VERSION_V2, &hint, step, &sender_dh);
+        let ct = match encrypt_with_key(&msg_key, text.as_bytes(), &aad) {
+            Ok(c) => c,
+            Err(_) => {
+                msg_key.zeroize();
+                self.messages.push("Encrypt failed.".into());
+                return;
+            }
+        };
+        msg_key.zeroize();
+        let frame = frame_v2(&hint, step, &sender_dh, &ct);
+        let rbytes = ratchet.to_bytes();
+
+        // H3: durable queue commit before Tor send.
+        if commit_outgoing(
+            Path::new(DATA_DIR),
+            PersistMode::Passphrase,
+            self.passphrase.as_bytes(),
+            &contact.id,
+            rbytes.clone(),
+            &contact.onion,
+            frame.clone(),
+        )
+        .is_err()
+        {
+            self.messages
+                .push("Send aborted: durable commit failed.".into());
+            return;
+        }
+        // Mirror commit into in-memory session.
+        session.set_ratchet_bytes(&contact.id, rbytes);
+        session.queue_pending(&contact.onion, frame.clone());
+
+        let peer = if contact.display_name.is_empty() {
+            contact.id.as_str()
+        } else {
+            contact.display_name.as_str()
+        };
+        match socks5_send(SOCKS_HOST, self.socks_port, &contact.onion, 80, &frame) {
+            Ok(()) => {
+                self.messages
+                    .push(format!("[{peer}] sent {} bytes (committed+Tor)", frame.len()));
+                self.status_msg = format!("Sent {} bytes via SOCKS", frame.len());
+                // Pending remains for crash/retry (:retry); do not re-send immediately.
+            }
+            Err(e) => {
+                self.messages.push(format!(
+                    "[{peer}] queued offline ({e})"
+                ));
+                self.status_msg = "Queued: SOCKS send failed (frame committed)".into();
+            }
+        }
+    }
+
     fn handle_command(&mut self, cmd: &str) {
         let c = cmd.trim();
         match c {
             ":q" | ":quit" | ":exit" => {
-                // Caller checks a quit flag via status — we use a sentinel.
                 self.status_msg = "__QUIT__".into();
             }
             ":wipe" => {
@@ -276,6 +613,7 @@ impl App {
                 self.status_msg = "Type :wipe-confirm to erase local sensitive data.".into();
             }
             ":wipe-confirm" => {
+                self.hs = None;
                 wipe_local_sensitive();
                 if let Some(mut s) = self.session.take() {
                     s.clear_pending_secure();
@@ -297,54 +635,58 @@ impl App {
             ":my-contact" => {
                 if self.my_contact_link.is_empty() {
                     self.messages
-                        .push("No contact link yet (unlock first).".into());
+                        .push("No contact link yet (unlock + :listen first).".into());
                 } else {
-                    self.messages
-                        .push(format!("SAS: {}", self.my_sas));
+                    self.messages.push(format!("SAS: {}", self.my_sas));
                     self.messages
                         .push(format!("Contact: {}", self.my_contact_link));
                 }
             }
+            ":listen" => self.listen(),
+            ":retry" => self.retry_pending(),
             ":status" | ":tor" => {
                 self.check_tor(true);
-                self.messages
-                    .push(format!("{} (no clearnet fallback)", self.tor_status.label()));
+                let probe = tor_probe(SOCKS_HOST, self.socks_port, CONTROL_PORT);
+                let onion = self
+                    .session
+                    .as_ref()
+                    .map(|s| {
+                        if s.identity.onion.is_empty() {
+                            "-".into()
+                        } else {
+                            s.identity.onion.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| "-".into());
+                let listening = self.hs.is_some();
+                self.messages.push(format!(
+                    "{} · onion={} · listening={} · pending={}",
+                    probe.note,
+                    onion,
+                    listening,
+                    self.session
+                        .as_ref()
+                        .map(|s| s.pending.len())
+                        .unwrap_or(0)
+                ));
+                self.status_msg = self.tor_status.label(listening);
             }
             ":help" => {
                 self.messages.push(
-                    "Commands: :my-contact  :tor  :wipe  :quit  | Tab focus | Enter send (local stub)"
+                    "Commands: :listen  :my-contact  :add-contact <link>  :tor  :retry  :wipe  :quit"
                         .into(),
                 );
             }
             "" => {}
+            other if other.starts_with(":add-contact ") => {
+                let link = other.strip_prefix(":add-contact ").unwrap_or("").trim();
+                self.add_contact_link(link);
+            }
             other if other.starts_with(':') => {
                 self.messages
                     .push(format!("Unknown command: {other}  (:help)"));
             }
-            other => {
-                // Local-only chat stub — full Tor send path still lives in Haskell for now.
-                let peer = self
-                    .selected_contact_record()
-                    .map(|c| {
-                        if c.display_name.is_empty() {
-                            c.id.as_str()
-                        } else {
-                            c.display_name.as_str()
-                        }
-                    })
-                    .unwrap_or("(no contact)");
-                if self.tor_status != TorStatus::Available {
-                    self.messages.push(
-                        "Send refused: Tor SOCKS not available (Tor-only policy).".into(),
-                    );
-                } else {
-                    self.messages.push(format!("[{peer}] {other}"));
-                    self.messages.push(
-                        "(outbound Tor frame not yet wired in Rust TUI — use Haskell client for live send)"
-                            .into(),
-                    );
-                }
-            }
+            other => self.send_text(other),
         }
     }
 
@@ -353,15 +695,15 @@ impl App {
             return;
         }
         self.last_tor_check = Instant::now();
-        // Tor Browser / system Tor SOCKS — never fall back to clearnet.
-        let ports = [9050u16, 9150];
-        let ok = ports.iter().any(|p| {
-            TcpStream::connect_timeout(
-                &format!("127.0.0.1:{p}").parse().unwrap(),
-                Duration::from_millis(200),
-            )
-            .is_ok()
-        });
+        let mut ok = false;
+        for p in SOCKS_PORTS {
+            let probe = tor_probe(SOCKS_HOST, p, CONTROL_PORT);
+            if probe.socks_ok {
+                self.socks_port = p;
+                ok = true;
+                break;
+            }
+        }
         self.tor_status = if ok {
             TorStatus::Available
         } else {
@@ -370,7 +712,6 @@ impl App {
     }
 }
 
-/// Helper so we can zeroize seed after wipe without exposing internals further.
 trait SeedZeroize {
     fn seed_zeroize_hint(&mut self);
 }
@@ -474,7 +815,7 @@ fn draw_unlock(f: &mut ratatui::Frame, app: &App, area: Rect) {
     f.render_widget(body, chunks[1]);
 
     let foot = Paragraph::new(Line::from(Span::styled(
-        "Transport default: Tor · No clearnet fallback",
+        "Transport default: Tor · Cookie ControlPort · No clearnet fallback",
         Style::default().fg(DIM),
     )))
     .block(
@@ -497,13 +838,16 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
-    // Header
+    let listening = app.hs.is_some();
     let header = Paragraph::new(Line::from(vec![
         Span::styled(" # HashChat ", gold_style()),
         Span::styled("│ ", Style::default().fg(DIM)),
         Span::styled(format!("SAS {}", app.my_sas), Style::default().fg(GOLD)),
         Span::styled(" │ ", Style::default().fg(DIM)),
-        Span::styled(app.tor_status.label(), app.tor_status.style()),
+        Span::styled(
+            app.tor_status.label(listening),
+            app.tor_status.style(),
+        ),
     ]))
     .block(
         Block::default()
@@ -513,7 +857,6 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     );
     f.render_widget(header, root[0]);
 
-    // Body: contacts | chat
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(28), Constraint::Percentage(72)])
@@ -555,7 +898,7 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 
     let msg_lines: Vec<Line> = if app.messages.is_empty() {
         vec![Line::from(Span::styled(
-            "No messages. :help for commands.",
+            "No messages. :help for commands. :listen to publish onion.",
             Style::default().fg(DIM),
         ))]
     } else {
@@ -580,7 +923,6 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         .wrap(Wrap { trim: false });
     f.render_widget(chat, body[1]);
 
-    // Input
     let input_border = if app.focus == Focus::Input {
         Style::default().fg(GOLD)
     } else {
@@ -600,7 +942,6 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     );
     f.render_widget(input, root[2]);
 
-    // Status footer
     let status = Paragraph::new(Line::from(Span::styled(
         &app.status_msg,
         Style::default().fg(DIM),
@@ -651,6 +992,7 @@ fn run() -> io::Result<()> {
     let tick = Duration::from_millis(100);
     loop {
         app.check_tor(false);
+        app.drain_incoming();
         terminal.draw(|f| ui(f, &mut app))?;
 
         if !event::poll(tick)? {
@@ -663,7 +1005,6 @@ fn run() -> io::Result<()> {
             continue;
         }
 
-        // Global quit
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             break;
         }
@@ -759,7 +1100,7 @@ fn run() -> io::Result<()> {
         }
     }
 
-    // Best-effort wipe passphrase from process memory on exit.
+    app.hs = None;
     app.passphrase.zeroize();
     app.passphrase_confirm.zeroize();
 
@@ -769,7 +1110,6 @@ fn run() -> io::Result<()> {
 }
 
 fn main() {
-    // Refuse insecure-dev persist as default for this binary.
     if std::env::var_os("HASHCHAT_INSECURE_DEV_PERSIST").is_some() {
         eprintln!(
             "hashchat-tui: HASHCHAT_INSECURE_DEV_PERSIST is set; refusing to run (passphrase-only)."
