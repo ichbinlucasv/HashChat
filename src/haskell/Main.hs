@@ -123,7 +123,7 @@ cliMessageLoop ratchets messages = do
       cliMessageLoop Map.empty Map.empty
     ["my-contact"] -> do
       putStrLn "=== MY CONTACT (signed static-DH + SAS) ==="
-      putStrLn "WARNING: PUBLIC ONLY. Bootstrap = Ed25519-signed static X25519 (NOT X3DH). Compare SAS OOB."
+      putStrLn "WARNING: Public data only. Bootstrap = Ed25519-signed static X25519 (NOT X3DH). Compare SAS out-of-band."
       addr <- generateContactAddress "myhashchatv3demoaddressforqr.onion"
       putStrLn $ contactAddressToLink addr
       putStrLn $ "SAS: " ++ contactSas addr
@@ -190,16 +190,17 @@ ratchetDemo = do
   putStrLn "Initial ratchet created."
 
   (k1, s1) <- ratchetSend rid
-  putStrLn $ "Send step " ++ show s1 ++ " -> key: " ++ Prelude.take 8 (show (BS.unpack k1)) ++ "..."
+  -- OPSEC: never print key material (even truncated) to the terminal
+  putStrLn $ "Send step " ++ show s1 ++ " -> message key derived (" ++ show (BS.length k1) ++ " bytes, not shown)"
 
   (k2, s2) <- ratchetSend rid
-  putStrLn $ "Send step " ++ show s2 ++ " -> key: " ++ Prelude.take 8 (show (BS.unpack k2)) ++ "..."
+  putStrLn $ "Send step " ++ show s2 ++ " -> message key derived (" ++ show (BS.length k2) ++ " bytes, not shown)"
 
-  putStrLn "Ratchet advanced successfully (forward secrecy in action)."
+  putStrLn "Ratchet advanced (forward secrecy: prior message keys discarded)."
   putStrLn "============================"
 
 -- Legacy stub functions removed (Critical cleanup - rec-01)
--- These were dead code from early development. Removed as part of expert OPSEC/credibility pass.
+-- Dead stubs from early development removed.
 
 validateKeypairFreshness :: IO Bool
 validateKeypairFreshness = pure True

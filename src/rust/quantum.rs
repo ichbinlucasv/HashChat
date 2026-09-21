@@ -8,7 +8,7 @@
 // It is intentionally a skeleton / stub for v0.2.
 //
 // All future production implementation MUST satisfy the requirements listed
-// below. These are non-negotiable for a "maximum paranoid" messenger.
+// below. These are required before any production PQ path.
 //
 // SECURITY REQUIREMENTS (must be enforced in any real implementation):
 // - Constant-time: all KEM operations, encoding, and comparisons must be

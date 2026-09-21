@@ -1,6 +1,6 @@
 # HashChat
 
-> **Maximum-anonymity messenger** built with Haskell + Rust.
+> Anonymous messenger built with Haskell + Rust.
 > See [SECURITY.md](SECURITY.md) before contributing.
 
 **Repository Status (as of 2026)**
@@ -24,29 +24,29 @@ Quick start:
 4. Press `v` to test voice recording (real mic on most modern desktops)
 5. Use `:set-proxy` if you're in Qubes or behind a VPN
 
-The TUI is text-based but deliberately designed to be usable by normal people on the 5 recommended OSes while keeping the paranoid security model. Full GUI is not planned unless it can be done without increasing attack surface.
+The TUI is text-based and aimed at normal users on the five recommended OSes without expanding the security model. A full GUI is not planned unless it can be done without increasing attack surface.
 
 See the expanded "Desktop Runtime Notes" section in INSTALL.md for your specific OS.
 
-**Presidential-grade anonymous messenger** — Strong SimplexChat-style feature parity (burner profiles, groups with sender keys, contact actions, voice, QR-style sharing) with Session-like metadata resistance. Powered by a Rust Double Ratchet core + Tor v3 hidden services.
+**Anonymous messenger** — Burner profiles, sender-key groups, contact actions, voice, and QR-style contact links. Rust Double Ratchet core over Tor v3 hidden services. Designed for metadata resistance; see THREATMODEL.md for honest limits.
 
-Note on "look": The desktop version is a powerful text-based TUI (black + gold theme, dense security information, explicit OPSEC cues). It prioritizes minimal attack surface and information density over graphical polish. It does not look like a modern GUI messenger (e.g. SimplexChat desktop). This is intentional for the threat model.
+Note on appearance: The desktop client is a text TUI (black + gold theme, dense status/security cues). It prioritizes a small attack surface and information density over graphical polish. That choice is intentional for the threat model.
 
-**No phone numbers. No user IDs. No central servers. No logs. No metadata.**
+**No phone numbers or central user IDs. Tor-only transport. No central servers or server-side message logs.** (Endpoint and network adversaries still exist — see THREATMODEL.md.)
 
-**Current Status (as of this build)**: We have implemented the majority of the hard paranoid features and SimplexChat-level UX parity.
+**Current status (as of this build)**: Core crypto, Tor transport, persistence, and most desktop/Android UX features listed below are implemented.
 
 ### Current Working Features (What Actually Works Today)
-**Paranoid Core**
+**Core security**
 - Real Double Ratchet (KDF chains, DH ratcheting, skipped keys) in Rust with mlock + basic seccomp
 - Bidirectional Tor v3 hidden services with proper sender-header framing
 - Encrypted-at-rest persistence (Argon2id + AES-GCM) for ratchets, messages, and groups
-- Nuclear Panic Wipe (7-pass shred + Rust zeroize + kernel drop_caches + mlock)
+- Panic wipe (multi-pass shred + Rust zeroize + kernel drop_caches + mlock)
 - Dynamic Security Posture (real environment checks + action refusals in low posture)
 - Burner profiles + plausible deniability decoy profiles with auto-wipe on switch
 - Disappearing messages with ratchet key erasure
 
-**SimplexChat-Level UX Parity (both TUI and Android)**
+**Desktop / Android UX (both platforms)**
 - Contact actions: Block, Mute, Delete chat, Report suspicious, View security info, Set disappearing timer
 - Group chats with sender-key forward secrecy + member management + QR join
 - Voice messages: chunked ratchet streaming + playback with seek bars (Android RecyclerView + TUI ffplay)
@@ -65,14 +65,12 @@ Note on "look": The desktop version is a powerful text-based TUI (black + gold t
 - Nix cross-compile path for Android Rust libs
 - Qubes/Tails disposable VM build scripts that enforce clean-security + anti-forensics
 
-We are now in the "polish to production" phase.
-
-We are very close to a production-grade, auditable, paranoid messenger that can earn real user respect.
+Work continues on polish, tests, and documentation toward a stable, auditable release.
 
 ### Screenshots / Demo (Text Descriptions)
-- **TUI**: Black background, gold titles, contact list on left, active chat in center, input bar at bottom. Press 'g' for group menu, 'v' for voice, 'a' for contact actions (Block/Report/Delete/Disappear), 'w' for nuclear wipe.
-- **Android**: Black + gold theme, RecyclerView chat with gold bubbles for your messages, long-press for full Simplex action menu, dedicated group management screen with member list + QR, voice recording + playback with seek bar.
-- **Flatpak**: One `nix build` produces a signed, reproducible .flatpak that runs the exact same paranoid TUI in a sandbox.
+- **TUI**: Black background, gold titles, contact list on left, active chat in center, input bar at bottom. Press 'g' for group menu, 'v' for voice, 'a' for contact actions (Block/Report/Delete/Disappear), 'w' for panic wipe.
+- **Android**: Black + gold theme, RecyclerView chat with gold bubbles for your messages, long-press contact actions, dedicated group management screen with member list + QR, voice recording + playback with seek bar.
+- **Flatpak**: One `nix build` produces a signed, reproducible .flatpak that runs the same TUI in a sandbox.
 
 (Demo videos and real screenshots will be added before v0.2 tag.)
 
@@ -109,15 +107,15 @@ See [INSTALL.md](INSTALL.md) for exact steps on Fedora.
 
 ### Core Design (Implemented)
 - Per-profile random ed25519/x25519 keys + per-contact Double Ratchet (real KDF + DH + skipped keys)
-- Tor v3 hidden services only (real bidirectional framed messaging with sender hints)
+- Tor v3 hidden services only (bidirectional framed messaging with sender hints)
 - Sender-key groups with forward secrecy + encrypted persistence
 - Voice streaming: per-chunk ratchet encryption + playback with seek (Android + TUI)
 - Android: RecyclerView chat + group management + Keystore + biometric ratchet unlock + QR
 - Pure-Nix reproducible Flatpak (no external scripts)
-- Nuclear Panic Wipe (7-pass + mlock + kernel anti-forensics + Rust zeroize)
+- Panic wipe (multi-pass + mlock + kernel anti-forensics + Rust zeroize)
 - Dynamic Security Posture (real environment inspection + action refusals)
 - Burner + Decoy profiles with auto-wipe
-- SimplexChat button/feature parity (block, report, delete, voice, groups, QR, disappearing, etc.) on both platforms (black + #FFD700 gold theme)
+- Contact/group actions (block, report, delete, voice, groups, QR, disappearing, etc.) on both platforms (black + #FFD700 gold theme)
 
 ### Security Features
 - Constant-time crypto in Rust (ring + zeroize)

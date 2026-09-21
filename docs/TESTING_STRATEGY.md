@@ -33,7 +33,7 @@ Emulators are useful for CI smoke tests but **insufficient** for a paranoid mess
 2. **Android mlock** (high): Confirm that ratchet material is actually locked (use gdb or /proc/<pid>/maps inspection; current impl is best-effort via libc mlock from Rust init).
 3. **Keystore + Biometric**: Actual StrongBox / TEE protection + BiometricPrompt gate on export/import. Test "what happens if biometric fails 3x".
 4. **Posture live re-eval**: Debugger attached, airplane mode, root detection (on stock), container detection. Verify isActionAllowedInPosture actually blocks voice/groups/file/decoy in LOW.
-5. **Wipe nuclear path**: Full panic button on real device (verify all temp voice files, groups.enc, Keystore blobs, memory are gone post-finish()).
+5. **Panic wipe path**: Full panic button on real device (verify all temp voice files, groups.enc, Keystore blobs, memory are gone post-finish()).
 6. **Cross-device ratchet export**: Real QR or file transfer between two devices, import, continue chat with forward secrecy intact. Source device must wipe after export.
 
 ## CI vs Real

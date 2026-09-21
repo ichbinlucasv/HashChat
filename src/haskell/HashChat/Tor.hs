@@ -121,6 +121,7 @@ sendTorCommand cfg cmd = do
     hSetBuffering h LineBuffering
 
     -- M1: NEVER send bare AUTHENTICATE. Cookie auth only; fail closed if cookie unreadable.
+    -- OPSEC: cookie bytes are sent to the control port only — never print or log the hex.
     hPutStrLn h "PROTOCOLINFO 1"
     protoLines <- readControlReply h
     case cookiePathFromProtocolInfo protoLines of
@@ -153,7 +154,7 @@ startHiddenService cfg = do
   createDirectoryIfMissing True (takeDirectory $ torDataDir cfg)
 
   let hostnameFile = hiddenServiceDir cfg ++ "/hostname"
-  let privKeyFile  = hiddenServiceDir cfg ++ "/hs_ed25519_secret_key"
+  -- DiscardPK path: do not reference or write hs_ed25519_secret_key here.
 
   exists <- doesFileExist hostnameFile
   if exists
@@ -161,14 +162,13 @@ startHiddenService cfg = do
       onion <- readFile hostnameFile
       pure $ OnionAddress (head $ lines onion)
     else do
-      -- In production we would read the private key and use ADD_ONION with it
-      -- For now we create a fresh one and persist the hostname
+      -- DiscardPK: Tor does not retain the onion private key after ADD_ONION.
+      -- Persist hostname only; never log or write HS private keys from this path.
       let cmd = "ADD_ONION NEW:ED25519-V3 Flags=DiscardPK Port=80,127.0.0.1:8080"
       resp <- sendTorCommand cfg cmd
       let onion = extractOnion resp
       writeFile hostnameFile onion
-      -- Note: Real private key should be read from Tor's hidden_service dir
-      putStrLn "[Tor] New hidden service created. Private key is in Tor's data directory."
+      putStrLn "[Tor] New hidden service created (DiscardPK; private key not retained)."
       pure $ OnionAddress onion
 
 extractOnion :: String -> String

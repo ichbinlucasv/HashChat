@@ -50,7 +50,7 @@ These logs are part of the pre-tag audit trail.
 4. Run `./scripts/clean-security.sh --strict`.
 5. Build or install the TUI.
 6. Run `./run-tui`.
-7. Perform the test areas from the evidence template (especially voice recording, nuclear wipe, posture, groups).
+7. Perform the test areas from the evidence template (especially voice recording, panic wipe, posture, groups).
 8. After session, power off the machine without saving persistence if possible.
 
 **Key things to verify on Tails**:
@@ -70,7 +70,7 @@ These logs are part of the pre-tag audit trail.
 - Voice recording + playback + post-playback wipe (check with `adb shell` or file manager for leftover audio).
 - Biometric + Keystore ratchet unlock behavior.
 - Posture detection (attach debugger, enable airplane mode, test refusals).
-- Nuclear wipe button — verify `groups.enc`, ratchet blobs, and temp voice files are gone.
+- Panic wipe button — verify `groups.enc`, ratchet blobs, and temp voice files are gone.
 - Group creation + QR join from another device.
 - Cross-device ratchet export (if testing that feature).
 
@@ -91,7 +91,7 @@ adb shell ls /data/data/<package>/files/   # check what survives wipe
 ## Test Area Priority (v0.2 Focus)
 
 1. **Voice completeness** (highest priority)
-2. **Nuclear wipe effectiveness**
+2. **Panic wipe effectiveness**
 3. **Posture refusals in real environments**
 4. **Groups + QR join under Strict/Extreme mode**
 5. **Contact QR / ContactAddress flows**

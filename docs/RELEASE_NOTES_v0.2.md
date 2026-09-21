@@ -3,18 +3,18 @@
 **Date**: [Current]
 **Tag**: v0.2-preview (to be signed after final history clean)
 
-## Executive Summary (Cybersecurity Expert View)
+## Executive summary
 
-HashChat v0.2 represents a major milestone in building a truly paranoid, metadata-resistant anonymous messenger using **only Haskell + Rust**.
+HashChat v0.2 is a preview milestone for a Tor-only, metadata-resistant messenger in **Haskell + Rust**.
 
-This release delivers on the core promise: maximum resistance to surveillance, device compromise (Pegasus-class), and metadata analysis, while maintaining usability and SimplexChat-level feature parity on both Desktop (TUI) and Android.
+It ships Double Ratchet crypto, Tor v3 transport, burner/decoy profiles, and desktop/Android UX features listed below. It does **not** defeat full device compromise (e.g. Pegasus-class implants); see THREATMODEL.md.
 
 **Key Achievements**:
 - Full Double Ratchet with forward secrecy, skipped keys, zeroization.
 - Real Tor v3 hidden services with proper framing.
 - Burner profiles + decoy for plausible deniability.
 - Dynamic Security Posture that actually gates dangerous actions (live on both platforms).
-- Nuclear-grade wipe with kernel anti-forensics.
+- Panic wipe with multi-pass shred and kernel anti-forensics helpers.
 - Cross-device ratchet export using real Argon2id + AES-256-GCM envelope on Android.
 - Voice with per-chunk ratchet + explicit post-playback wipe feedback in UI.
 - Groups with sender keys.

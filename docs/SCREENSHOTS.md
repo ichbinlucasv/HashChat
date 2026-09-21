@@ -34,7 +34,7 @@
 - Show "hashchat://group/..." QR-style link text
 - Member list with sender-key ratchets
 
-### 5. 'a' actions menu (Simplex parity)
+### 5. 'a' actions menu 
 - Long-press equivalent: full list (Block, Report, Delete, Mute, Disappearing timer, Security Info / ratchet step / E2EE posture)
 
 **Capture tip**: Use `gnome-screenshot`, `scrot`, or `grim` on Wayland. Crop to content. Optimize PNG size (< 200KB each recommended).
@@ -49,7 +49,7 @@ Use Android emulator (API 34+, dark theme) or real device. Disable system bars i
 - Bottom input + gold voice mic button
 - "via Tor v3 · Double Ratchet" meta under messages
 
-### 2. Long-press actions (exact Simplex parity)
+### 2. Long-press actions (contact actions)
 - Long-press a message → dialog with: Block / Report / Delete / Disappear (timer menu) / Security Info (shows ratchet step + E2EE + wipe status)
 - Matches TUI 'a' menu 1:1
 

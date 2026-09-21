@@ -9,7 +9,7 @@
 
 ## Background
 
-HashChat already has a strong "burner + decoy profile" model with Dynamic Security Posture and nuclear wipe.
+HashChat already has a strong "burner + decoy profile" model with Dynamic Security Posture and panic wipe.
 
 Some users (journalists, activists, high-value targets in very hostile environments) may need an even smaller attack surface than the current model allows.
 
@@ -62,7 +62,7 @@ A dedicated, heavily restricted operating mode with the following hard gates:
 Keep only the current model:
 - Burner profiles + optional decoy
 - Dynamic Security Posture (Strict mode)
-- Nuclear wipe as the main panic tool
+- Panic wipe as the main panic tool
 - User education + documentation instead of code-level feature removal
 
 **Pros**:
