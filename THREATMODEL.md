@@ -28,6 +28,7 @@
 
 ### 1. Cryptographic Protections
 - Double Ratchet with DH ratcheting + KDF chains (forward + future secrecy).
+- **Send-side DH (honest):** After signed symmetric bootstrap, the first reply must stay on the shared chain (no DH merely because `remote_dh` was learned — that desynced peers; fixed in 7d116c8). Mid-session, once both sides have learned wire DH publics, the sender performs a DH ratchet every `DH_SEND_EVERY` (5) messages: fresh local ephemeral first, then matching recv-side DH when the header public changes. Symmetric chain FS still applies between DH steps. Remaining limits: no explicit ACK that the peer persisted our prior public (best-effort under reliable Tor HS streams); not a full Signal-style DH-every-turn after every receive; Android copy must stay byte-synced with `src/rust/ratchet.rs`.
 - AES-256-GCM for all message encryption.
 - Argon2id + AES-256-GCM for all persistent sensitive state (ratchets + message logs + **identity/onion state**, audit H2).
 - Desktop default at-rest path is **passphrase-wrapped** (`state.enc`). Raw `machine.key` exists only behind `HASHCHAT_INSECURE_DEV_PERSIST` (insecure-dev). Empty passphrase refused on the secure path.
@@ -43,7 +44,7 @@
 
 **Current Gaps (Honest Assessment After Latest Pass):**
 - Full bidirectional Tor v3 hidden service + framing is wired on desktop and partially on Android (receiver thread + JNI feed).
-- Real Double Ratchet with skipped keys, zeroization, and full binary serialization is now present on **both** desktop and Android (high-4 completed for core).
+- Real Double Ratchet with skipped keys, zeroization, and full binary serialization is now present on **both** desktop and Android (high-4 completed for core). Periodic send-side DH (`DH_SEND_EVERY`) restores mid-session DH FS without breaking two-peer bootstrap; see Cryptographic Protections above for residual limits.
 - Android ratchet export now uses **real Argon2id + AES-256-GCM** envelope (v2) instead of demo XOR. This is a major OPSEC improvement for groups and cross-device.
 - Voice chunking with per-chunk ratchet forward secrecy + real SeekBar + wipe on both sides.
 - Group sender-key architecture + persistence with encrypted storage.

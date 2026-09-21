@@ -1,8 +1,14 @@
-fix(opsec): harden nuclear wipe — memory zeroize + loud TUI confirm
+fix(rust): mid-session send-side DH FS without bootstrap desync
 
-- SessionState::wipe_memory_secure clears pending frames, ratchet maps,
-  onion_key, seed, and contacts (pair with wipe_disk / wipe_local_sensitive)
-- TUI :wipe → full-screen DANGER confirm; :wipe-confirm zeroizes passphrase
-  buffers and leaves OPSEC-safe status only (no chat under the modal)
-- Document honest limits (kernel implants / prior exfil) in THREATMODEL + SECURITY
-- Unit test wipe_memory_secure; cargo test --lib: 52 passed. No push.
+Restore honest Double Ratchet send-side DH after the 7d116c8 bootstrap fix:
+
+- Split DH into matching send/recv steps (new ephemeral first on send;
+  recv derives only the recv chain so one-way traffic stays in sync)
+- Periodic send DH every DH_SEND_EVERY (5) once remote_dh is known and
+  enough messages were sent on the current chain (first reply stays
+  chain-only — peers with remote_dh=None must not see a rotated header)
+- Persist sends_since_dh in ratchet blob v2 (v1 loads default 0)
+- Tests: ping/pong, multi-round, intentional DH step, v2 roundtrip
+- Sync android verbatim copy; document residual limits in THREATMODEL
+
+cargo test --lib: 54 passed. build hashchat-tui --features tui: ok. No push.
