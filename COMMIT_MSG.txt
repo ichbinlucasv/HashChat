@@ -1,13 +1,7 @@
-polish(tui): contact select, short SAS, clearer :help, Tor-gated :retry
+feat(persist): durable NetConfig (mode/dns/posture) in session blob v3
 
-Improve Rust TUI contact UX without scope creep:
-
-- Contact list / selection shows short SAS; ↑↓/Enter set OPSEC-safe status
-  (SAS + onion tail only — never plaintext bodies)
-- Chat title reflects selected peer SAS; unlock auto-selects first contact
-- :sas [link] shows short fingerprint for selected contact or a signed link
-- :help lists :listen :add-contact :my-contact :sas :mode :retry :wipe :quit
-- :retry respects net_mode Tor gate + SOCKS readiness; reports empty queue
-  (listen auto-flush still silent when empty)
-
-cargo test --lib: 54 passed. build hashchat-tui --features tui: ok. No push.
+Persist network prefs inside the encrypted session wrap so :mode /
+:mode extreme survive restart. Load still accepts v1/v2 (defaults);
+save always writes v3. Env seeds cold start / new identity; blob wins
+after unlock. Extreme Tor-only gating kept fail-closed for listen,
+send, and :my-contact.

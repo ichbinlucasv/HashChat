@@ -37,7 +37,7 @@
 
 ### 2. Metadata Resistance (Current State)
 - All communication is intended to go over Tor hidden services (v3).
-- **Network modes (honest):** Default transport is Tor. `src/rust/net_mode.rs` exposes explicit `Tor` / `I2P` / `Clearnet` plus a separate DNS preference. Non-Tor modes are selectable for future work but currently **refuse** messenger send/listen without opening clearnet sockets — there is no silent fallback from Tor. Extreme/paranoid posture can lock Tor-only. Mode is process-local (env / TUI `:mode`) until session prefs persist it.
+- **Network modes (honest):** Default transport is Tor. `src/rust/net_mode.rs` exposes explicit `Tor` / `I2P` / `Clearnet` plus a separate DNS preference. Non-Tor modes are selectable for future work but currently **refuse** messenger send/listen without opening clearnet sockets — there is no silent fallback from Tor. Extreme/paranoid posture can lock Tor-only. Prefs (mode / DNS / posture) persist inside the encrypted session blob (v3+); env applies at cold start / new identity, and the loaded blob wins after unlock.
 - No phone numbers, emails, or persistent user IDs.
 - Burner profiles allow quick identity isolation.
 - Group design aims for sender keys (server cannot easily tell who sent what).

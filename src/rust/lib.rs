@@ -1380,6 +1380,7 @@ pub extern "C" fn rust_session_state_save(
             contacts,
             ratchets,
             pending,
+            net: NetConfig::default(),
         };
         let mode = PersistMode::from_flags(insecure_dev != 0);
         save_session(Path::new(dir), mode, pass, &state).is_ok()

@@ -8,8 +8,11 @@
 //! DNS preference ([`DnsPreference`]) is orthogonal to transport mode and does
 //! not authorize clearnet messenger paths.
 //!
-//! Runtime state is in-memory (plus env / TUI `:mode`). Session-blob persistence
-//! is deferred until a deliberate prefs schema lands; do not imply durability.
+//! Prefs persist inside the encrypted session blob (v3+) via
+//! [`NetConfig::to_persist_bytes`] / [`NetConfig::from_persist_bytes`]. They are
+//! non-secret policy but live in the wrap so a plaintext sibling file cannot
+//! silently toggle them. Env (`HASHCHAT_*`) applies at cold start / new
+//! identity; after unlock the loaded blob wins.
 
 use std::fmt;
 
@@ -240,6 +243,54 @@ impl NetConfig {
         }
     }
 
+    /// Compact UTF-8 token encoding for session blob prefs (no serde).
+    ///
+    /// Layout: mode\0dns\0custom_dns\0posture as four length-prefixed strings
+    /// (u32 BE length + UTF-8). Empty custom_dns means `None`.
+    pub fn to_persist_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_persist_str(&mut out, self.mode.as_str());
+        write_persist_str(&mut out, self.dns.as_str());
+        write_persist_str(&mut out, self.custom_dns.as_deref().unwrap_or(""));
+        write_persist_str(&mut out, self.posture.as_str());
+        out
+    }
+
+    /// Decode prefs written by [`Self::to_persist_bytes`]. Unknown tokens fail.
+    /// Extreme posture forces Tor after restore (same lock as live `set_posture`).
+    pub fn from_persist_bytes(buf: &[u8]) -> Result<Self, NetModeError> {
+        let mut pos = 0usize;
+        let mode_s = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidMode)?;
+        let dns_s = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidDns)?;
+        let custom_s = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidDns)?;
+        let posture_s = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidPosture)?;
+        if pos != buf.len() {
+            // Trailing junk → refuse (fail closed on corrupt prefs).
+            return Err(NetModeError::InvalidMode);
+        }
+        let mode = NetworkMode::parse_token(&mode_s)?;
+        let dns = DnsPreference::parse_token(&dns_s)?;
+        let posture = PostureProfile::parse_token(&posture_s)?;
+        let custom_dns = if custom_s.is_empty() {
+            None
+        } else {
+            Some(custom_s)
+        };
+        if dns == DnsPreference::Custom && custom_dns.is_none() {
+            return Err(NetModeError::CustomDnsRequired);
+        }
+        let mut cfg = Self {
+            mode,
+            dns,
+            custom_dns,
+            posture,
+        };
+        if cfg.posture.locks_tor_only() {
+            cfg.mode = NetworkMode::Tor;
+        }
+        Ok(cfg)
+    }
+
     /// Gate for messenger send/listen.
     ///
     /// Only Tor is implemented. Other modes return a clear refusal and must not
@@ -256,6 +307,26 @@ impl NetConfig {
     pub fn is_tor(&self) -> bool {
         self.mode == NetworkMode::Tor
     }
+}
+
+fn write_persist_str(out: &mut Vec<u8>, s: &str) {
+    let b = s.as_bytes();
+    out.extend_from_slice(&(b.len() as u32).to_be_bytes());
+    out.extend_from_slice(b);
+}
+
+fn read_persist_str(buf: &[u8], pos: &mut usize) -> Result<String, ()> {
+    if *pos + 4 > buf.len() {
+        return Err(());
+    }
+    let n = u32::from_be_bytes(buf[*pos..*pos + 4].try_into().map_err(|_| ())?) as usize;
+    *pos += 4;
+    if *pos + n > buf.len() {
+        return Err(());
+    }
+    let s = std::str::from_utf8(&buf[*pos..*pos + n]).map_err(|_| ())?.to_string();
+    *pos += n;
+    Ok(s)
 }
 
 /// Fail-closed policy errors (professional strings; no secrets).
@@ -396,5 +467,44 @@ mod tests {
         assert!(line.contains("mode=tor"));
         assert!(!line.contains("cookie"));
         assert!(!line.contains("pass"));
+    }
+
+    #[test]
+    fn persist_bytes_roundtrip_non_default() {
+        let mut cfg = NetConfig::default();
+        cfg.set_mode(NetworkMode::I2p).unwrap();
+        cfg.set_dns(DnsPreference::Custom, Some("9.9.9.9:53".into()))
+            .unwrap();
+        cfg.set_posture(PostureProfile::Standard);
+        let bytes = cfg.to_persist_bytes();
+        let loaded = NetConfig::from_persist_bytes(&bytes).unwrap();
+        assert_eq!(loaded, cfg);
+        assert_eq!(loaded.mode, NetworkMode::I2p);
+        assert_eq!(loaded.dns, DnsPreference::Custom);
+        assert_eq!(loaded.custom_dns.as_deref(), Some("9.9.9.9:53"));
+    }
+
+    #[test]
+    fn persist_extreme_locks_tor_after_restore() {
+        let mut cfg = NetConfig::default();
+        cfg.set_mode(NetworkMode::Clearnet).unwrap();
+        cfg.set_posture(PostureProfile::Extreme);
+        assert_eq!(cfg.mode, NetworkMode::Tor);
+        let bytes = cfg.to_persist_bytes();
+        let mut loaded = NetConfig::from_persist_bytes(&bytes).unwrap();
+        assert_eq!(loaded.posture, PostureProfile::Extreme);
+        assert_eq!(loaded.mode, NetworkMode::Tor);
+        assert_eq!(
+            loaded.set_mode(NetworkMode::Clearnet).unwrap_err(),
+            NetModeError::ExtremeTorOnly
+        );
+        assert!(loaded.require_messenger_transport().is_ok());
+    }
+
+    #[test]
+    fn persist_default_roundtrip() {
+        let cfg = NetConfig::default();
+        let loaded = NetConfig::from_persist_bytes(&cfg.to_persist_bytes()).unwrap();
+        assert_eq!(loaded, cfg);
     }
 }

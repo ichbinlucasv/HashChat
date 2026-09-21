@@ -77,7 +77,7 @@ struct App {
     last_tor_check: Instant,
     socks_port: u16,
     hs: Option<HiddenService>,
-    /// In-memory network mode (env + :mode). Not yet in session blob.
+    /// Network prefs: env at cold start / new identity; after unlock, loaded blob wins.
     net: NetConfig,
 }
 
@@ -180,18 +180,38 @@ impl App {
     }
 
     fn persist_session(&mut self) -> Result<(), &'static str> {
-        let Some(session) = self.session.as_ref() else {
+        let Some(session) = self.session.as_mut() else {
             return Err("no session");
         };
         if self.passphrase.is_empty() {
             return Err("passphrase required");
         }
+        // Keep blob prefs aligned with live NetConfig (durable :mode).
+        session.net = self.net.clone();
         save_session(
             Path::new(DATA_DIR),
             PersistMode::Passphrase,
             self.passphrase.as_bytes(),
             session,
         )
+    }
+
+    /// Persist current session after a successful `:mode` change.
+    /// Returns false if a session is unlocked but durable save failed.
+    fn persist_net_after_mode_change(&mut self) -> bool {
+        if self.session.is_none() {
+            // Pre-unlock :mode is process-local only (env / cold start).
+            return true;
+        }
+        match self.persist_session() {
+            Ok(()) => true,
+            Err(_) => {
+                self.messages.push(
+                    "Mode updated in memory; durable save failed (unlock/passphrase?).".into(),
+                );
+                false
+            }
+        }
     }
 
     fn try_unlock(&mut self) {
@@ -222,7 +242,8 @@ impl App {
                         onion: String::new(),
                         onion_key: Vec::new(),
                     };
-                    let state = SessionState::from_identity(identity);
+                    let state =
+                        SessionState::from_identity_with_net(identity, self.net.clone());
                     match save_session(
                         Path::new(DATA_DIR),
                         PersistMode::Passphrase,
@@ -252,11 +273,14 @@ impl App {
                 Ok(state) => {
                     let n_contacts = state.contacts.len();
                     let n_pending = state.pending.len();
+                    // Loaded blob wins over cold-start env for net prefs.
+                    self.net = state.net.clone();
                     self.session = Some(state);
                     self.refresh_identity_display();
                     self.screen = Screen::Main;
                     self.messages.push(format!(
-                        "Loaded {n_contacts} contact(s), {n_pending} pending. Transport: Tor only."
+                        "Loaded {n_contacts} contact(s), {n_pending} pending. {}",
+                        self.net.status_line()
                     ));
                     if n_contacts > 0 {
                         self.select_contact(0);
@@ -524,7 +548,9 @@ impl App {
         let (hint, step, sender_dh, ct) =
             unframe_v2(transport_frame).map_err(|_| "malformed wire frame".to_string())?;
         let pass = self.passphrase.as_bytes().to_vec();
+        let net = self.net.clone();
         let session = self.session.as_mut().ok_or_else(|| "no session".to_string())?;
+        session.net = net;
         let contacts = session.contacts.clone();
         // Wire hint is the sender's static x25519 — try matching contacts first.
         let mut order: Vec<usize> = (0..contacts.len()).collect();
@@ -754,7 +780,7 @@ impl App {
         }
     }
 
-    /// `:mode` — inspect / set network mode (in-memory; env also applies at start).
+    /// `:mode` — inspect / set network mode (durable in session blob after unlock).
     fn handle_mode(&mut self, args: &str) {
         let args = args.trim();
         if args.is_empty() || args == "status" || args == "show" {
@@ -772,7 +798,12 @@ impl App {
                 match NetworkMode::parse_token(&head_l) {
                     Ok(mode) => match self.net.set_mode(mode) {
                         Ok(()) => {
-                            self.status_msg = format!("Network mode set to {}", self.net.mode);
+                            let saved = self.persist_net_after_mode_change();
+                            self.status_msg = if saved {
+                                format!("Network mode set to {} (saved)", self.net.mode)
+                            } else {
+                                format!("Network mode set to {} (not saved)", self.net.mode)
+                            };
                             self.messages.push(self.net.status_line());
                         }
                         Err(e) => {
@@ -796,6 +827,7 @@ impl App {
                         let addr = parts.next().map(|s| s.to_string());
                         match self.net.set_dns(DnsPreference::Custom, addr) {
                             Ok(()) => {
+                                self.persist_net_after_mode_change();
                                 self.status_msg = self.net.status_line();
                                 self.messages.push(self.status_msg.clone());
                             }
@@ -807,6 +839,7 @@ impl App {
                     }
                     Ok(dns) => match self.net.set_dns(dns, None) {
                         Ok(()) => {
+                            self.persist_net_after_mode_change();
                             self.status_msg = self.net.status_line();
                             self.messages.push(self.status_msg.clone());
                         }
@@ -823,12 +856,22 @@ impl App {
             }
             "extreme" | "paranoid" => {
                 self.net.set_posture(PostureProfile::Extreme);
-                self.status_msg = format!("Posture extreme (Tor-only). {}", self.net.status_line());
+                let saved = self.persist_net_after_mode_change();
+                let tag = if saved { "saved" } else { "not saved" };
+                self.status_msg = format!(
+                    "Posture extreme (Tor-only, {tag}). {}",
+                    self.net.status_line()
+                );
                 self.messages.push(self.status_msg.clone());
             }
             "standard" | "normal" => {
                 self.net.set_posture(PostureProfile::Standard);
-                self.status_msg = format!("Posture standard. {}", self.net.status_line());
+                let saved = self.persist_net_after_mode_change();
+                let tag = if saved { "saved" } else { "not saved" };
+                self.status_msg = format!(
+                    "Posture standard ({tag}). {}",
+                    self.net.status_line()
+                );
                 self.messages.push(self.status_msg.clone());
             }
             "help" => {
@@ -887,7 +930,10 @@ impl App {
                     "Local sensitive data erased. Unlock with a new passphrase to continue.".into();
             }
             ":my-contact" => {
-                if self.my_contact_link.is_empty() {
+                if let Err(e) = self.net.require_messenger_transport() {
+                    self.status_msg = format!(":my-contact refused: {e}");
+                    self.messages.push(self.status_msg.clone());
+                } else if self.my_contact_link.is_empty() {
                     self.messages
                         .push("No contact link yet (unlock + :listen first).".into());
                 } else {

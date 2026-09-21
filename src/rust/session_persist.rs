@@ -27,11 +27,18 @@
 //! - Tor send success does not remove pending until the caller drops the frame
 //!   from `pending` and saves again (intentional: retry until acknowledged).
 //!
-//! Blob version: v1 = identity+onion only (H2); v2 = + contacts/ratchets/pending (H3).
-//! Load accepts both; save always writes v2.
+//! Blob version: v1 = identity+onion only (H2); v2 = + contacts/ratchets/pending (H3);
+//! v3 = + network prefs ([`crate::net_mode::NetConfig`]: mode / DNS / posture).
+//! Load accepts v1/v2/v3; save always writes v3.
+//!
+//! Prefs are non-secret policy but live inside the wrapped blob so they cannot be
+//! silently toggled by swapping a plaintext sibling file under `hashchat_data/`.
+//! Missing prefs on v1/v2 load default to [`crate::net_mode::NetConfig::default`]
+//! (Tor + standard).
 
 use crate::envelope;
 use crate::longterm_identity::LongTermIdentity;
+use crate::net_mode::NetConfig;
 use crate::ratchet::{decrypt_with_key, encrypt_with_key};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -43,6 +50,7 @@ const STATE_AAD: &[u8] = b"HashChat-v1-identity-onion-state";
 /// On-disk plaintext blob versions (inside the outer wrap).
 const BLOB_VERSION_V1: u8 = 1;
 const BLOB_VERSION_V2: u8 = 2;
+const BLOB_VERSION_V3: u8 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PersistMode {
@@ -114,6 +122,10 @@ pub struct SessionState {
     pub ratchets: Vec<(String, Vec<u8>)>,
     /// Pending outbound framed ciphertext: (dest_onion, frame) (H3).
     pub pending: Vec<(String, Vec<u8>)>,
+    /// Network prefs (mode / DNS / posture). Non-secret policy; in-blob so a
+    /// plaintext sibling cannot silently toggle them (v3+).
+    #[zeroize(skip)]
+    pub net: NetConfig,
 }
 
 impl SessionState {
@@ -123,6 +135,18 @@ impl SessionState {
             contacts: Vec::new(),
             ratchets: Vec::new(),
             pending: Vec::new(),
+            net: NetConfig::default(),
+        }
+    }
+
+    /// Fresh session seeded with caller prefs (new identity / cold create).
+    pub fn from_identity_with_net(identity: IdentityOnionState, net: NetConfig) -> Self {
+        Self {
+            identity,
+            contacts: Vec::new(),
+            ratchets: Vec::new(),
+            pending: Vec::new(),
+            net,
         }
     }
 
@@ -190,6 +214,7 @@ impl SessionState {
         self.identity.onion_key.clear();
         // onion address is public routing material but still session residue — drop it.
         self.identity.onion.clear();
+        self.net = NetConfig::default();
     }
 }
 
@@ -230,7 +255,7 @@ fn read_len_str(buf: &[u8], pos: &mut usize) -> Result<String, &'static str> {
 
 fn serialize_blob(state: &SessionState) -> Vec<u8> {
     let mut plain = Vec::new();
-    plain.push(BLOB_VERSION_V2);
+    plain.push(BLOB_VERSION_V3);
     plain.extend_from_slice(&state.identity.seed);
     write_len_str(&mut plain, &state.identity.onion);
     write_len_bytes(&mut plain, &state.identity.onion_key);
@@ -259,6 +284,10 @@ fn serialize_blob(state: &SessionState) -> Vec<u8> {
         write_len_bytes(&mut plain, frame);
     }
 
+    // network prefs (v3)
+    let prefs = state.net.to_persist_bytes();
+    write_len_bytes(&mut plain, &prefs);
+
     plain
 }
 
@@ -267,7 +296,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         return Err("empty state blob");
     }
     let ver = plain[0];
-    if ver != BLOB_VERSION_V1 && ver != BLOB_VERSION_V2 {
+    if ver != BLOB_VERSION_V1 && ver != BLOB_VERSION_V2 && ver != BLOB_VERSION_V3 {
         return Err("bad state blob version");
     }
     if plain.len() < 33 {
@@ -285,11 +314,11 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
     };
 
     if ver == BLOB_VERSION_V1 {
-        // H2-only blob: no contacts/ratchets/pending section.
+        // H2-only blob: no contacts/ratchets/pending/prefs — defaults.
         return Ok(SessionState::from_identity(identity));
     }
 
-    // v2 extras
+    // v2 / v3 extras
     if pos + 4 > plain.len() {
         return Err("truncated contacts count");
     }
@@ -345,11 +374,20 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         pending.push((onion, frame));
     }
 
+    let net = if ver == BLOB_VERSION_V3 {
+        let prefs = read_len_bytes(plain, &mut pos)?;
+        NetConfig::from_persist_bytes(&prefs).map_err(|_| "bad net prefs")?
+    } else {
+        // v2: prefs absent → Tor + standard.
+        NetConfig::default()
+    };
+
     Ok(SessionState {
         identity,
         contacts,
         ratchets,
         pending,
+        net,
     })
 }
 
@@ -437,7 +475,7 @@ fn open_env(
     }
 }
 
-/// Save full session state (identity + contacts + ratchets + pending). Always writes v2.
+/// Save full session state (identity + contacts + ratchets + pending + net prefs). Always writes v3.
 pub fn save_session(
     data_dir: &Path,
     mode: PersistMode,
@@ -453,7 +491,7 @@ pub fn save_session(
     Ok(())
 }
 
-/// Load full session state. Accepts v1 (identity-only) and v2 blobs.
+/// Load full session state. Accepts v1 (identity-only), v2, and v3 (with net prefs) blobs.
 pub fn load_session(
     data_dir: &Path,
     mode: PersistMode,
@@ -803,6 +841,7 @@ mod tests {
         assert!(loaded.contacts.is_empty());
         assert!(loaded.ratchets.is_empty());
         assert!(loaded.pending.is_empty());
+        assert_eq!(loaded.net, NetConfig::default());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -846,5 +885,83 @@ mod tests {
         assert!(session.ack_pending_frame("a.onion", &[1, 2, 3]));
         assert_eq!(session.pending.len(), 1);
         assert_eq!(session.pending[0].0, "b.onion");
+    }
+
+    #[test]
+    fn v3_net_prefs_roundtrip_non_default() {
+        use crate::net_mode::{DnsPreference, NetworkMode, PostureProfile};
+        let dir = tmp_dir("v3-net");
+        let id = LongTermIdentity::from_seed([0x88u8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "me.onion",
+            b"key".to_vec(),
+        ));
+        session.net.set_mode(NetworkMode::I2p).unwrap();
+        session
+            .net
+            .set_dns(DnsPreference::Quad9, None)
+            .unwrap();
+        session.net.set_posture(PostureProfile::Standard);
+        save_session(&dir, PersistMode::Passphrase, b"v3-pass", &session).unwrap();
+
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"v3-pass").unwrap();
+        assert_eq!(loaded.net.mode, NetworkMode::I2p);
+        assert_eq!(loaded.net.dns, DnsPreference::Quad9);
+        assert_eq!(loaded.net.posture, PostureProfile::Standard);
+        assert_eq!(loaded.net, session.net);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v3_extreme_survives_restart_and_locks() {
+        use crate::net_mode::{NetworkMode, PostureProfile};
+        let dir = tmp_dir("v3-ext");
+        let id = LongTermIdentity::from_seed([0x99u8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "ext.onion",
+            vec![],
+        ));
+        session.net.set_posture(PostureProfile::Extreme);
+        save_session(&dir, PersistMode::Passphrase, b"ext-pass", &session).unwrap();
+
+        let mut loaded = load_session(&dir, PersistMode::Passphrase, b"ext-pass").unwrap();
+        assert_eq!(loaded.net.posture, PostureProfile::Extreme);
+        assert_eq!(loaded.net.mode, NetworkMode::Tor);
+        assert!(loaded
+            .net
+            .set_mode(NetworkMode::Clearnet)
+            .is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_blob_loads_with_default_net_prefs() {
+        // Craft a v2 plaintext (contacts/ratchets/pending, no prefs) and wrap it.
+        let dir = tmp_dir("v2-compat");
+        let id = LongTermIdentity::from_seed([0xAAu8; 32]);
+        let identity =
+            IdentityOnionState::from_identity(&id, "v2.onion", b"k".to_vec());
+        let mut plain = Vec::new();
+        plain.push(BLOB_VERSION_V2);
+        plain.extend_from_slice(&identity.seed);
+        write_len_str(&mut plain, &identity.onion);
+        write_len_bytes(&mut plain, &identity.onion_key);
+        plain.extend_from_slice(&0u32.to_be_bytes()); // contacts
+        plain.extend_from_slice(&0u32.to_be_bytes()); // ratchets
+        plain.extend_from_slice(&0u32.to_be_bytes()); // pending
+        let env = envelope::seal(b"v2-pass", &plain).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        write_private(&dir.join("state.enc"), &env).unwrap();
+
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"v2-pass").unwrap();
+        assert_eq!(loaded.identity.seed, identity.seed);
+        assert_eq!(loaded.net, NetConfig::default());
+        // Re-save upgrades to v3.
+        save_session(&dir, PersistMode::Passphrase, b"v2-pass", &loaded).unwrap();
+        let again = load_session(&dir, PersistMode::Passphrase, b"v2-pass").unwrap();
+        assert_eq!(again.net, NetConfig::default());
+        let _ = fs::remove_dir_all(&dir);
     }
 }
