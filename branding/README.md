@@ -3,6 +3,10 @@
 **Name:** HashChat  
 **Colours:** black `#0A0A0A` + gold `#FFD700` (see COLORS.md)
 
+## Canonical lockup (logo 2 — user approved)
+
+`hashchat-lockup.png` / `hashchat-wordmark.png` is the primary brand asset.
+
 ## Canonical mark
 
 Gold **chat bubble** with a **hash (#)** and **typing dots (...)** on black.
