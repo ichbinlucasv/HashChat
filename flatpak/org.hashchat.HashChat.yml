@@ -1,19 +1,19 @@
 app-id: org.hashchat.HashChat
 runtime: org.freedesktop.Platform
-runtime-version: "24.08"   # Updated to current stable (hardening)
+runtime-version: "24.08"
 sdk: org.freedesktop.Sdk
 command: hashchat-tui
 
 finish-args:
-  # === Maximum paranoid permissions for a Tor-only messenger ===
-  - --share=network                    # Only for Tor hidden services (no direct clearnet)
+  # Maximum-paranoid permissions for a Tor-only messenger.
+  # Host Tor (SOCKS + ControlPort cookie auth) is REQUIRED — not bundled here.
+  - --share=network                    # Reach host Tor only; no clearnet app design
   - --socket=wayland
   - --socket=x11
   - --device=dri                       # GPU acceleration only
-  - --filesystem=home                  # Only to store encrypted data in ~/hashchat_data
+  - --filesystem=home                  # Encrypted local data under ~/hashchat_data
   - --env=LD_LIBRARY_PATH=/app/lib
-  - --talk-name=org.freedesktop.secrets   # Future: hardware-backed keys (can be removed if not used)
-  # Aggressive hardening
+  - --talk-name=org.freedesktop.secrets   # Future: hardware-backed keys (optional)
   - --no-legacy
   - --socket=session-bus
   - --unset-env=DBUS_SESSION_BUS_ADDRESS
@@ -21,25 +21,15 @@ finish-args:
   - --unset-env=WAYLAND_DISPLAY
   - --unset-env=XDG_RUNTIME_DIR
   - --unset-env=SESSION_MANAGER
-  # Future work
-  # - --seccomp=seccomp-extra.json     # Custom strict syscall filter
-  # Icons (Critical for v0.2)
-  # TODO: Add real high-quality 64/128/256/512 PNG + final SVG before any public distribution or Flathub.
-  # Current improved placeholder (lock in black+gold) is in icons/hicolor/scalable. See ICONS.md for pipeline.
 
-# Note: We intentionally do not set broad build-options like no-network here anymore,
-# because the Nix-driven path already builds everything outside the Flatpak sandbox.
-# The manifest is now purely an "install prebuilts" manifest.
+# Pure install-only manifest. Supported reproducible build:
+#   nix build .#hashchat-flatpak
+# Prebuilt binary name: hashchat-tui (Rust desktop with --features tui).
 
 modules:
-  # === Pure install-only manifest (no app code is built inside Flatpak) ===
-  # The ONLY supported/reproducible way to build this Flatpak is via:
-  #   nix build .#hashchat-flatpak
-  # All binaries are pre-built by the flake for maximum reliability.
   - name: hashchat-prebuilts
     buildsystem: simple
     build-commands:
-      # Install Rust library (prefer .so)
       - |
         if [ -f prebuilt/libhashchat_rust.so ]; then
           install -Dm755 prebuilt/libhashchat_rust.so /app/lib/libhashchat_rust.so
@@ -49,8 +39,6 @@ modules:
           echo "ERROR: prebuilt Rust library not found. Build via Nix flake only." >&2
           exit 1
         fi
-
-      # Install TUI binary
       - |
         if [ -f prebuilt/hashchat-tui ]; then
           install -Dm755 prebuilt/hashchat-tui /app/bin/hashchat-tui
@@ -61,30 +49,25 @@ modules:
     sources:
       - type: dir
         path: .
-      # The prebuilt/ directory is populated by the Nix flake before flatpak-builder runs.
 
   - name: desktop-file
     buildsystem: simple
     build-commands:
       - install -Dm644 flatpak/org.hashchat.HashChat.desktop /app/share/applications/org.hashchat.HashChat.desktop
       - install -Dm644 flatpak/org.hashchat.HashChat.metainfo.xml /app/share/metainfo/org.hashchat.HashChat.metainfo.xml
-      # Install scalable icon (primary, vector, correct for all sizes)
+      # Logo 2 (black + gold chat-bubble / hash) — scalable + rasters in hicolor
       - install -Dm644 flatpak/icons/hicolor/scalable/apps/org.hashchat.HashChat.svg \
           /app/share/icons/hicolor/scalable/apps/org.hashchat.HashChat.svg
-
-      # RASTER ICONS (Critical v0.2 / Flathub blocking item)
-      # TODO: Generate real 64/128/256/512 PNGs from the improved SVG using rsvg-convert / ImageMagick / Inkscape
-      # (see flatpak/ICONS.md for exact commands). Then replace the loop below with proper PNG installs.
-      # Current: Only scalable is installed. No silent fallbacks or || true allowed (fail-hard OPSEC).
-      # The loop below is intentionally a no-op placeholder that will be replaced when real PNGs exist.
       - |
-        # Real PNGs must be added here before Flathub. See ICONS.md.
-        # Example (once PNGs exist):
-        # for size in 64 128 256 512; do
-        #   install -Dm644 flatpak/icons/hicolor/${size}x${size}/apps/org.hashchat.HashChat.png \
-        #     /app/share/icons/hicolor/${size}x${size}/apps/org.hashchat.HashChat.png
-        # done
-        echo "Icon rasters not yet present (see ICONS.md) - only scalable vector installed."
+        for size in 64 128 256 512; do
+          src="flatpak/icons/hicolor/${size}x${size}/apps/org.hashchat.HashChat.png"
+          if [ ! -f "$src" ]; then
+            echo "ERROR: missing icon $src" >&2
+            exit 1
+          fi
+          install -Dm644 "$src" \
+            "/app/share/icons/hicolor/${size}x${size}/apps/org.hashchat.HashChat.png"
+        done
     sources:
       - type: dir
         path: .

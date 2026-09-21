@@ -22,27 +22,34 @@ HashChat is moving to **maximum Rust**:
 | Layer | Target |
 |-------|--------|
 | Crypto, Tor, persist, wipe | Rust (done / hardening) |
-| Desktop client | Rust TUI, then Rust GUI if attack surface stays honest |
+| Desktop client | Rust TUI (`hashchat-tui --features tui`), then Rust GUI if attack surface stays honest |
 | Android | Thin UI over the same Rust crate |
 | Legacy Haskell desktop | Transitional only — not the long-term stack |
 
-Inspiration: SimpleX-class UX ideas, with paranoid defaults (Tor-first, no phone/account, nuclear wipe, signed contacts). Brand: black + gold (`#FFD700`), shield mark.
+Inspiration: SimpleX-class UX ideas, with paranoid defaults (Tor-first, no phone/account, nuclear wipe, signed contacts). Brand: black + gold (`#FFD700`), logo 2 (chat bubble / hash mark).
 
 ---
 
 ## For users (Fedora / Ubuntu / Arch / Tails / Qubes)
 
-1. Clone the primary repo (use branch `codeberg-primary` for current work):
+1. Clone the primary repo and use branch `codeberg-primary`:
    ```bash
    git clone https://codeberg.org/ichbinlucasv/HashChat.git
    cd HashChat
    git checkout codeberg-primary
    ```
-2. `./run-tui` (guides audio + Tor)
-3. Unlock / create identity with a passphrase (Argon2id-wrapped at rest)
-4. `:listen`, exchange signed `hashchat://` contacts, chat over Tor
+2. Install or build the **Rust** desktop:
+   ```bash
+   ./install.sh
+   # or: cargo build --release --locked --bin hashchat-tui --features tui
+   ```
+3. `./run-tui` (prefers `./target/release/hashchat-tui`; prints audio + Tor status; Haskell only as fallback)
+4. Unlock / create identity with a passphrase (Argon2id-wrapped at rest)
+5. `:listen`, exchange signed `hashchat://` contacts, chat over Tor
 
-See [INSTALL.md](INSTALL.md) for OS notes. Tor with ControlPort is required for the default path.
+**Tor is required** for the default path (SOCKS + ControlPort `9051` with cookie authentication). Do not paste ControlPort cookies or onion keys into issues or chats.
+
+See [INSTALL.md](INSTALL.md) for per-OS Tor, Flatpak, Tails/Qubes, and packaging notes.
 
 **Transport default:** Tor. Other networks (I2P, clearnet) or DNS choices are planned as **explicit** user modes — no silent fallback from Tor.
 
@@ -58,11 +65,14 @@ See [INSTALL.md](INSTALL.md) for OS notes. Tor with ControlPort is required for 
 - Panic wipe of local sensitive state
 
 **Clients**
-- Desktop: Rust TUI scaffold (`hashchat-tui`, black + gold) + transitional Haskell TUI over Rust FFI
+- Desktop: **Rust TUI** (`hashchat-tui`, black + gold) — preferred
+- Transitional Haskell Brick TUI over Rust FFI — fallback only
 - Android shell over the Rust library (production two-device path still maturing)
 
 **Brand / packaging**
-- Shield lockup + Flatpak hicolor icons under `branding/` and `flatpak/icons/`
+- Logo 2 lockup + Flatpak hicolor icons (`branding/`, `flatpak/icons/hicolor/`)
+- Distro scripts: `install.sh`, `install-fedora.sh`, `install-ubuntu.sh`, `install-arch.sh`
+- Flatpak app-id `org.hashchat.HashChat` (host Tor still required)
 
 Threat model and limits: [THREATMODEL.md](THREATMODEL.md).
 
@@ -73,16 +83,17 @@ Threat model and limits: [THREATMODEL.md](THREATMODEL.md).
 ```bash
 # Rust library / tests
 cargo test --lib
-cargo build --release
+cargo build --release --locked
 
-# Native Rust TUI (scaffold — unlock / contacts / Tor status / wipe)
-cargo build --bin hashchat-tui --features tui
-./target/debug/hashchat-tui
+# Native Rust TUI (preferred desktop)
+cargo build --release --locked --bin hashchat-tui --features tui
+./target/release/hashchat-tui
+# or: ./run-tui
 
-# Transitional Haskell desktop TUI (still building)
-./run-tui
+# Transitional Haskell desktop TUI (fallback — not default)
+# cabal build -f-tui hashchat-tui
 
-# Flatpak / Nix (when using the flake path)
+# Flatpak / Nix
 nix build .#hashchat-tui
 # nix build .#hashchat-flatpak
 ```
@@ -97,7 +108,7 @@ This is security-critical software.
 
 - Read [SECURITY.md](SECURITY.md) and [THREATMODEL.md](THREATMODEL.md)
 - Do not commit Tor private material or local `hashchat_data/`
-- Prefer `./build.sh` / documented Nix paths
+- Prefer `./install.sh` / documented Nix paths; never echo secrets in scripts or logs
 - Report vulnerabilities privately — do not open a public issue with exploit detail
 
 ---

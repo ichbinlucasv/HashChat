@@ -1,74 +1,51 @@
 # HashChat Flatpak Icons
 
-For a proper, Flathub-ready release, the following icons are required:
+Canonical brand: **logo 2** — gold chat bubble with hash (#) + typing dots on black `#0A0A0A` / gold `#FFD700`.
+Source assets: `branding/hashchat-icon.svg` and matching PNGs (synced into hicolor).
 
-## Required Files
+## Required files (present)
 
-Place icons in `flatpak/icons/hicolor/`:
+Under `flatpak/icons/hicolor/`:
 
-### Scalable (Recommended)
-- `scalable/apps/org.hashchat.HashChat.svg` (vector, preferred)
+| Path | Status |
+|------|--------|
+| `scalable/apps/org.hashchat.HashChat.svg` | Present (logo 2) |
+| `64x64/apps/org.hashchat.HashChat.png` | Present |
+| `128x128/apps/org.hashchat.HashChat.png` | Present |
+| `256x256/apps/org.hashchat.HashChat.png` | Present |
+| `512x512/apps/org.hashchat.HashChat.png` | Present |
 
-### Raster (Required by Flathub)
-You must provide properly sized PNGs:
+Desktop/metainfo `Icon=` / icon name: **`org.hashchat.HashChat`**.
+The Flatpak manifest installs scalable + all four raster sizes (fail-hard if missing).
 
-- `64x64/apps/org.hashchat.HashChat.png`
-- `128x128/apps/org.hashchat.HashChat.png`
-- `256x256/apps/org.hashchat.HashChat.png`
-- `512x512/apps/org.hashchat.HashChat.png` (highly recommended)
+## Design guidelines
 
-## Design Guidelines
+- Black `#0A0A0A` plate + gold `#FFD700` mark (see `branding/COLORS.md`)
+- Recognizable at 64px; no blue brand colour
+- Older shield explorations stay under `branding/alts/` (reference only)
 
-- Use the project colors: Black (#000000) background + Gold (#FFD700) accents
-- Keep it simple and recognizable at small sizes
-- Test on both light and dark themes
-- Avoid text in icons if possible (the current placeholder uses "HC")
+## Regenerating rasters from SVG
 
-## Current Status
+From project root (keep filenames exact):
 
-- Improved security-themed placeholder SVG exists (black #000000 + gold #FFD700 lock + HC monogram; rounded with double border for paranoid aesthetic).
-- No production-quality raster icons yet (critical blocking item for v0.2 / Flathub).
-- Full hicolor directory tree prepared for 64/128/256/512 + scalable.
-
-## Generating Raster Icons from the SVG (Exact Commands for Maintainers)
-
-Use the scalable SVG as source of truth. Run from project root:
-
-### Preferred (rsvg-convert from librsvg2-bin, small + sharp):
 ```bash
-mkdir -p flatpak/icons/hicolor/{64x64,128x128,256x256,512x512}/apps
+# rsvg-convert (librsvg)
 for s in 64 128 256 512; do
   rsvg-convert -w $s -h $s flatpak/icons/hicolor/scalable/apps/org.hashchat.HashChat.svg \
     -o flatpak/icons/hicolor/${s}x${s}/apps/org.hashchat.HashChat.png
 done
 ```
 
-### Alternative (ImageMagick convert, common on Fedora):
+Or copy from branding after updating the SVG:
+
 ```bash
-for s in 64 128 256 512; do
-  convert -background none -resize ${s}x${s} \
-    flatpak/icons/hicolor/scalable/apps/org.hashchat.HashChat.svg \
-    flatpak/icons/hicolor/${s}x${s}/apps/org.hashchat.HashChat.png
-done
+cp branding/hashchat-icon.svg flatpak/icons/hicolor/scalable/apps/org.hashchat.HashChat.svg
+# then regenerate PNGs, or copy branding/hashchat-icon-512.png → 512x512/…
 ```
 
-### Inkscape (highest quality for complex paths):
-```bash
-for s in 64 128 256 512; do
-  inkscape --export-type=png --export-width=$s --export-height=$s \
-    --export-filename=flatpak/icons/hicolor/${s}x${s}/apps/org.hashchat.HashChat.png \
-    flatpak/icons/hicolor/scalable/apps/org.hashchat.HashChat.svg
-done
-```
+## Before Flathub
 
-After generation, verify with `file` and visually at small sizes. Update this file with credits.
-
-## Before Public Release / Flathub (Critical)
-
-1. Commission or draw final professional icon (same black+gold, lock or abstract "H" shield, no text if possible at small sizes).
-2. Run one of the pipelines above to produce the 4 PNGs.
-3. Commit the PNGs + updated SVG.
-4. Test Flatpak install icon appearance on GNOME/KDE.
-
-The current improved placeholder (with lock symbol) is used until real assets replace it.
-Real icons are a v0.2 blocking item per expert review.
+- [x] Logo 2 SVG + 64/128/256/512 in hicolor
+- [x] Manifest installs icons
+- [ ] Real screenshots in metainfo (see `docs/SCREENSHOTS.md`)
+- [ ] Visual check on GNOME/KDE after `flatpak install`

@@ -4,12 +4,18 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <name>HashChat</name>
-  <summary>Maximum anonymity messenger — Tor-only, Double Ratchet, strong OPSEC</summary>
+  <summary>Tor-only anonymous messenger (Rust TUI) — Double Ratchet, black + gold, strong OPSEC</summary>
 
   <description>
     <p>
       HashChat is a privacy-first, metadata-resistant messenger designed for people who need
       serious protection against advanced adversaries.
+    </p>
+    <p>
+      The desktop client is the native Rust TUI (binary hashchat-tui), themed black and gold
+      (logo: chat bubble with hash mark). A host Tor daemon with SOCKS and ControlPort cookie
+      authentication is required; the Flatpak does not bundle Tor. Never share ControlPort
+      cookies or onion private keys.
     </p>
     <p>
       It uses real Double Ratchet cryptography with forward secrecy, Tor v3 hidden services by

@@ -1,78 +1,79 @@
 #!/usr/bin/env bash
 #
-# HashChat - Easy installation script for Arch Linux
-# Adapted for normal users on rolling release. Prefer Nix when possible for reproducibility.
+# HashChat — Arch Linux installer (Rust-first desktop)
+#
+# Builds: cargo build --release --bin hashchat-tui --features tui
+# Prefer Nix/Flatpak when you need bit-for-bit reproducibility.
+# Haskell remains a transitional fallback (INSTALL.md).
 #
 # Usage:
-#   chmod +x install-arch.sh
 #   ./install-arch.sh
-#
-# After installation:
+# Then:
 #   ./run-tui
 #
+# OPSEC: does not print secrets, passphrases, Tor cookies, or key material.
+#
 
-set -e
+set -euo pipefail
 
-echo "=== HashChat Installer for Arch Linux ==="
+echo "=== HashChat Installer for Arch Linux (Rust-first) ==="
+echo "Branch tip: codeberg-primary (Codeberg primary repo)"
 echo ""
 
-# 1. Update system
-echo "[1/7] Updating system packages..."
+if [ -f "$HOME/.cargo/env" ]; then
+  # shellcheck disable=SC1090
+  source "$HOME/.cargo/env"
+fi
+
+echo "[1/6] Updating system packages..."
 sudo pacman -Syu --noconfirm
 
-# 2. Install build dependencies
-echo "[2/7] Installing build dependencies (Rust, Haskell, system libs)..."
+echo "[2/6] Installing build + Tor dependencies..."
 sudo pacman -S --noconfirm --needed \
-    base-devel \
-    pkg-config \
-    openssl \
-    ncurses \
-    libffi \
-    zlib \
-    git \
-    curl
+  base-devel \
+  pkg-config \
+  openssl \
+  ncurses \
+  libffi \
+  zlib \
+  git \
+  curl \
+  tor
 
-# Install Rust (if not present)
-if ! command -v cargo &> /dev/null; then
-    echo "Installing Rust via rustup..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    source "$HOME/.cargo/env"
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "Installing Rust via rustup..."
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  # shellcheck disable=SC1090
+  source "$HOME/.cargo/env"
 fi
 
-# Install Haskell via ghcup (strongly recommended on Arch over pacman ghc)
-if ! command -v ghc &> /dev/null; then
-    echo "Installing GHC and Cabal via ghcup (recommended)..."
-    curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sh
-    source "$HOME/.ghcup/env"
-fi
+echo "[3/6] Toolchain ready (cargo=$(command -v cargo))."
 
-echo "[3/7] Rust and Haskell toolchains ready."
+echo "[4/6] Building Rust library (release, locked)..."
+cargo build --release --locked
 
-# 4. Build Rust library
-echo "[4/7] Building Rust FFI library (release)..."
-cargo build --release
+echo "[5/6] Building Rust desktop TUI (hashchat-tui --features tui)..."
+cargo build --release --locked --bin hashchat-tui --features tui
 
-# 5. Stage the Rust library
-echo "[5/7] Staging Rust library..."
 mkdir -p rust-lib
-cp target/release/libhashchat_rust.so rust-lib/ || true
+if [ -f target/release/libhashchat_rust.so ]; then
+  cp -f target/release/libhashchat_rust.so rust-lib/
+fi
 
-# 6. Build Haskell parts
-echo "[6/7] Building Haskell components..."
-cabal update
-cabal build -f-tui hashchat-cli
-cabal build -f-tui hashchat-tui || echo "[WARN] TUI build may need extra steps on Arch. Try ./run-tui later."
-
-echo "[7/7] Installation complete!"
+echo "[6/6] Optional transitional Haskell path (skipped by default)."
+echo "      Rolling Arch: prefer ghcup if you still need the Brick TUI."
+echo "      ./run-tui uses Haskell only if the Rust binary is missing."
 
 echo ""
-echo "=== How to run HashChat ==="
-echo "  ./run-tui                 # Recommended launcher (shows audio/Tor status)"
+echo "=== How to run ==="
+echo "  ./run-tui"
+echo "  # or: ./target/release/hashchat-tui"
 echo ""
-echo "=== Important for Arch ==="
-echo "- Rolling release: Use ghcup for stable GHC/Cabal pins (pacman ghc can be too new/old)."
-echo "- Audio for voice: sudo pacman -S pipewire pipewire-pulse wireplumber alsa-utils"
-echo "- For reproducibility: Strongly prefer nix build .#hashchat-flatpak"
-echo "- See INSTALL.md for full per-OS notes (especially Tails/Qubes)."
+echo "=== Tor (required for the default anonymity path) ==="
+echo "1. Edit /etc/tor/torrc — add ControlPort 9051 and CookieAuthentication 1"
+echo "2. sudo systemctl enable --now tor && sudo systemctl restart tor"
 echo ""
-echo "For maximum security: Run inside Tails or Qubes OS."
+echo "Voice (optional): sudo pacman -S pipewire pipewire-pulse wireplumber alsa-utils"
+echo "Reproducible path: nix build .#hashchat-flatpak"
+echo "Stronger OPSEC: Tails or Qubes. See INSTALL.md / THREATMODEL.md"
+echo "Done."

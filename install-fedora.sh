@@ -1,97 +1,85 @@
 #!/usr/bin/env bash
 #
-# HashChat - Easy installation script for Fedora
-# (Also useful as reference for Ubuntu/Arch users — adapt package names)
+# HashChat — Fedora installer (Rust-first desktop)
 #
-# For normal users on other distros:
-# - Ubuntu: See INSTALL.md "Normal User Quick Path" + the new audio one-liners
-# - Arch:   Prefer Nix or adapt this script (pacman equivalents)
-# - Tails/Qubes: Use the dedicated qubes-build.sh or copy a pre-built Flatpak
+# Builds the native Rust TUI:
+#   cargo build --release --bin hashchat-tui --features tui
+#
+# Haskell desktop path remains available as a transitional fallback
+# (see INSTALL.md). Prefer Rust for new installs.
 #
 # Usage:
-#   chmod +x install-fedora.sh
 #   ./install-fedora.sh
-#
-# After installation:
+# Then:
 #   ./run-tui
 #
+# OPSEC: does not print secrets, passphrases, Tor cookies, or key material.
+#
 
-set -e
+set -euo pipefail
 
-echo "=== HashChat Installer for Fedora ==="
+echo "=== HashChat Installer for Fedora (Rust-first) ==="
+echo "Branch tip: codeberg-primary (Codeberg primary repo)"
 echo ""
 
-# 1. Update system
-echo "[1/7] Updating system packages..."
+# Ensure rustup env if present
+if [ -f "$HOME/.cargo/env" ]; then
+  # shellcheck disable=SC1090
+  source "$HOME/.cargo/env"
+fi
+
+echo "[1/6] Updating system packages..."
 sudo dnf update -y
 
-# 2. Install build dependencies
-echo "[2/7] Installing build dependencies (Rust, Haskell, system libs)..."
+echo "[2/6] Installing build + Tor dependencies..."
 sudo dnf install -y \
-    gcc \
-    make \
-    pkg-config \
-    openssl-devel \
-    ncurses-devel \
-    libffi-devel \
-    zlib-devel \
-    git \
-    curl
+  gcc \
+  make \
+  pkg-config \
+  openssl-devel \
+  ncurses-devel \
+  libffi-devel \
+  zlib-devel \
+  git \
+  curl \
+  tor
 
-# Install Rust (if not present)
-if ! command -v cargo &> /dev/null; then
-    echo "Installing Rust via rustup..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    source "$HOME/.cargo/env"
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "Installing Rust via rustup..."
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  # shellcheck disable=SC1090
+  source "$HOME/.cargo/env"
 fi
 
-# Install Haskell (GHC + Cabal)
-if ! command -v ghc &> /dev/null; then
-    echo "Installing GHC and Cabal via dnf..."
-    sudo dnf install -y ghc ghc-Cabal cabal-install
-fi
+echo "[3/6] Toolchain ready (cargo=$(command -v cargo))."
 
-echo "[3/7] Rust and Haskell toolchains ready."
+echo "[4/6] Building Rust library (release, locked)..."
+cargo build --release --locked
 
-# 4. Build Rust library
-echo "[4/7] Building Rust FFI library (release)..."
-cargo build --release
+echo "[5/6] Building Rust desktop TUI (hashchat-tui --features tui)..."
+cargo build --release --locked --bin hashchat-tui --features tui
 
-# 5. Stage the Rust library
-echo "[5/7] Staging Rust library..."
 mkdir -p rust-lib
-cp target/release/libhashchat_rust.so rust-lib/ || true
+if [ -f target/release/libhashchat_rust.so ]; then
+  cp -f target/release/libhashchat_rust.so rust-lib/
+fi
 
-# 6. Build Haskell parts
-echo "[6/7] Building Haskell components..."
-cabal update
-cabal build -f-tui hashchat-cli || echo "[WARN] CLI build had issues (may still work for TUI)"
-cabal build -f-tui hashchat-tui || {
-  echo "[WARN] TUI build had issues."
-  echo "       For best results on Fedora use the Nix path: nix build .#hashchat-flatpak"
-  echo "       Or ensure ghc/cabal are recent and vty/brick are resolvable."
-}
-
-echo "[7/7] Installation complete!"
+echo "[6/6] Optional transitional Haskell path (skipped by default)."
+echo "      To build the legacy Brick TUI later: install ghc/cabal, then"
+echo "      cabal update && cabal build -f-tui hashchat-tui"
+echo "      ./run-tui falls back to Haskell only if the Rust binary is missing."
 
 echo ""
-echo "=== How to run HashChat ==="
-echo "  ./run-tui                 # Recommended launcher (sets LD_LIBRARY_PATH)"
+echo "=== How to run ==="
+echo "  ./run-tui"
+echo "  # or: ./target/release/hashchat-tui"
 echo ""
-echo "=== Important: Tor Setup (Required for full anonymity) ==="
-echo "1. Install Tor:"
-echo "   sudo dnf install tor"
+echo "=== Tor (required for the default anonymity path) ==="
+echo "1. Enable ControlPort in /etc/tor/torrc (add; do not paste cookies here):"
+echo "     ControlPort 9051"
+echo "     CookieAuthentication 1"
+echo "2. sudo systemctl enable --now tor"
+echo "3. sudo systemctl restart tor"
 echo ""
-echo "2. Enable ControlPort (edit /etc/tor/torrc):"
-echo "   Add these lines:"
-echo "   ControlPort 9051"
-echo "   CookieAuthentication 1"
-echo ""
-echo "3. Restart Tor:"
-echo "   sudo systemctl enable --now tor"
-echo ""
-echo "4. (Optional but recommended) Run HashChat inside Tails or Qubes OS for maximum security."
-echo ""
-echo "After Tor is running, start HashChat with: ./run-tui"
-echo ""
-echo "For the most paranoid setup, see THREATMODEL.md and SECURITY.md"
+echo "Stronger OPSEC: Tails (amnesic) or Qubes + Whonix. See THREATMODEL.md / SECURITY.md"
+echo "Done."
