@@ -1,6 +1,6 @@
 # HashChat Threat Model
 
-**Version:** 0.2 (Post Deep Expert Pass - Real Envelope + Android Parity)
+**Version:** 0.2 (Argon2id envelope + Android parity)
 **Date:** 2026 (updated after high-4 Argon2id envelope, full ratchet parity, med-10 tests, med-8 lifecycle, long-13 quantum gate)
 
 ## Goals
@@ -8,7 +8,7 @@
 - Strong forward secrecy and post-compromise security
 - Resistance to mass surveillance and targeted attacks
 - Plausible deniability where possible
-- Fast, reliable device compromise response (Pegasus-like threats)
+- Fast device-compromise response (wipe paths; not a Pegasus mitigator)
 
 ## Trust Assumptions & Non-Goals
 
@@ -51,9 +51,9 @@
 
 ### Wave 8 Additions: Simplex-style Contact/Profile QR + Transport Expansion
 - **ContactAddress / profile sharing**: Implemented hashchat://contact/v1/<onion>/<len:hexpub> links + parse/generate roundtrip in Haskell (Contact.hs). Wired into both thin CLI and real Brick TUI (app-desktop/TUI.hs) with :my-contact / :add-contact. ConnectionRequest mirror for the "scanner replies" flow.
-  - **Metadata reality**: Only public onion + public identity key in the QR/link. Private material never leaves device. Matches Simplex model and our burner philosophy.
+  - **Metadata reality**: Only public onion + public identity key in the QR/link. Private material never leaves the device (similar to other invite-link designs; fits burner profiles).
   - **Progress on this gap (E)**: Desktop TUI now uses proper cryptographically secure random (via cryptonite) for the pub in generated contact QR links. Android has a basic generator. 
-  - Progress (H2): Desktop now persists long-term identity seed + onion address via Rust `session_persist` (Argon2id passphrase wrap by default; insecure-dev `machine.key` opt-in). Public contact links signed from that seed (H1). Android Keystore-backed identity persist remains a follow-up.
+  - Progress (H2/H3): Desktop persists identity + onion, contacts, per-contact Double Ratchet bytes, and pending outbound frames in Rust `session_persist` (`state.enc`, Argon2id passphrase wrap by default; insecure-dev `machine.key` opt-in). Public contact links signed from that seed (H1). Prefer durable queue commit before Tor send; remaining race documented in SECURITY.md. Android Keystore-backed identity persist remains a follow-up.
   - Extreme mode: generation should be refused (notes added; full gate pending deeper Android/TUI posture integration).
 - **Transport (SOCKS5 foundation + I2P/bridges path)**: Generalized sendCiphertextOverTor + sendOverProxy(ProxyConfig) in Tor.hs. TUI and callsites updated to use it. Default = local Tor 9050.
   - **I2P**: Documented as next: run i2pd, point Socks5Proxy at its SOCKS port (usually 4444 or 9050-equivalent). Garlic routing gives different metadata/latency profile vs Tor (stronger against some correlation, weaker exit diversity).
@@ -64,7 +64,7 @@
 - **Evidence / CI gates**: pre-tag-check.sh has hard exits for TESTING_EVIDENCE*.log and local .pre-tag-check-local-ran-<SHA> marker. Workflow audit step hardened (no more silent || true). Marker CI enforcement still future comment but pre-tag makes it blocking for any signed tag.
 - **Supply chain**: cargo-binstall unpinned (CVSS 4.0 robust), ghcup SHA pinned, .so staging fail-hard. Still no reproducible Android .so or SBOM diff automation in CI.
 
-These close more of the original expert table (transport priorities, Simplex QR alignment, pre-tag enforcement, demo surface pressure). Remaining high-leverage: real long-term identity keys for ContactAddress, full VoiceStream per-stream Double Ratchet lifecycle in Rust, I2P actual start code, Extreme as first-class TUI profile, v0.2 signed tag with real-hardware evidence.
+These address transport priorities, contact-link QR alignment, pre-tag enforcement, and demo-surface pressure. Remaining high-leverage: real long-term identity keys for ContactAddress, full VoiceStream per-stream Double Ratchet lifecycle in Rust, I2P start path, Extreme as first-class TUI profile, v0.2 signed tag with real-hardware evidence.
 
 ### 3. Device Compromise / "Pegasus" Resistance
 **Best we can do (and what we are building toward):**
@@ -74,7 +74,7 @@ These close more of the original expert table (transport priorities, Simplex QR 
   - Deletes `hashchat_data/`, Tor hidden service keys, databases.
   - Destroys in-memory ratchet objects.
 
-- Encrypted-at-rest everything (ratchets + messages + identity/onion state) using user passphrase + Argon2id (H2).
+- Encrypted-at-rest everything (ratchets + messages + identity/onion + contacts + pending queue) using user passphrase + Argon2id (H2/H3).
 - Minimal attack surface: No network stack in the main process until transport is added. Pure local TUI + FFI to Rust.
 
 **Limitations (Honest):**
@@ -109,7 +109,7 @@ These close more of the original expert table (transport priorities, Simplex QR 
 - Streaming voice with per-chunk ratchet + SeekBar is working on both platforms.
 - Android has Keystore + biometric gate + multi-screen + real export/import.
 - Cross-device encrypted ratchet export is functional (with strong OPSEC warnings).
-- Tests + CI now exercise many paranoid paths (wipe, posture, disappearing, export).
+- Tests + CI now exercise wipe, posture, disappearing, and export paths.
 
 **Remaining Expert Priorities (v0.2 blocking + high polish):**
 - Real professional icons (64/128/256/512 PNG + final SVG) + real screenshots (see ICONS.md + docs/SCREENSHOTS.md).
@@ -127,7 +127,7 @@ We cannot stop a targeted zero-day on your device.
 **What we can do extremely well:**
 - Make it extremely hard for mass surveillance to work.
 - Make targeted surveillance expensive and noisy (they need a 0-day + reliable persistence).
-- Give you a fast "nuclear option" (wipe) that destroys cryptographic material and data.
+- Give you a fast panic wipe that destroys cryptographic material and data.
 - Minimize what remains on disk even if the device is seized powered off.
 
 This is the realistic "best possible" for a local application.
@@ -136,7 +136,7 @@ This is the realistic "best possible" for a local application.
 
 ### Current Stack (Haskell + Rust core + thin Kotlin UI)
 - **Rust** owns the entire security boundary: Double Ratchet, Argon2id envelopes, AES-GCM, zeroization, mlock hints, JNI export surface. This is the correct language for the "crown jewels."
-- **Haskell** owns high-level protocol logic, state machines, TUI, group orchestration, Tor framing glue. Excellent for eliminating entire classes of logic bugs and injection-style issues (no raw string concatenation in critical paths, strong types).
+- **Haskell** owns high-level protocol logic, state machines, TUI, group orchestration, Tor framing glue. Strong types help avoid whole classes of logic and injection-style bugs (no raw string concatenation in critical paths).
 - **Kotlin** (Android) is deliberately limited to UI + thin glue + Keystore/Biometric orchestration. All ratchet state and encryption is pushed across the JNI boundary into Rust.
 
 ### Attack Surface After Major Rust Migration on Android (2026 update — post strict mode + GroupSenderKey + Voice work)
@@ -144,7 +144,7 @@ This is the realistic "best possible" for a local application.
 Moving large amounts of sensitive logic into the Android Rust crate (Double Ratchet, GroupSenderKey with real HKDF-SHA256 advancement, VoiceStream per-chunk HKDF chains, Argon2id+AES-256-GCM export envelopes, strict mode environment checks, Tor receiver framing) is a net security win, but it changes the attack surface in specific, documented ways:
 
 **Positive changes:**
-- The "crown jewels" (ratchet material, sender keys, voice chunk keys, export blobs) now live in memory-safe Rust with zeroize, explicit wipe paths, and HKDF-based forward secrecy instead of Kotlin/Java.
+- Sensitive material (ratchet state, sender keys, voice chunk keys, export blobs) now lives in memory-safe Rust with zeroize, explicit wipe paths, and HKDF-based forward secrecy instead of Kotlin/Java.
 - Strict mode (real checks for debug/emulator/root/qemu/test-keys + refusal gates on voice/groups/export/decoy) adds an active runtime control that did not exist before.
 - Group forward secrecy for multi-party is now derived in Rust (not simulated count-fill).
 - The JNI surface is intentionally kept thin and stable; most new logic is inside the Rust security boundary.
@@ -189,11 +189,11 @@ Full ritual + force-with-lease + CI checks on every batch. See todo "ALL-Recs-Wa
 
 ### Expert Recommendation on Languages (No Hype)
 
-**Do NOT do a big rewrite.** The current split is already close to optimal for a maximum-paranoid messenger in 2026:
+**Do NOT do a big rewrite.** The current split is a reasonable fit for this threat model in 2026:
 
 1. **Keep Rust** as the sole owner of all cryptography, ratchet state, encrypted persistence, and low-level security primitives. If anything, move *more* logic into Rust over time (especially Android backend logic).
 
-2. **Keep Haskell** for the high-level protocol, TUI, and correctness-critical orchestration. It is one of the best languages in existence for eliminating entire categories of bugs that nation-states love to exploit.
+2. **Keep Haskell** for the high-level protocol, TUI, and correctness-critical orchestration. Strong typing helps eliminate whole classes of bugs in orchestration code.
 
 3. **For Android**: Stay with Kotlin for the UI layer, but **aggressively minimize** its privileges and surface. All new sensitive functionality (new persistence formats, more voice processing, future decentralized discovery) must go through the Rust JNI layer. This is already the direction.
 
@@ -204,7 +204,7 @@ Full ritual + force-with-lease + CI checks on every batch. See todo "ALL-Recs-Wa
    - Pure desktop TUI alternative: ratatui (Rust) would be a viable pure-Rust path if we ever want to deprecate the Haskell TUI.
    - Server components: Never. If we ever need any, Rust (or nothing).
 
-**Bottom line for expert-level resistance**:
+**Bottom line**:
 Language choice is important but **secondary** to:
 - Attack surface minimization
 - Cryptographic architecture (Double Ratchet + Tor v3 + no identifiers)
@@ -212,10 +212,10 @@ Language choice is important but **secondary** to:
 - User OPSEC + fast wipe
 - Honest threat model
 
-The current Haskell + Rust + thin Kotlin is a **strong** expert choice for the stated goals. Changing languages for the sake of "more expert" would most likely make things worse unless the entire architecture changed with it.
+The current Haskell + Rust + thin Kotlin split fits the stated goals. Changing languages for fashion would likely make things worse unless the architecture changed with it.
 
 We should continue hardening the **boundaries** and **minimization** rather than chasing language fashion.
 
 ---
 
-**"The best anonymous and private and safer security chat ever made"** is not a marketing claim. It is an engineering goal we pursue by being brutally honest about limitations while relentlessly improving the parts we *can* control.
+Goal: a trustworthy anonymous messenger. We pursue that by documenting limitations honestly and hardening what we can control — not by marketing slogans.

@@ -21,7 +21,10 @@ pub use contact_link::{
     parse_unsigned_contact_link_insecure, bootstrap_ratchet_from_signed_link, sas_fingerprint,
     sas_for_signed, canonical_payload,
 };
-pub use session_persist::{IdentityOnionState, PersistMode, save_disk, load_disk, wipe_disk, state_exists};
+pub use session_persist::{
+    IdentityOnionState, PersistedContact, SessionState, PersistMode,
+    save_disk, load_disk, save_session, load_session, commit_outgoing, wipe_disk, state_exists,
+};
 
 // long-13: gated quantum module. Only compiled with `cargo build --features quantum`.
 // The module itself documents the strict constant-time / zeroize / side-channel
@@ -63,7 +66,7 @@ pub extern "C" fn rust_hmac_verify(msg: *const u8, len: usize) -> bool {
 pub extern "C" fn rust_wipe_files() {
     let _ = fs::remove_dir_all("tor/hidden_service");
     let _ = fs::remove_file("hashchat.db");
-    // H2: wipe passphrase-wrapped identity/onion state + any leftover machine.key
+    // H2/H3: wipe passphrase-wrapped session blob (identity, contacts, ratchets, pending)
     let _ = session_persist::wipe_disk(std::path::Path::new("hashchat_data"));
     let _ = fs::remove_dir_all("hashchat_data");
 }
@@ -1131,3 +1134,339 @@ pub extern "C" fn rust_identity_state_exists(data_dir: *const c_char) -> bool {
         }
     }
 }
+
+// =============================================================================
+// H3: Full session persist (contacts + ratchet bytes + pending) FFI
+// Packed section formats match session_persist v2 blob sections (count + records).
+// =============================================================================
+
+fn pack_contacts_section(contacts: &[PersistedContact]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(contacts.len() as u32).to_be_bytes());
+    for c in contacts {
+        let id = c.id.as_bytes();
+        out.extend_from_slice(&(id.len() as u32).to_be_bytes());
+        out.extend_from_slice(id);
+        let dn = c.display_name.as_bytes();
+        out.extend_from_slice(&(dn.len() as u32).to_be_bytes());
+        out.extend_from_slice(dn);
+        let on = c.onion.as_bytes();
+        out.extend_from_slice(&(on.len() as u32).to_be_bytes());
+        out.extend_from_slice(on);
+        out.extend_from_slice(&c.x25519);
+        out.extend_from_slice(&c.ed25519);
+    }
+    out
+}
+
+fn unpack_contacts_section(buf: &[u8]) -> Result<Vec<PersistedContact>, &'static str> {
+    if buf.len() < 4 {
+        return Err("short contacts");
+    }
+    let n = u32::from_be_bytes(buf[0..4].try_into().unwrap()) as usize;
+    let mut pos = 4;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let id = read_ffi_len_str(buf, &mut pos)?;
+        let display_name = read_ffi_len_str(buf, &mut pos)?;
+        let onion = read_ffi_len_str(buf, &mut pos)?;
+        if pos + 64 > buf.len() {
+            return Err("short contact keys");
+        }
+        let mut x25519 = [0u8; 32];
+        let mut ed25519 = [0u8; 32];
+        x25519.copy_from_slice(&buf[pos..pos + 32]);
+        pos += 32;
+        ed25519.copy_from_slice(&buf[pos..pos + 32]);
+        pos += 32;
+        out.push(PersistedContact {
+            id,
+            display_name,
+            onion,
+            x25519,
+            ed25519,
+        });
+    }
+    Ok(out)
+}
+
+fn pack_kv_section(items: &[(String, Vec<u8>)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(items.len() as u32).to_be_bytes());
+    for (k, v) in items {
+        let kb = k.as_bytes();
+        out.extend_from_slice(&(kb.len() as u32).to_be_bytes());
+        out.extend_from_slice(kb);
+        out.extend_from_slice(&(v.len() as u32).to_be_bytes());
+        out.extend_from_slice(v);
+    }
+    out
+}
+
+fn unpack_kv_section(buf: &[u8]) -> Result<Vec<(String, Vec<u8>)>, &'static str> {
+    if buf.len() < 4 {
+        return Err("short kv");
+    }
+    let n = u32::from_be_bytes(buf[0..4].try_into().unwrap()) as usize;
+    let mut pos = 4;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let k = read_ffi_len_str(buf, &mut pos)?;
+        let v = read_ffi_len_bytes(buf, &mut pos)?;
+        out.push((k, v));
+    }
+    Ok(out)
+}
+
+fn read_ffi_len_bytes(buf: &[u8], pos: &mut usize) -> Result<Vec<u8>, &'static str> {
+    if *pos + 4 > buf.len() {
+        return Err("truncated len");
+    }
+    let n = u32::from_be_bytes(buf[*pos..*pos + 4].try_into().unwrap()) as usize;
+    *pos += 4;
+    if *pos + n > buf.len() {
+        return Err("truncated bytes");
+    }
+    let out = buf[*pos..*pos + n].to_vec();
+    *pos += n;
+    Ok(out)
+}
+
+fn read_ffi_len_str(buf: &[u8], pos: &mut usize) -> Result<String, &'static str> {
+    let b = read_ffi_len_bytes(buf, pos)?;
+    String::from_utf8(b).map_err(|_| "utf8")
+}
+
+fn copy_out(dst: *mut u8, capacity: *mut usize, src: &[u8]) -> bool {
+    unsafe {
+        if dst.is_null() || *capacity < src.len() {
+            *capacity = src.len();
+            return false;
+        }
+        if !src.is_empty() {
+            std::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());
+        }
+        *capacity = src.len();
+        true
+    }
+}
+
+/// Save full session (identity + contacts + ratchets + pending) into state.enc.
+/// Section blobs use v2 on-disk packing (u32be count + records).
+#[no_mangle]
+pub extern "C" fn rust_session_state_save(
+    data_dir: *const c_char,
+    insecure_dev: u8,
+    passphrase: *const u8,
+    pass_len: usize,
+    seed: *const u8,
+    onion: *const u8,
+    onion_len: usize,
+    onion_key: *const u8,
+    onion_key_len: usize,
+    contacts_blob: *const u8,
+    contacts_len: usize,
+    ratchets_blob: *const u8,
+    ratchets_len: usize,
+    pending_blob: *const u8,
+    pending_len: usize,
+) -> bool {
+    if data_dir.is_null() || seed.is_null() {
+        return false;
+    }
+    if passphrase.is_null() && pass_len != 0 {
+        return false;
+    }
+    unsafe {
+        let dir = match CStr::from_ptr(data_dir).to_str() {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        let pass = if pass_len == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(passphrase, pass_len)
+        };
+        let seed_arr: [u8; 32] = match std::slice::from_raw_parts(seed, 32).try_into() {
+            Ok(a) => a,
+            Err(_) => return false,
+        };
+        let onion_s = if onion_len == 0 || onion.is_null() {
+            String::new()
+        } else {
+            match std::str::from_utf8(std::slice::from_raw_parts(onion, onion_len)) {
+                Ok(s) => s.to_string(),
+                Err(_) => return false,
+            }
+        };
+        let okey = if onion_key_len == 0 || onion_key.is_null() {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts(onion_key, onion_key_len).to_vec()
+        };
+        let cblob = if contacts_len == 0 || contacts_blob.is_null() {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(contacts_blob, contacts_len)
+        };
+        let rblob = if ratchets_len == 0 || ratchets_blob.is_null() {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(ratchets_blob, ratchets_len)
+        };
+        let pblob = if pending_len == 0 || pending_blob.is_null() {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(pending_blob, pending_len)
+        };
+        let contacts = if cblob.is_empty() {
+            Vec::new()
+        } else {
+            match unpack_contacts_section(cblob) {
+                Ok(c) => c,
+                Err(_) => return false,
+            }
+        };
+        let ratchets = if rblob.is_empty() {
+            Vec::new()
+        } else {
+            match unpack_kv_section(rblob) {
+                Ok(r) => r,
+                Err(_) => return false,
+            }
+        };
+        let pending = if pblob.is_empty() {
+            Vec::new()
+        } else {
+            match unpack_kv_section(pblob) {
+                Ok(p) => p,
+                Err(_) => return false,
+            }
+        };
+        let state = SessionState {
+            identity: IdentityOnionState {
+                seed: seed_arr,
+                onion: onion_s,
+                onion_key: okey,
+            },
+            contacts,
+            ratchets,
+            pending,
+        };
+        let mode = PersistMode::from_flags(insecure_dev != 0);
+        save_session(Path::new(dir), mode, pass, &state).is_ok()
+    }
+}
+
+/// Load full session. Writes identity fields + packed contacts/ratchets/pending sections.
+/// On undersized buffers, writes required sizes into the length pointers and returns false.
+#[no_mangle]
+pub extern "C" fn rust_session_state_load(
+    data_dir: *const c_char,
+    insecure_dev: u8,
+    passphrase: *const u8,
+    pass_len: usize,
+    out_seed: *mut u8,
+    out_onion: *mut u8,
+    onion_len: *mut usize,
+    out_onion_key: *mut u8,
+    onion_key_len: *mut usize,
+    out_contacts: *mut u8,
+    contacts_len: *mut usize,
+    out_ratchets: *mut u8,
+    ratchets_len: *mut usize,
+    out_pending: *mut u8,
+    pending_len: *mut usize,
+) -> bool {
+    if data_dir.is_null()
+        || out_seed.is_null()
+        || onion_len.is_null()
+        || onion_key_len.is_null()
+        || contacts_len.is_null()
+        || ratchets_len.is_null()
+        || pending_len.is_null()
+    {
+        return false;
+    }
+    unsafe {
+        let dir = match CStr::from_ptr(data_dir).to_str() {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        let pass = if pass_len == 0 {
+            &[][..]
+        } else {
+            if passphrase.is_null() {
+                return false;
+            }
+            std::slice::from_raw_parts(passphrase, pass_len)
+        };
+        let mode = PersistMode::from_flags(insecure_dev != 0);
+        let state = match load_session(Path::new(dir), mode, pass) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        std::ptr::copy_nonoverlapping(state.identity.seed.as_ptr(), out_seed, 32);
+        let cblob = pack_contacts_section(&state.contacts);
+        let rblob = pack_kv_section(&state.ratchets);
+        let pblob = pack_kv_section(&state.pending);
+        let onion_ok = copy_out(out_onion, onion_len, state.identity.onion.as_bytes());
+        let key_ok = copy_out(out_onion_key, onion_key_len, &state.identity.onion_key);
+        let contacts_ok = copy_out(out_contacts, contacts_len, &cblob);
+        let ratchets_ok = copy_out(out_ratchets, ratchets_len, &rblob);
+        let pending_ok = copy_out(out_pending, pending_len, &pblob);
+        onion_ok && key_ok && contacts_ok && ratchets_ok && pending_ok
+    }
+}
+
+/// Durable outgoing commit: upsert ratchet bytes + append pending frame, then save.
+/// Prefer calling this after encrypt and before Tor send (audit H3).
+#[no_mangle]
+pub extern "C" fn rust_session_commit_outgoing(
+    data_dir: *const c_char,
+    insecure_dev: u8,
+    passphrase: *const u8,
+    pass_len: usize,
+    contact_id: *const c_char,
+    ratchet_bytes: *const u8,
+    ratchet_len: usize,
+    dest_onion: *const c_char,
+    frame: *const u8,
+    frame_len: usize,
+) -> bool {
+    if data_dir.is_null()
+        || contact_id.is_null()
+        || dest_onion.is_null()
+        || ratchet_bytes.is_null()
+        || frame.is_null()
+    {
+        return false;
+    }
+    if passphrase.is_null() && pass_len != 0 {
+        return false;
+    }
+    unsafe {
+        let dir = match CStr::from_ptr(data_dir).to_str() {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        let cid = match CStr::from_ptr(contact_id).to_str() {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        let onion = match CStr::from_ptr(dest_onion).to_str() {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        let pass = if pass_len == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(passphrase, pass_len)
+        };
+        let rb = std::slice::from_raw_parts(ratchet_bytes, ratchet_len).to_vec();
+        let fr = std::slice::from_raw_parts(frame, frame_len).to_vec();
+        let mode = PersistMode::from_flags(insecure_dev != 0);
+        commit_outgoing(Path::new(dir), mode, pass, cid, rb, onion, fr).is_ok()
+    }
+}
+

@@ -43,6 +43,13 @@ import HashChat.Core
   , identityStateExists
   , signContactLinkFromSeed
   , insecureDevPersistEnabled
+  , PersistedContact(..)
+  , SessionPersistPayload(..)
+  , saveSessionState
+  , loadSessionState
+  , commitOutgoingFrame
+  , ratchetToBytes
+  , ratchetFromBytes
   )
 import qualified HashChat.Contact as Contact
 import HashChat.Contact (Contact(..), defaultContact, ContactAddress(..), generateContactAddress, contactAddressToLink, parseContactAddress, parseContactAddressInsecure, contactSas, contactToAddress)
@@ -91,7 +98,7 @@ data AppState = AppState
   , showHelp       :: Bool
   , ratchets       :: Map String Word32        -- contact -> ratchet ID (persisted encrypted)
   , sessionPass    :: BS.ByteString            -- unlocked once per session for ratchet encryption
-  , securityPosture :: String                   -- "MAX PARANOID", "HIGH", "STANDARD" etc.
+  , securityPosture :: String                   -- posture label from getSecurityPosture
   , blockedContacts :: [String]                 -- persisted per-profile in real impl
   , actionPending   :: Bool                     -- after pressing 'a', next key is action
   , incomingBlobs   :: MVar [(String, BS.ByteString)]  -- (contact hint or onion, ciphertext blob) from Tor receiver
@@ -102,6 +109,8 @@ data AppState = AppState
   , proxies         :: ProfileProxyStore                    -- profile -> SOCKS5/I2P/VPN config
   -- H2: long-term identity seed (32B) loaded/saved via Rust Argon2id wrap
   , longtermSeed    :: BS.ByteString
+  -- H3: pending outbound framed ciphertext (dest onion, frame) surviving restart
+  , pendingOut      :: [(String, BS.ByteString)]
   }
 
 initialState :: AppState
@@ -127,7 +136,66 @@ initialState = AppState
   , currentGroup    = Nothing
   , proxies         = Map.empty   -- D: starts with default (local Tor) for all profiles
   , longtermSeed    = BS.empty
+  , pendingOut      = []
   }
+
+
+-- === H3: session blob helpers (contacts + ratchet bytes + pending in state.enc) ===
+
+contactToPersisted :: Contact.Contact -> PersistedContact
+contactToPersisted c =
+  let hint = Contact.pubHint c
+      x = if BS.length hint >= 32 then BS.take 32 hint
+          else hint <> BS.replicate (32 - BS.length hint) 0
+  in PersistedContact
+       { pcId = Contact.contactId c
+       , pcDisplayName = Contact.displayName c
+       , pcOnion = Contact.onionAddress c
+       , pcX25519 = x
+       , pcEd25519 = BS.replicate 32 0
+       }
+
+persistedToContact :: PersistedContact -> Contact.Contact
+persistedToContact pc =
+  Contact.Contact
+    { Contact.contactId = pcId pc
+    , Contact.displayName = pcDisplayName pc
+    , Contact.onionAddress = pcOnion pc
+    , Contact.pubHint = BS.take 8 (pcX25519 pc)
+    , Contact.ratchetId = Nothing
+    }
+
+-- Collect live ratchet bytes from FFI store for all known contact IDs.
+collectRatchetBytes :: Map String Word32 -> IO [(String, BS.ByteString)]
+collectRatchetBytes m = do
+  pairs <- mapM (\(cid, rid) -> do
+      mb <- ratchetToBytes rid
+      pure (cid, mb)
+    ) (Map.toList m)
+  pure [ (cid, b) | (cid, Just b) <- pairs ]
+
+saveFullSession :: AppState -> Bool -> String -> BS.ByteString -> IO Bool
+saveFullSession st insecureDev onionAddr onionKey = do
+  rpairs <- collectRatchetBytes (ratchets st)
+  let payload = SessionPersistPayload
+        { spSeed = longtermSeed st
+        , spOnion = onionAddr
+        , spOnionKey = onionKey
+        , spContacts = map contactToPersisted (contacts st)
+        , spRatchets = rpairs
+        , spPending = pendingOut st
+        }
+  if BS.length (longtermSeed st) /= 32
+    then pure False
+    else saveSessionState "hashchat_data" insecureDev (sessionPass st) payload
+
+restoreRatchetsFromBytes :: [(String, BS.ByteString)] -> IO (Map String Word32)
+restoreRatchetsFromBytes pairs = foldM step Map.empty pairs
+  where
+    step m (cid, blob) = do
+      rid <- newRatchet
+      ok <- ratchetFromBytes rid blob
+      if ok then pure (Map.insert cid rid m) else pure m
 
 -- === Real Encrypted Ratchet Persistence (Argon2id + AES-GCM) ===
 ratchetBaseDir :: FilePath
@@ -140,7 +208,7 @@ getRatchetPath :: ProfileName -> String -> FilePath
 getRatchetPath profile contact =
   combine (getProfileDir profile) (contact ++ ".ratchet.enc")
 
--- Prompt for passphrase (simple, echoes for demo; later use haskeline or similar)
+-- Prompt for passphrase (echo disabled; prefer a no-echo line editor later)
 promptPassphrase :: String -> IO BS.ByteString
 promptPassphrase msg = do
   putStr msg
@@ -204,10 +272,10 @@ getSecurityPosture = do
   let final = min 3 (baseScore + bonus)
 
   pure $ case final of
-    3 -> "MAX PARANOID (Tails/Qubes detected — Excellent)"
-    2 -> "HIGH (Good isolation — Very strong)"
-    1 -> "MEDIUM (Consider Tails or Qubes for serious use)"
-    _ -> "STANDARD / LOW (High risk environment — use with extreme caution)"
+    3 -> "MAX PARANOID (Tails/Qubes detected)"
+    2 -> "HIGH (good isolation)"
+    1 -> "MEDIUM (consider Tails or Qubes)"
+    _ -> "STANDARD / LOW (elevated risk — avoid sensitive use)"
 
 -- Dynamic re-evaluation gate: returns True if action is allowed in current posture
 isActionAllowedInPosture :: String -> String -> Bool
@@ -238,7 +306,7 @@ drawMain :: AppState -> Widget Name
 drawMain st = vBox
   [ withAttr (attrName "title") $ str $ "HashChat TUI — Profile: " ++ currentProfile st ++ (maybe "" (" | Group: " ++) (currentGroup st)) ++ "  [p=burner n=new D=decoy g=group w=wipe a=actions] (TOR-ONLY | Double Ratchet + Tor v3 + Sender Keys) Security: " ++ securityPosture st ++ (if actionPending st then " [ACTIONS MENU ACTIVE]" else "") ++ " [posture live]"  -- med-8 desktop parity note
   , hBox
-      [ borderWithLabel (withAttr (attrName "highlight") $ str " Contacts (Simplex-style: long-press equiv = 'a') | Groups: g") $
+      [ borderWithLabel (withAttr (attrName "highlight") $ str " Contacts ('a' = actions) | Groups: g") $
           vBox (map (str . showContact (blockedContacts st)) ["Alice", "Bob", "Support"])
       , borderWithLabel (withAttr (attrName "highlight") $ str $ " " ++ currentContact st ++ (maybe "" (" | " ++) (currentGroup st)) ) $
           vBox (map (str . showMsg) (Map.findWithDefault [] (currentContact st) (messages st))) <+> fill ' '
@@ -251,7 +319,7 @@ drawMain st = vBox
       else str ""
   , str " "  -- extra visual separation for posture status block (med-8 / polish-3)
   -- Additional status indicators for consistency with Android top-bar (voice wipe ready, OPSEC ritual)
-  , withAttr (attrName "title") $ str "[Voice: real mic on Android / demo TUI | Wipe: explicit post-playback + nuclear 'w' | OPSEC: clean-security enforced]"
+  , withAttr (attrName "title") $ str "[Voice: mic on Android / TUI backends | Wipe: post-playback + 'w' panic wipe | OPSEC: clean-security]"
 
   , if isJust (currentGroup st) then
       borderWithLabel (withAttr (attrName "highlight") $ str " Group Members (sender-key ratchets) ") $
@@ -291,13 +359,13 @@ drawHelp = borderWithLabel (withAttr (attrName "title") $ str " HELP ") $ padAll
   , str "2. Press 'n' to create a burner profile"
   , str "3. Press 'v' to test voice (real mic if pw-record/parecord/arecord available)"
   , str "4. Use :set-proxy 127.0.0.1 9050 if you need custom transport (Qubes/Tails)"
-  , str "5. '?' toggles this help. 'w' is the nuclear wipe (use it!)"
+  , str "5. '?' toggles this help. 'w' runs panic wipe (irreversible)"
   , str ""
   , str "Enter          → Send encrypted message (real ratchet + AES-GCM)"
   , str "Backspace      → Delete char"
   , str "Esc / q        → Quit"
   , str "?              → Toggle this help"
-  , withAttr (attrName "danger") $ str "w              → PANIC WIPE (Nuclear Option - Destroys everything instantly)"
+  , withAttr (attrName "danger") $ str "w              → PANIC WIPE (destroys local crypto material and data)"
   , str "p / n          → Burner profile switch / new (dynamic posture gated)"
   , str "D              → Toggle decoy (plausible deniability) profile (posture gated + visual feedback)"
   , str "a              → Contact actions (block/mute/delete/report/disappear)"
@@ -348,7 +416,7 @@ drainIncoming = do
                   let contact = if Map.member hintStr (ratchets st) then hintStr else currentContact st
                   let updated = Map.insertWith (++) contact [msg] (messages st)
                   saveEncryptedMessages "hashchat_data" (currentProfile st) contact (sessionPass st) (updated Map.! contact)
-                  putStrLn $ "[TOR] Successfully received & decrypted message for " ++ contact ++ " via framed header (real bidirectional!)"
+                  putStrLn $ "[TOR] Decrypted framed message for " ++ contact
                   -- Voice chunk special path from the actual Tor receiver: if this is a framed voice chunk,
                   -- trigger real playback with progress + ratchet key wipe after.
                   when (BS.isPrefixOf (BS.pack [0x56,0x4F,0x49,0x43,0x45]) rawCt) $ do
@@ -376,7 +444,7 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
     let inputStr = T.unpack txt
 
     -- =====================================================================
-    -- Wave 8 DEEP: Simplex-style Contact / Profile QR commands (TUI wiring)
+    -- Wave 8: Contact / profile QR commands (TUI wiring)
     -- :my-contact   -> generate and print hashchat://contact/v1/... link (PUBLIC onion+pubkey only)
     -- :add-contact <hashchat://contact/v1/...>  -> parse + add as Contact (onion + pubHint from key)
     -- :set-proxy <host> <port>   -> future per-profile SOCKS (currently logs; real config TODO)
@@ -432,6 +500,16 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
               , input = ""
               , inputHistory = inputHistory st ++ [txt]
               }
+            stAfter <- get
+            insecureDev <- liftIO insecureDevPersistEnabled
+            onionAddr <- liftIO $ do
+              let hn = "tor/hidden_service/hostname"
+              ex <- doesFileExist hn
+              if ex then Prelude.head . lines <$> Prelude.readFile hn else pure "offline.onion"
+            okSave <- liftIO $ saveFullSession stAfter insecureDev onionAddr BS.empty
+            if okSave
+              then liftIO $ putStrLn "[H3] Contact list saved into passphrase-wrapped session store."
+              else liftIO $ putStrLn "[H3] Session save skipped or failed (need unlocked identity seed)."
             liftIO $ putStrLn "[CONTACT] Contact added from signed QR/link."
           Nothing -> do
             liftIO $ putStrLn "[CONTACT] Rejected. Need signed hashchat://contact/v1/<onion>/<x25519>/<ed25519>/<sig>"
@@ -450,6 +528,13 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
               , input = ""
               , inputHistory = inputHistory st ++ [txt]
               }
+            stAfter <- get
+            insecureDev <- liftIO insecureDevPersistEnabled
+            onionAddr <- liftIO $ do
+              let hn = "tor/hidden_service/hostname"
+              ex <- doesFileExist hn
+              if ex then Prelude.head . lines <$> Prelude.readFile hn else pure "offline.onion"
+            _ <- liftIO $ saveFullSession stAfter insecureDev onionAddr BS.empty
           Nothing -> do
             liftIO $ putStrLn "[CONTACT] Insecure parser could not read link."
             modify $ \st -> st { input = "" }
@@ -527,8 +612,22 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
               Just c  -> (Contact.contactPubHint c, Contact.onionAddress c)
               Nothing -> (BS.pack (map (fromIntegral . fromEnum) contact), "unknown.onion")
         let framed = frameForWire hint (ratchetStep msgWithTime) senderDh (ciphertext msgWithTime)
-        liftIO $ putStrLn $ "[TOR] Sending framed ciphertext to " ++ targetOnion ++ " (real contact mapping + header)"
-        -- D finished: Use per-profile proxy if set for current burner, else default (local Tor)
+        -- H3: durable queue commit before Tor send (ratchet bytes + pending frame).
+        -- Remaining race: crash after save but before Tor ACK may resend on restart.
+        insecureDevSend <- liftIO insecureDevPersistEnabled
+        mRBytes <- liftIO $ ratchetToBytes rid
+        case mRBytes of
+          Just rbytes -> do
+            okCommit <- liftIO $ commitOutgoingFrame
+              "hashchat_data" insecureDevSend pass contact rbytes targetOnion framed
+            if okCommit
+              then do
+                liftIO $ putStrLn "[H3] Outgoing frame committed to wrapped session store before send."
+                modify $ \st -> st { pendingOut = pendingOut st ++ [(targetOnion, framed)] }
+              else liftIO $ putStrLn "[H3] Durable commit failed; send continues (availability risk on crash)."
+          Nothing ->
+            liftIO $ putStrLn "[H3] Could not export ratchet bytes; skipping durable commit."
+        liftIO $ putStrLn $ "[TOR] Sending framed ciphertext to " ++ targetOnion ++ " (contact mapping + header)"
         let currentProxy = Map.findWithDefault defaultProxyForProfile (currentProfile s) (proxies s)
         _ <- liftIO $ Tor.sendOverProxy currentProxy targetOnion framed
         liftIO $ putStrLn $ "[TOR] Framed blob sent using per-profile proxy for " ++ currentProfile s ++ " (or default)."
@@ -577,10 +676,10 @@ handleEvent (VtyEvent (V.EvKey V.KDown [])) = do
 handleEvent (VtyEvent (V.EvKey V.KEsc [])) = halt
 
 -- === HIGHEST LEVERAGE ANTI-PEGASUS / ANTI-GOVERNMENT FEATURE ===
--- Nuclear option: Comprehensive Panic Wipe
+-- Panic wipe: destroy local crypto material and app data
 handleEvent (VtyEvent (V.EvKey (V.KChar 'w') [])) = do
-  liftIO $ putStrLn "\n!!! PANIC WIPE TRIGGERED !!!"
-  liftIO $ putStrLn "Destroying all cryptographic material and data immediately..."
+  liftIO $ putStrLn "\n[WIPE] Panic wipe started."
+  liftIO $ putStrLn "[WIPE] Destroying cryptographic material and local data..."
 
   -- 1. Call the core secure wipe (zeroizes Rust ratchets + deletes sensitive dirs)
   liftIO wipeAll
@@ -593,6 +692,8 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'w') [])) = do
     , ratchets       = Map.empty
     , sessionPass    = BS.pack (replicate 64 0x00)  -- overwrite passphrase
     , longtermSeed   = BS.replicate 32 0x00         -- overwrite identity seed
+    , pendingOut     = []                           -- H3: drop pending frames from RAM
+    , contacts       = []
     , profiles       = Map.empty
     , historyIndex   = -1
     }
@@ -610,7 +711,7 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'w') [])) = do
 
     let dataDir = "hashchat_data"
     whenM (doesDirectoryExist dataDir) $ do
-      -- Extremely paranoid: 7 passes + final zero
+      -- Multi-pass overwrite + final zero
       _ <- try (callCommand ("shred -v -n 7 -z -u " ++ dataDir ++ "/**/* 2>/dev/null || true")) :: IO (Either SomeException ())
       _ <- try (callCommand ("find " ++ dataDir ++ " -type f -exec shred -v -n 3 -z -u {} \\; 2>/dev/null || true")) :: IO (Either SomeException ())
       removePathForcibly dataDir `catch` (\(_ :: SomeException) -> pure ())
@@ -640,7 +741,7 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'w') [])) = do
 
   halt
 
--- Ultra-paranoid burner profile isolation
+-- Burner profile isolation
 -- Each profile lives in its own fully separate encrypted directory tree.
 -- Switching always triggers a wipe of the previous one.
 wipeProfileData :: ProfileName -> BS.ByteString -> IO ()
@@ -658,7 +759,7 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'p') [])) = do
   let current = currentProfile s
   let next = if current == "Default" then "Work" else "Default"
   liftIO $ putStrLn $ "\n[SECURITY] Switching burner context: " ++ current ++ " → " ++ next
-  liftIO $ putStrLn "[PARANOID] Wiping previous profile..."
+  liftIO $ putStrLn "[SECURITY] Wiping previous profile..."
   liftIO $ wipeProfileData current (sessionPass s)
   newP <- liftIO getSecurityPosture
   liftIO $ putStrLn $ "[SECURITY] Dynamic posture re-evaluated after switch: " ++ newP
@@ -793,7 +894,7 @@ recordVoiceChunkDesktop = do
 -- Voice end-to-end on desktop (recording + sending) is functional:
 -- Real mic (PipeWire/Pulse/ALSA) → ratchet encrypt → framed with VOICE magic → sent via per-profile proxy.
 -- Local playback + wipe for feedback. Fallback to placeholder if no recorder.
--- Matches the paranoid "minimal attack surface" philosophy while delivering usable desktop voice.
+-- Prefer small attack surface while keeping usable desktop voice backends.
 handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
   drainIncoming
   s <- get
@@ -854,7 +955,7 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'v') [])) = do
           Left err -> liftIO $ putStrLn $ "[VOICE] ERROR sending voice to " ++ contact ++ ": " ++ show (err :: SomeException)
           Right _  -> liftIO $ putStrLn $ "[VOICE] ✓ Voice sent successfully to " ++ contact ++ " (proxy active for this profile)."
 
--- Full multi-member group UI + sender keys (Simplex-style) — 'g' key opens menu
+-- Multi-member group UI + sender keys — 'g' key opens menu
 handleEvent (VtyEvent (V.EvKey (V.KChar 'g') [])) = do
   drainIncoming
   s <- get
@@ -883,12 +984,12 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'c') [])) = do
   rid2 <- liftIO newRatchet
   _ <- liftIO mlockSensitiveRatchets
   let newGroupRats = [rid1, rid2]
-  liftIO $ putStrLn $ "[GROUP] Created " ++ gname ++ " with sender-key ratchets (per-member forward secrecy)"
+  liftIO $ putStrLn $ "[GROUP] Created " ++ gname ++ " (per-member sender-key ratchets)"
   -- Encrypted persistence of group state (ratchet IDs + members)
   liftIO $ saveEncryptedMessages "hashchat_data" (currentProfile s) ("group-" ++ gname) (sessionPass s) []
   modify $ \st -> st { groups = Map.insert gname newGroupRats (groups st), currentGroup = Just gname }
 
--- Simple group QR / add (text "QR" link for Simplex-style join)
+-- Group QR / add (text join link)
 generateGroupQR :: String -> String
 generateGroupQR gname = "hashchat://group/" ++ gname ++ "?key=... (scan to join with sender keys)"
 
@@ -915,13 +1016,13 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'G') [])) = do
     (Just gname, True) -> do
       case Map.lookup gname (groups s) of
         Just rats -> do
-          -- For each member ratchet, advance sender key and encrypt (demo: use first)
+          -- For each member ratchet, advance sender key and encrypt (currently uses first)
           rid <- pure (head rats)
           (msgKey, step) <- liftIO $ ratchetSend rid   -- real Double Ratchet send
           senderDhG <- liftIO $ ratchetPublicKey rid
           let gHint = BS.pack (map (fromIntegral . fromEnum) gname)
               framed = frameForWire gHint step senderDhG (BS.pack (map (fromIntegral . fromEnum) (T.unpack txt)))
-          liftIO $ putStrLn $ "[GROUP] Sending to " ++ gname ++ " using sender-key ratchet (step " ++ show step ++ ")"
+          liftIO $ putStrLn $ "[GROUP] Sending to " ++ gname ++ " (sender-key step " ++ show step ++ ")"
           -- H4: require a plausible v3 .onion length; group-relay placeholder is fail-closed by design
           _ <- liftIO $ Tor.sendCiphertextOverTor Nothing "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion" framed
           let msg = Message { msgId = fromIntegral step, sender = BS.pack (map (fromIntegral . fromEnum) "group"), content = TE.encodeUtf8 txt, ciphertext = framed, timestamp = 0, isDisappearing = False, expiresAt = Nothing, ratchetStep = step }
@@ -931,14 +1032,14 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'G') [])) = do
         Nothing -> liftIO $ putStrLn "[GROUP] No ratchets for group"
     _ -> liftIO $ putStrLn "[GROUP] No active group or empty input. Use 'g' then 'c'/'s' first."
 
--- Contact actions menu (SimplexChat style) - triggered by 'a' key in chat.
+-- Contact actions menu — triggered by 'a' in chat.
 -- This + the individual letter handlers give us Block, Mute, Delete, Report, Info, Disappearing.
--- Very close in spirit to Simplex long-press contact menu.
+-- Local block/mute/delete/report/security-info actions.
 handleEvent (VtyEvent (V.EvKey (V.KChar 'a') [])) = do
   drainIncoming
   s <- get
   let contact = currentContact s
-  liftIO $ putStrLn $ "\n=== Simplex-style Actions for " ++ contact ++ " ==="
+  liftIO $ putStrLn $ "\n=== Contact actions: " ++ contact ++ " ==="
   liftIO $ putStrLn "b = Block user (persist, ignore future messages)"
   liftIO $ putStrLn "m = Mute notifications (local only)"
   liftIO $ putStrLn "d = Delete chat & wipe local history for contact"
@@ -955,25 +1056,25 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'b') [])) = do
   if already
     then liftIO $ putStrLn $ "[SECURITY] " ++ contact ++ " is already blocked."
     else do
-      liftIO $ putStrLn $ "[SECURITY] BLOCKED " ++ contact ++ ". Future messages ignored. (Simplex parity)"
+      liftIO $ putStrLn $ "[SECURITY] BLOCKED " ++ contact ++ ". Future messages ignored."
       -- In full version this would be saved per-profile alongside ratchets
       modify $ \st -> st { blockedContacts = contact : blockedContacts st, actionPending = False }
 
 handleEvent (VtyEvent (V.EvKey (V.KChar 'm') [])) = do
   s <- get
-  liftIO $ putStrLn "[SECURITY] Notifications muted for this contact (demo - Simplex parity)."
+  liftIO $ putStrLn "[SECURITY] Notifications muted for this contact (local only)."
   modify $ \st -> st { actionPending = False }
 
 handleEvent (VtyEvent (V.EvKey (V.KChar 'd') [])) = do
   s <- get
   let contact = currentContact s
-  liftIO $ putStrLn $ "[SECURITY] Chat with " ++ contact ++ " deleted + local history wiped (Simplex parity)."
+  liftIO $ putStrLn $ "[SECURITY] Chat with " ++ contact ++ " deleted; local history wiped."
   modify $ \st -> st { messages = Map.delete contact (messages st), actionPending = False }
 
 handleEvent (VtyEvent (V.EvKey (V.KChar 'r') [])) = do
   s <- get
   let contact = currentContact s
-  liftIO $ putStrLn $ "[SECURITY] REPORTED " ++ contact ++ " as suspicious. (Simplex 'Report' equivalent)"
+  liftIO $ putStrLn $ "[SECURITY] Marked " ++ contact ++ " as suspicious (local log only)."
   liftIO $ putStrLn "   This is logged locally and can be reviewed in Security dashboard (future)."
   modify $ \st -> st { actionPending = False }
 
@@ -981,7 +1082,7 @@ handleEvent (VtyEvent (V.EvKey (V.KChar 'i') [])) = do
   s <- get
   let contact = currentContact s
   let rat = Map.lookup contact (ratchets s)
-  liftIO $ putStrLn $ "\n=== Security Info for " ++ contact ++ " (Simplex-style) ==="
+  liftIO $ putStrLn $ "\n=== Security info: " ++ contact ++ " ==="
   liftIO $ putStrLn $ "Ratchet ID: " ++ maybe "none" show rat
   liftIO $ putStrLn "E2EE: Double Ratchet + AES-256-GCM (forward secrecy)"
   liftIO $ putStrLn "Transport: Tor v3 hidden service only"
@@ -1005,8 +1106,8 @@ app = App
       -- === Real encrypted ratchet unlock (the key deep improvement) ===
       liftIO $ putStrLn "\n=== HashChat Secure Ratchet Unlock ==="
       liftIO $ putStrLn "Enter your profile passphrase to load encrypted ratchet state."
-      liftIO $ putStrLn "WARNING: This is a demo. Use a strong unique passphrase. Never reuse elsewhere."
-      liftIO $ putStrLn "(Type 'demo' for an insecure default that always works.)"
+      liftIO $ putStrLn "WARNING: Use a strong unique passphrase. Do not reuse it elsewhere."
+      liftIO $ putStrLn "(Dev only: type 'demo' for a weak default — never for real identities.)"
       liftIO $ putStrLn "[OPSEC] All future communication will be forced over Tor (v3 hidden services only)."
       liftIO $ putStrLn "[OPSEC] For maximum resistance, run this inside Tails or Qubes OS."
 
@@ -1040,7 +1141,7 @@ app = App
       liftIO $ putStrLn "[SECURITY] mlockall + sensitive ratchet mlock attempted at startup."
       pass <- liftIO $ promptPassphrase "Passphrase: "
 
-      -- H2: empty passphrase refused on secure path (paranoid default)
+      -- H2: empty passphrase refused on secure path
       insecureDev <- liftIO insecureDevPersistEnabled
       let passEmpty = BS.null pass
       finalPass <- if passEmpty && not insecureDev
@@ -1063,48 +1164,62 @@ app = App
       when insecureDev $
         liftIO $ putStrLn "[SECURITY] HASHCHAT_INSECURE_DEV_PERSIST set — using raw machine.key wrap (INSECURE, CI/dev only)."
 
-      -- H2: load or create passphrase-wrapped long-term identity + onion address
+      -- H2/H3: load or create passphrase-wrapped session (identity + contacts + ratchets + pending)
       let dataDir = "hashchat_data"
           onionStr = Tor.getOnionAddress onion
-      seedLoaded <- if BS.null finalPass && not insecureDev
-        then pure BS.empty
-        else do
-          exists <- liftIO $ identityStateExists dataDir
-          if exists
-            then do
-              mState <- liftIO $ loadIdentityOnionState dataDir insecureDev finalPass
-              case mState of
-                Just (seed, _o, _k) -> do
-                  liftIO $ putStrLn "[H2] Restored long-term identity from Argon2id-wrapped state.enc"
-                  pure seed
-                Nothing -> do
-                  liftIO $ putStrLn "[SECURITY] Failed to decrypt identity state (wrong passphrase?). Generating fresh."
-                  mSeed <- liftIO generateLongTermSeed
-                  case mSeed of
-                    Just seed -> do
-                      ok <- liftIO $ saveIdentityOnionState dataDir insecureDev finalPass seed onionStr BS.empty
-                      if ok then liftIO $ putStrLn "[H2] Fresh identity saved (passphrase-wrapped)."
-                            else liftIO $ putStrLn "[SECURITY] Failed to save identity state."
-                      pure seed
-                    Nothing -> pure BS.empty
-            else do
-              mSeed <- liftIO generateLongTermSeed
-              case mSeed of
-                Just seed -> do
-                  ok <- liftIO $ saveIdentityOnionState dataDir insecureDev finalPass seed onionStr BS.empty
-                  if ok
-                    then liftIO $ putStrLn "[H2] Created passphrase-wrapped identity+onion state (no machine.key)."
-                    else liftIO $ putStrLn "[SECURITY] Failed to save identity state."
-                  pure seed
-                Nothing -> do
-                  liftIO $ putStrLn "[SECURITY] CSPRNG identity generation failed."
-                  pure BS.empty
+      (seedLoaded, restoredContacts, restoredRatchets, restoredPending) <-
+        if BS.null finalPass && not insecureDev
+          then pure (BS.empty, [], Map.empty, [])
+          else do
+            exists <- liftIO $ identityStateExists dataDir
+            if exists
+              then do
+                mSess <- liftIO $ loadSessionState dataDir insecureDev finalPass
+                case mSess of
+                  Just sess -> do
+                    liftIO $ putStrLn "[H3] Restored session from Argon2id-wrapped state.enc (identity + contacts + ratchets + pending)."
+                    rats <- liftIO $ restoreRatchetsFromBytes (spRatchets sess)
+                    let cs = map persistedToContact (spContacts sess)
+                    pure (spSeed sess, cs, rats, spPending sess)
+                  Nothing -> do
+                    -- Fallback: try identity-only load (v1) then upgrade on next save
+                    mState <- liftIO $ loadIdentityOnionState dataDir insecureDev finalPass
+                    case mState of
+                      Just (seed, _o, _k) -> do
+                        liftIO $ putStrLn "[H2] Restored identity from wrapped store (no H3 extras yet)."
+                        pure (seed, [], Map.empty, [])
+                      Nothing -> do
+                        liftIO $ putStrLn "[SECURITY] Failed to decrypt session state. Generating fresh identity."
+                        mSeed <- liftIO generateLongTermSeed
+                        case mSeed of
+                          Just seed -> do
+                            let payload = SessionPersistPayload seed onionStr BS.empty [] [] []
+                            ok <- liftIO $ saveSessionState dataDir insecureDev finalPass payload
+                            if ok then liftIO $ putStrLn "[H3] Fresh session saved (passphrase-wrapped)."
+                                  else liftIO $ putStrLn "[SECURITY] Failed to save session state."
+                            pure (seed, [], Map.empty, [])
+                          Nothing -> pure (BS.empty, [], Map.empty, [])
+              else do
+                mSeed <- liftIO generateLongTermSeed
+                case mSeed of
+                  Just seed -> do
+                    let payload = SessionPersistPayload seed onionStr BS.empty [] [] []
+                    ok <- liftIO $ saveSessionState dataDir insecureDev finalPass payload
+                    if ok
+                      then liftIO $ putStrLn "[H3] Created passphrase-wrapped session store (identity; contacts/ratchets empty)."
+                      else liftIO $ putStrLn "[SECURITY] Failed to save session state."
+                    pure (seed, [], Map.empty, [])
+                  Nothing -> do
+                    liftIO $ putStrLn "[SECURITY] CSPRNG identity generation failed."
+                    pure (BS.empty, [], Map.empty, [])
 
-      loadedRatchets <- if BS.null finalPass && not insecureDev
-        then pure Map.empty
-        else liftIO $ loadEncryptedRatchets "Default" finalPass
+      -- Prefer H3-restored ratchets; fall back to legacy per-file .ratchet.enc if none
+      loadedRatchets <- if not (Map.null restoredRatchets)
+        then pure restoredRatchets
+        else if BS.null finalPass && not insecureDev
+          then pure Map.empty
+          else liftIO $ loadEncryptedRatchets "Default" finalPass
 
-      -- Load message history using real encrypted persistence
       loadedMessages <- foldM (\acc (c, _) -> do
           msgs <- liftIO $ loadEncryptedMessages "hashchat_data" "Default" c finalPass
           pure (Map.insert c msgs acc)
@@ -1118,10 +1233,14 @@ app = App
         , messages        = loadedMessages
         , securityPosture = realPosture
         , longtermSeed    = seedLoaded
+        , contacts        = if null restoredContacts then contacts s else restoredContacts
+        , pendingOut      = restoredPending
         }
 
-      liftIO $ putStrLn $ "[OK] Loaded " ++ show (Map.size loadedRatchets) ++ " ratchet(s) with forward secrecy continuity."
-      liftIO $ putStrLn "Ready. Messages you send now use real Double Ratchet keys.\n"
+      liftIO $ putStrLn $ "[OK] Loaded " ++ show (Map.size loadedRatchets) ++ " ratchet(s); "
+        ++ show (length restoredContacts) ++ " contact(s); "
+        ++ show (length restoredPending) ++ " pending frame(s)."
+      liftIO $ putStrLn "Ready. Outgoing frames commit to the wrapped store before Tor send.\n"
   , appAttrMap = const $ attrMap (defAttr `withBackColor` black) 
       [ (attrName "title",       fg gold   `withStyle` bold)
       , (attrName "highlight",   fg gold)
@@ -1150,8 +1269,8 @@ main = do
   putStrLn ""
   putStrLn "Full 'Normal User Quick Path' + per-OS audio/proxy one-liners are in INSTALL.md"
   putStrLn ""
-  putStrLn "Paranoid users: Always run clean-security.sh before/after sensitive sessions."
-  putStrLn "Starting with real message system + persistence..."
+  putStrLn "Recommended: run clean-security.sh before/after sensitive sessions."
+  putStrLn "Starting message system + encrypted persistence..."
   -- Mix of direct + qualified to handle vty version differences
   initialVty <- mkVty V.defaultConfig
   void $ customMain initialVty (mkVty V.defaultConfig) Nothing app initialState

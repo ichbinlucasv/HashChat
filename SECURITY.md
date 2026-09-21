@@ -1,6 +1,6 @@
 # Security Policy for HashChat
 
-HashChat is a **maximum-anonymity** messenger. Security is the #1 priority.
+HashChat is an anonymous messenger. Security is the top priority.
 
 **Primary repository**: https://codeberg.org/ichbinlucasv/HashChat  
 **Mirror**: https://github.com/ichbinlucasv/HashChat
@@ -44,9 +44,11 @@ We take reports seriously and will respond within 48 hours.
 
 ## At-rest crypto (desktop)
 
-**Default (paranoid):** long-term identity seed + onion material are wrapped with
-**Argon2id(passphrase) → AES-256-GCM** into `hashchat_data/state.enc`.
-Empty passphrase is refused. No raw `machine.key` is written on this path.
+**Default (secure path):** long-term identity seed, onion material, **contacts**,
+**per-contact Double Ratchet state**, and **pending outbound frames** are wrapped with
+**Argon2id(passphrase) → AES-256-GCM** into `hashchat_data/state.enc` (blob v2; v1
+identity-only blobs still load). Empty passphrase is refused. No raw `machine.key`
+is written on this path.
 
 **Insecure-dev only:** set `HASHCHAT_INSECURE_DEV_PERSIST=1` to use a raw
 `hashchat_data/machine.key` (mode 0600) wrap — for local CI/dev, never production.
@@ -54,7 +56,16 @@ Onion / identity private material must not appear as sibling plaintext files und
 `hashchat_data/` (Tor may still keep HS keys under `tor/hidden_service/` when Tor
 itself persists them; prefer `DiscardPK` / passphrase-wrapped copies in app state).
 
-Ratchets and message logs already use the same Argon2id envelope family.
+Nuclear wipe deletes `state.enc` (and thus contacts/ratchets/pending) along with
+other local data under `hashchat_data/`.
+
+**Durable send (H3):** prefer encrypt → durable queue commit → Tor send. A crash
+after commit but before Tor ACK may resend on restart; peers should tolerate
+duplicates via skipped keys. Call sites that advance without commit risk losing
+forward-secrecy continuity across restart.
+
+Message logs may still use separate Argon2id envelopes under profile dirs; the
+authoritative restart path for contacts/ratchets/pending is `state.enc`.
 
 ## Responsible Disclosure
 

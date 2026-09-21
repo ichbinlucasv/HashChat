@@ -36,6 +36,18 @@ module HashChat.Core
   , identityStateExists
   , signContactLinkFromSeed
   , insecureDevPersistEnabled
+  -- H3: full session persist (contacts + ratchet bytes + pending)
+  , PersistedContact(..)
+  , SessionPersistPayload(..)
+  , packContactsSection
+  , packKvSection
+  , unpackContactsSection
+  , unpackKvSection
+  , saveSessionState
+  , loadSessionState
+  , commitOutgoingFrame
+  , ratchetToBytes
+  , ratchetFromBytes
   ) where
 
 import Control.Concurrent.STM
@@ -132,6 +144,23 @@ foreign import ccall unsafe "rust_identity_state_exists" rust_identity_state_exi
   :: CString -> IO Bool
 foreign import ccall unsafe "rust_contact_link_sign" rust_contact_link_sign
   :: Ptr Word8 -> CString -> Ptr Word8 -> Ptr Int -> IO Bool
+
+-- H3: full session persist + durable outgoing commit + raw ratchet bytes
+foreign import ccall unsafe "rust_session_state_save" rust_session_state_save
+  :: CString -> Word8 -> Ptr Word8 -> Int -> Ptr Word8
+  -> Ptr Word8 -> Int -> Ptr Word8 -> Int
+  -> Ptr Word8 -> Int -> Ptr Word8 -> Int -> Ptr Word8 -> Int -> IO Bool
+foreign import ccall unsafe "rust_session_state_load" rust_session_state_load
+  :: CString -> Word8 -> Ptr Word8 -> Int -> Ptr Word8
+  -> Ptr Word8 -> Ptr Int -> Ptr Word8 -> Ptr Int
+  -> Ptr Word8 -> Ptr Int -> Ptr Word8 -> Ptr Int -> Ptr Word8 -> Ptr Int -> IO Bool
+foreign import ccall unsafe "rust_session_commit_outgoing" rust_session_commit_outgoing
+  :: CString -> Word8 -> Ptr Word8 -> Int
+  -> CString -> Ptr Word8 -> Int -> CString -> Ptr Word8 -> Int -> IO Bool
+foreign import ccall unsafe "rust_ratchet_to_bytes" rust_ratchet_to_bytes
+  :: Word32 -> Ptr Word8 -> Ptr Int -> IO Bool
+foreign import ccall unsafe "rust_ratchet_from_bytes" rust_ratchet_from_bytes
+  :: Word32 -> Ptr Word8 -> Int -> IO Bool
 
 initProfile :: IO ProfileKey
 initProfile = do
@@ -361,7 +390,7 @@ addUTCTime _ t = t
 wipeRatchetMessageKey :: Word32 -> Word32 -> IO ()
 wipeRatchetMessageKey ratchetId msgNumber = do
   rust_ratchet_wipe_skipped_key ratchetId msgNumber
-  putStrLn $ "[SECURITY] Wiped skipped key for ratchet " ++ show ratchetId ++ " step " ++ show msgNumber ++ " (real zeroization in Rust)"
+  putStrLn $ "[SECURITY] Wiped skipped key for ratchet " ++ show ratchetId ++ " step " ++ show msgNumber
 
 -- Process and remove expired messages, wiping their ratchet keys
 processDisappearingMessages :: [Message] -> IO [Message]
@@ -714,3 +743,230 @@ insecureDevPersistEnabled :: IO Bool
 insecureDevPersistEnabled = do
   m <- lookupEnv "HASHCHAT_INSECURE_DEV_PERSIST"
   pure (maybe False (const True) m)
+
+
+-- =============================================================================
+-- H3: Contacts + ratchet bytes + pending frames inside passphrase-wrapped store
+-- Thin Haskell wrappers around Rust session_persist (v2 blob).
+-- Prefer commitOutgoingFrame after encrypt and before Tor send.
+-- Remaining race: crash after durable save but before Tor ACK may resend on
+-- restart; peer should tolerate duplicates via skipped keys.
+-- =============================================================================
+
+data PersistedContact = PersistedContact
+  { pcId          :: String
+  , pcDisplayName :: String
+  , pcOnion       :: String
+  , pcX25519      :: ByteString  -- 32 bytes (zeros if unknown)
+  , pcEd25519     :: ByteString  -- 32 bytes (zeros if unknown)
+  } deriving (Eq, Show)
+
+data SessionPersistPayload = SessionPersistPayload
+  { spSeed     :: ByteString
+  , spOnion    :: String
+  , spOnionKey :: ByteString
+  , spContacts :: [PersistedContact]
+  , spRatchets :: [(String, ByteString)]  -- contact id -> DoubleRatchet::to_bytes
+  , spPending  :: [(String, ByteString)]  -- dest onion -> framed ciphertext
+  } deriving (Eq, Show)
+
+word32ToBE4 :: Word32 -> ByteString
+word32ToBE4 w = pack (word32be w)
+
+readWord32BE :: ByteString -> Maybe (Word32, ByteString)
+readWord32BE = unpackWord32be
+
+packLenBytes :: ByteString -> ByteString
+packLenBytes b = word32ToBE4 (fromIntegral (BS.length b)) <> b
+
+packLenStr :: String -> ByteString
+packLenStr s = packLenBytes (BC.pack s)
+
+unpackLenBytesHs :: ByteString -> Maybe (ByteString, ByteString)
+unpackLenBytesHs bs = do
+  (n, rest) <- readWord32BE bs
+  let n' = fromIntegral n
+  if BS.length rest < n' then Nothing
+  else Just (BS.take n' rest, BS.drop n' rest)
+
+unpackLenStrHs :: ByteString -> Maybe (String, ByteString)
+unpackLenStrHs bs = do
+  (b, rest) <- unpackLenBytesHs bs
+  pure (BC.unpack b, rest)
+
+packContactsSection :: [PersistedContact] -> ByteString
+packContactsSection cs =
+  word32ToBE4 (fromIntegral (length cs)) <> BS.concat (map packOne cs)
+  where
+    pad32 b =
+      let b' = if BS.length b >= 32 then BS.take 32 b else b <> BS.replicate (32 - BS.length b) 0
+      in b'
+    packOne c =
+      packLenStr (pcId c)
+      <> packLenStr (pcDisplayName c)
+      <> packLenStr (pcOnion c)
+      <> pad32 (pcX25519 c)
+      <> pad32 (pcEd25519 c)
+
+unpackContactsSection :: ByteString -> [PersistedContact]
+unpackContactsSection bs =
+  case readWord32BE bs of
+    Nothing -> []
+    Just (n, rest) -> go (fromIntegral n) rest []
+  where
+    go 0 _ acc = reverse acc
+    go k r acc =
+      case unpackOne r of
+        Nothing -> reverse acc
+        Just (c, r') -> go (k - 1) r' (c : acc)
+    unpackOne r = do
+      (cid, r1) <- unpackLenStrHs r
+      (dn, r2) <- unpackLenStrHs r1
+      (on, r3) <- unpackLenStrHs r2
+      if BS.length r3 < 64 then Nothing
+      else
+        let x = BS.take 32 r3
+            e = BS.take 32 (BS.drop 32 r3)
+            r4 = BS.drop 64 r3
+        in Just (PersistedContact cid dn on x e, r4)
+
+packKvSection :: [(String, ByteString)] -> ByteString
+packKvSection items =
+  word32ToBE4 (fromIntegral (length items))
+  <> BS.concat [ packLenStr k <> packLenBytes v | (k, v) <- items ]
+
+unpackKvSection :: ByteString -> [(String, ByteString)]
+unpackKvSection bs =
+  case readWord32BE bs of
+    Nothing -> []
+    Just (n, rest) -> go (fromIntegral n) rest []
+  where
+    go 0 _ acc = reverse acc
+    go k r acc =
+      case unpackLenStrHs r of
+        Nothing -> reverse acc
+        Just (key, r1) ->
+          case unpackLenBytesHs r1 of
+            Nothing -> reverse acc
+            Just (val, r2) -> go (k - 1) r2 ((key, val) : acc)
+
+saveSessionState :: FilePath -> Bool -> ByteString -> SessionPersistPayload -> IO Bool
+saveSessionState dataDir insecureDev pass payload
+  | BS.length (spSeed payload) /= 32 = pure False
+  | otherwise =
+      let cblob = packContactsSection (spContacts payload)
+          rblob = packKvSection (spRatchets payload)
+          pblob = packKvSection (spPending payload)
+          onionBs = BC.pack (spOnion payload)
+      in withCString dataDir $ \dir ->
+           withArray (unpack pass) $ \pp ->
+             withArray (unpack (spSeed payload)) $ \sp ->
+               withArray (unpack onionBs) $ \op ->
+                 withArray (unpack (spOnionKey payload)) $ \okp ->
+                   withArray (unpack cblob) $ \cp ->
+                     withArray (unpack rblob) $ \rp ->
+                       withArray (unpack pblob) $ \ppnd ->
+                         rust_session_state_save
+                           dir
+                           (if insecureDev then 1 else 0)
+                           pp (BS.length pass)
+                           sp
+                           op (BS.length onionBs)
+                           okp (BS.length (spOnionKey payload))
+                           cp (BS.length cblob)
+                           rp (BS.length rblob)
+                           ppnd (BS.length pblob)
+
+loadSessionState :: FilePath -> Bool -> ByteString -> IO (Maybe SessionPersistPayload)
+loadSessionState dataDir insecureDev pass = do
+  seedPtr <- mallocArray 32
+  let onionCap = 256
+      keyCap = 4096
+      sectionCap = 2 * 1024 * 1024
+  onionPtr <- mallocArray onionCap
+  keyPtr <- mallocArray keyCap
+  contactsPtr <- mallocArray sectionCap
+  ratchetsPtr <- mallocArray sectionCap
+  pendingPtr <- mallocArray sectionCap
+  onionLenPtr <- malloc
+  keyLenPtr <- malloc
+  contactsLenPtr <- malloc
+  ratchetsLenPtr <- malloc
+  pendingLenPtr <- malloc
+  poke onionLenPtr onionCap
+  poke keyLenPtr keyCap
+  poke contactsLenPtr sectionCap
+  poke ratchetsLenPtr sectionCap
+  poke pendingLenPtr sectionCap
+  ok <- withCString dataDir $ \dir ->
+          withArray (unpack pass) $ \pp ->
+            rust_session_state_load
+              dir
+              (if insecureDev then 1 else 0)
+              pp (BS.length pass)
+              seedPtr
+              onionPtr onionLenPtr
+              keyPtr keyLenPtr
+              contactsPtr contactsLenPtr
+              ratchetsPtr ratchetsLenPtr
+              pendingPtr pendingLenPtr
+  if not ok
+    then pure Nothing
+    else do
+      seed <- pack <$> peekArray 32 seedPtr
+      oLen <- peek onionLenPtr
+      kLen <- peek keyLenPtr
+      cLen <- peek contactsLenPtr
+      rLen <- peek ratchetsLenPtr
+      pLen <- peek pendingLenPtr
+      onionBs <- peekArray oLen onionPtr
+      keyBs <- peekArray kLen keyPtr
+      cBs <- peekArray cLen contactsPtr
+      rBs <- peekArray rLen ratchetsPtr
+      pBs <- peekArray pLen pendingPtr
+      pure $ Just SessionPersistPayload
+        { spSeed = seed
+        , spOnion = BC.unpack (pack onionBs)
+        , spOnionKey = pack keyBs
+        , spContacts = unpackContactsSection (pack cBs)
+        , spRatchets = unpackKvSection (pack rBs)
+        , spPending = unpackKvSection (pack pBs)
+        }
+
+commitOutgoingFrame
+  :: FilePath -> Bool -> ByteString -> String -> ByteString -> String -> ByteString -> IO Bool
+commitOutgoingFrame dataDir insecureDev pass contactId ratchetBytes destOnion frame =
+  withCString dataDir $ \dir ->
+    withArray (unpack pass) $ \pp ->
+      withCString contactId $ \cid ->
+        withArray (unpack ratchetBytes) $ \rb ->
+          withCString destOnion $ \onion ->
+            withArray (unpack frame) $ \fp ->
+              rust_session_commit_outgoing
+                dir
+                (if insecureDev then 1 else 0)
+                pp (BS.length pass)
+                cid
+                rb (BS.length ratchetBytes)
+                onion
+                fp (BS.length frame)
+
+ratchetToBytes :: Word32 -> IO (Maybe ByteString)
+ratchetToBytes rid = do
+  let cap = 65536
+  outPtr <- mallocArray cap
+  outLenPtr <- malloc
+  poke outLenPtr cap
+  ok <- rust_ratchet_to_bytes rid outPtr outLenPtr
+  if not ok
+    then pure Nothing
+    else do
+      n <- peek outLenPtr
+      bs <- peekArray n outPtr
+      pure (Just (pack bs))
+
+ratchetFromBytes :: Word32 -> ByteString -> IO Bool
+ratchetFromBytes rid blob =
+  withArray (unpack blob) $ \p ->
+    rust_ratchet_from_bytes rid p (BS.length blob)
+
