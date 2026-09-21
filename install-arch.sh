@@ -4,7 +4,7 @@
 #
 # Builds: cargo build --release --locked --bin hashchat-tui --features tui
 # Prefer Nix/Flatpak when you need bit-for-bit reproducibility.
-# Haskell remains a transitional fallback (INSTALL.md).
+# Haskell desktop is transitional / not recommended (INSTALL.md).
 #
 # Usage:
 #   ./install-arch.sh
@@ -60,9 +60,9 @@ if [ -f target/release/libhashchat_rust.so ]; then
   cp -f target/release/libhashchat_rust.so rust-lib/
 fi
 
-echo "[6/6] Optional transitional Haskell path (skipped by default)."
+echo "[6/6] Haskell desktop: transitional / not recommended (skipped; never preferred)."
 echo "      Rolling Arch: prefer ghcup if you still need the Brick TUI."
-echo "      ./run-tui uses Haskell only if the Rust binary is missing."
+echo "      ./run-tui never prefers cabal while cargo can build; opt-in: HASHCHAT_ALLOW_HASKELL=1"
 
 echo ""
 echo "=== How to run ==="

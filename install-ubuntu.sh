@@ -3,7 +3,7 @@
 # HashChat — Ubuntu/Debian installer (Rust-first desktop)
 #
 # Builds: cargo build --release --locked --bin hashchat-tui --features tui
-# Haskell remains a transitional fallback (INSTALL.md).
+# Haskell desktop is transitional / not recommended (INSTALL.md).
 #
 # Usage:
 #   ./install-ubuntu.sh
@@ -60,9 +60,9 @@ if [ -f target/release/libhashchat_rust.so ]; then
   cp -f target/release/libhashchat_rust.so rust-lib/
 fi
 
-echo "[6/6] Optional transitional Haskell path (skipped by default)."
+echo "[6/6] Haskell desktop: transitional / not recommended (skipped; never preferred)."
 echo "      Legacy Brick TUI: ghcup + cabal build -f-tui hashchat-tui"
-echo "      ./run-tui uses Haskell only if the Rust binary is missing."
+echo "      ./run-tui never prefers cabal while cargo can build; opt-in: HASHCHAT_ALLOW_HASKELL=1"
 
 echo ""
 echo "=== How to run ==="

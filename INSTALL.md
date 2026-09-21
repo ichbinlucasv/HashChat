@@ -11,16 +11,18 @@ All development happens on **Codeberg**. Clone and work on `codeberg-primary` fo
 
 ## Preferred desktop binary
 
-The long-term desktop client is the **native Rust TUI**:
+The **only recommended** desktop client is the **native Rust TUI**:
 
 ```bash
 cargo build --release --locked --bin hashchat-tui --features tui
 ./run-tui
 # equivalent: ./target/release/hashchat-tui
+# or: make tui && ./run-tui
 ```
 
 - Binary name: `hashchat-tui` (Cargo feature `tui`)
-- Launcher `./run-tui` prefers the Rust binary; the transitional Haskell Brick TUI is used only if Rust is missing
+- Launcher `./run-tui` / `install*.sh` **never prefer cabal** when Rust can build
+- **Haskell desktop is transitional / not recommended** — opt-in only via `HASHCHAT_ALLOW_HASKELL=1` (tree kept compiling; see [Haskell removal criteria](#haskell-desktop-removal-criteria))
 - Brand: black `#0A0A0A` + gold `#FFD700` (logo 2 — chat bubble / hash mark); see `branding/`
 
 **Transport default:** Tor only (SOCKS + ControlPort cookie auth). There is **no silent clearnet fallback**. Other networks (if added later) must be an explicit user choice.
@@ -66,7 +68,7 @@ Each script:
 - Installs build tools + the **Tor** package where applicable
 - Runs `cargo build --release --locked` and `cargo build --release --locked --bin hashchat-tui --features tui`
 - Does **not** print secrets, passphrases, or Tor cookie material
-- Leaves Haskell as an **optional transitional** path (not built by default)
+- Does **not** install or prefer Cabal; Haskell desktop is **transitional / not recommended**
 
 ```bash
 chmod +x install.sh install-*.sh run-tui
@@ -424,15 +426,17 @@ nix build .#hashchat-tui       # flake TUI wrapper (when available)
 
 **Host Tor is still required** — see Flatpak section.
 
-### 5. Transitional Haskell desktop (fallback only)
+### 5. Transitional Haskell desktop (NOT recommended)
 
-Legacy Brick TUI over the Rust FFI — **not** the long-term stack:
+Legacy Brick TUI over the Rust FFI — **transitional / not recommended**. Scripts and docs do not prefer this path. Kept in-tree so Cabal targets can still compile for parity checks until removal criteria are met.
 
 ```bash
-# Install GHC/Cabal (ghcup recommended on Ubuntu/Arch)
+# Install GHC/Cabal only if you intentionally maintain the Brick TUI
 cabal update
 cabal build -f-tui hashchat-tui
-# ./run-tui will use this only if target/release/hashchat-tui is missing
+# Launcher opt-in (never automatic while cargo can build):
+HASHCHAT_ALLOW_HASKELL=1 ./run-tui
+# Or: ./build.sh tui --haskell
 ```
 
 ---
@@ -518,8 +522,22 @@ cargo build --release --locked --bin hashchat-tui --features tui
 
 Prefer Qubes disposables or Tails for high-risk builds.
 
----
 
+## Haskell desktop removal criteria
+
+The Haskell tree (`hashchat.cabal`, `src/haskell/`, `app-desktop/`) is **not deleted in this pass** (too risky overnight). It remains compile-capable but **demoted**.
+
+Remove the Haskell desktop path only when **all** of the following hold:
+
+1. Rust `hashchat-tui --features tui` covers the documented two-peer Tor path (`:listen`, contacts, send/recv) without relying on Brick/Cabal.
+2. Distro installers, `./run-tui`, `./build.sh`, Flatpak/Nix, and CI no longer reference Cabal as a user or release path.
+3. No open blocker that requires the Brick TUI for security review, release signing, or compatibility testing.
+4. A dedicated PR on `codeberg-primary` documents the deletion, updates SBOM/scripts that still mention Haskell, and confirms `cargo test --lib` + release TUI build stay green.
+5. Maintainer explicitly approves tree removal (not a drive-by cleanup).
+
+Until then: keep Cabal targets building if present; never recommend them for new installs.
+
+---
 **Legal / funding**
 
 The Linux/desktop version remains free and open source. An Android build may later be offered as a paid app to fund infrastructure; pricing would decrease with adoption.

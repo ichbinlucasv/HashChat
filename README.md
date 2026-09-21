@@ -24,7 +24,7 @@ HashChat is moving to **maximum Rust**:
 | Crypto, Tor, persist, wipe | Rust (done / hardening) |
 | Desktop client | Rust TUI (`hashchat-tui --features tui`), then Rust GUI if attack surface stays honest |
 | Android | Thin UI over the same Rust crate |
-| Legacy Haskell desktop | Transitional only — not the long-term stack |
+| Legacy Haskell desktop | **Transitional / not recommended** — kept compiling only; not the long-term stack |
 
 Inspiration: SimpleX-class UX ideas, with paranoid defaults (Tor-first, no phone/account, nuclear wipe, signed contacts). Brand: black + gold (`#FFD700`), logo 2 (chat bubble / hash mark).
 
@@ -43,7 +43,7 @@ Inspiration: SimpleX-class UX ideas, with paranoid defaults (Tor-first, no phone
    ./install.sh
    # or: cargo build --release --locked --bin hashchat-tui --features tui
    ```
-3. `./run-tui` (prefers `./target/release/hashchat-tui`; prints audio + Tor status; Haskell only as fallback)
+3. `./run-tui` or `make tui` (uses `./target/release/hashchat-tui`; prints audio + Tor status). Haskell desktop is transitional / not recommended (`HASHCHAT_ALLOW_HASKELL=1` opt-in only).
 4. Unlock / create identity with a passphrase (Argon2id-wrapped at rest)
 5. `:listen`, exchange signed `hashchat://` contacts, chat over Tor
 
@@ -65,8 +65,8 @@ See [INSTALL.md](INSTALL.md) for Fedora / Ubuntu / Arch / Tails / Qubes walkthro
 - Panic wipe of local sensitive state
 
 **Clients**
-- Desktop: **Rust TUI** (`hashchat-tui`, black + gold) — preferred; two-peer path: `:listen` → exchange `:my-contact` / `:add-contact` → encrypt over Tor SOCKS
-- Transitional Haskell Brick TUI over Rust FFI — fallback only (unchanged this pass)
+- Desktop: **Rust TUI** (`hashchat-tui --features tui`, black + gold) — **only recommended** path; two-peer: `:listen` → `:my-contact` / `:add-contact` → Tor SOCKS
+- Haskell Brick TUI over Rust FFI — **transitional / not recommended** (opt-in; tree not deleted this pass)
 - Android shell over the Rust library (production two-device path still maturing)
 
 **Brand / packaging**
@@ -85,13 +85,15 @@ Threat model and limits: [THREATMODEL.md](THREATMODEL.md).
 cargo test --lib
 cargo build --release --locked
 
-# Native Rust TUI (preferred desktop)
+# Native Rust TUI (only recommended desktop)
 cargo build --release --locked --bin hashchat-tui --features tui
 ./target/release/hashchat-tui
 # or: ./run-tui
+# or: make tui && make run-tui
 
-# Transitional Haskell desktop TUI (fallback — not default)
-# cabal build -f-tui hashchat-tui
+# Transitional Haskell desktop (NOT recommended; opt-in only)
+# HASHCHAT_ALLOW_HASKELL=1 ./run-tui
+# ./build.sh --haskell   # keeps Cabal targets compiling if present
 
 # Flatpak / Nix
 nix build .#hashchat-tui

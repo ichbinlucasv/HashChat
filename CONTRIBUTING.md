@@ -1,9 +1,11 @@
 # Contributing to HashChat
 
-Thank you for your interest in HashChat — a maximum-anonymity messenger built with Haskell + Rust.
+Thank you for your interest in HashChat — a maximum-anonymity messenger.
+**Rust is the only recommended desktop path** (`hashchat-tui --features tui`).
+Haskell desktop is **transitional / not recommended** (kept compiling if present; see INSTALL.md removal criteria).
 
 **Primary development happens on Codeberg**: https://codeberg.org/ichbinlucasv/HashChat  
-GitHub is maintained only as a read-only mirror.
+Active tip branch: `codeberg-primary`. GitHub is a read-only mirror.
 
 ## Code of Conduct
 
@@ -22,38 +24,46 @@ GitHub is maintained only as a read-only mirror.
 
 Public issues for security problems will be closed without comment.
 
-### 2. Development Setup
+### 2. Development Setup (Rust recommended)
 
 ```bash
-# 1. Install dependencies (Fedora example)
-sudo dnf install ghc cabal-install rust cargo ncurses-devel
+# 1. Install Rust + build deps (Fedora example)
+sudo dnf install rust cargo gcc make pkg-config openssl-devel tor
+# or: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# 2. Build everything
-./build.sh
+# 2. Checkout tip
+git checkout codeberg-primary
 
-# 3. Run the TUI
-./run-desktop
+# 3. Build / test
+cargo test --lib
+cargo build --release --locked --bin hashchat-tui --features tui
+# or: make tui && make test
+
+# 4. Run the recommended desktop TUI
+./run-tui
 ```
 
-See [README.md](README.md) for full build instructions.
+Do **not** install Cabal for normal contribution work. Haskell is opt-in only
+(`HASHCHAT_ALLOW_HASKELL=1` / `./build.sh --haskell`) and is not recommended.
+
+See [README.md](README.md) and [INSTALL.md](INSTALL.md).
 
 ### 3. Project Structure
 
-- `src/rust/` — Cryptography, ratchet, secure memory (ring + x25519-dalek)
-- `src/haskell/HashChat/` — Core logic, Tor integration, ratchet state
-- `app-desktop/TUI.hs` — Beautiful Brick TUI (black + yellow + white)
-- `app/Main.hs` — CLI
-- `android/` — Kotlin + Rust JNI
+- `src/rust/` — Cryptography, Tor, persistence, net modes (primary)
+- `src/bin/hashchat_tui.rs` — Native Rust desktop TUI (`--features tui`)
+- `android/` — Kotlin UI over the same Rust crate
+- `src/haskell/`, `app-desktop/` — Transitional Haskell (not recommended; do not expand)
 
 ### 4. Security Guidelines (Very Important)
 
 - Never commit anything from `tor/hidden_service/`
 - Never commit compiled artifacts (`rust-lib/`, `target/`, `dist-newstyle/`)
+- Never commit ControlPort cookies, onion keys, or local `hashchat_data/`
 - All changes to the ratchet (`ratchet.rs`) must be discussed first
-- Prefer constant-time operations from `ring`
-- Use `zeroize` for all sensitive data
+- Prefer constant-time operations; use `zeroize` for sensitive data
 
-Run `./scripts/clean-security.sh` before every commit.
+Run `./scripts/clean-security.sh` before commits that touched local sensitive state.
 
 ### 5. Commit Style
 
@@ -63,32 +73,28 @@ Run `./scripts/clean-security.sh` before every commit.
 
 Example:
 ```
-feat(ratchet): add proper DH ratchet step on send
+feat(rust): add explicit network modes (Tor default, fail-closed)
 
-- Implement key rotation in DoubleRatchet
-- Expose via FFI
-- Update TUI to display ratchet steps
+- Document Tor / I2P / Clearnet refusal paths
+- Keep extreme posture Tor-only
 ```
 
 ### 6. Testing
 
-- Run `./build.sh` successfully
-- Test the TUI (`./run-desktop`)
-- Test the CLI (`./run-cli cli`)
+- `cargo test --lib` (required)
+- Build recommended TUI: `cargo build --release --locked --bin hashchat-tui --features tui`
+- Manual: `./run-tui` with host Tor (SOCKS + ControlPort cookie auth)
 - For Android changes, test on device or emulator
 
 ### 7. Feature Areas (Current Focus)
 
-We are actively working on:
-1. Production-ready Double Ratchet
-2. Real Tor hidden service integration
-3. Disappearing messages
-4. Voice + file transfer with forward secrecy
-5. Burner profiles
-6. Full Android experience
-7. Metadata-resistant groups
+1. Harden Rust desktop TUI (Tor ControlPort, two-peer path, wipe)
+2. Keep network modes fail-closed (no silent clearnet)
+3. Android thin UI over the shared Rust crate
+4. Reproducible Flatpak / Nix distribution
+5. Retire Haskell desktop once removal criteria in INSTALL.md are met
 
-If you want to work on any of these, please open an issue first.
+If you want to work on any of these, please open an issue first on Codeberg.
 
 ## License
 

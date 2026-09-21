@@ -1,6 +1,6 @@
 # HashChat Roadmap
 
-Goal: Build a usable anonymous messenger in **Haskell + Rust**, with focus on security, forward secrecy, and metadata resistance.
+Goal: Build a usable anonymous messenger with a **Rust-first** stack (crypto, Tor, desktop TUI), with focus on security, forward secrecy, and metadata resistance. Haskell desktop is transitional / not recommended.
 
 **We have moved from "build the foundations" to "polish to production".**
 
@@ -41,6 +41,7 @@ Goal: Build a usable anonymous messenger in **Haskell + Rust**, with focus on se
 Significant progress has been made on most items below. This document is kept honest and up to date.
 
 ### Immediate Polish Items (Critical Remaining)
+0. **Haskell desktop retirement** — Rust is the only recommended desktop path (`hashchat-tui --features tui`). Do not delete the Haskell tree until INSTALL.md removal criteria are met; keep Cabal compiling if present.
 1. **Remove legacy dead code** — Massive stubFunction block in Main.hs removed (done in this pass).
 2. **Android "demo-pass" hardening** — Hardcoded passphrase in group persistence flagged with expert warnings + scoped constant. Must be replaced with user-derived + Keystore in production.
 3. **Honest docs** — ROADMAP + README refresh in progress (this update).
@@ -77,7 +78,7 @@ Significant progress has been made on most items below. This document is kept ho
 - Quantum-resistant options (post-quantum KEMs as noted in earlier roadmap).
 - Decentralized discovery without leaking metadata.
 
-Approach: small trusted computing base, Haskell for protocol/TUI correctness, Rust for crypto/performance, Tor-only transport.
+Approach: small trusted computing base; Rust for crypto, Tor, persistence, and the recommended desktop TUI; Tor-only default transport (fail-closed). Haskell desktop demoted pending removal criteria in INSTALL.md.
 
 Contributions are very welcome — especially in the remaining polish areas above.
 

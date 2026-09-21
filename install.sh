@@ -24,7 +24,7 @@ cd "$ROOT"
 echo "=== HashChat Unified Installer (Rust-first) ==="
 echo "Primary: https://codeberg.org/ichbinlucasv/HashChat"
 echo "Active tip branch: codeberg-primary"
-echo "Desktop: Rust TUI (hashchat-tui --features tui); Haskell is transitional fallback."
+echo "Desktop: Rust TUI (hashchat-tui --features tui). Haskell desktop is transitional / not recommended."
 echo ""
 
 if [ -f /etc/os-release ]; then

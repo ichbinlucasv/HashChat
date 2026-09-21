@@ -5,8 +5,8 @@
 # Builds the native Rust TUI:
 #   cargo build --release --locked --bin hashchat-tui --features tui
 #
-# Haskell desktop path remains available as a transitional fallback
-# (see INSTALL.md). Prefer Rust for new installs.
+# Haskell desktop is transitional / not recommended
+# (see INSTALL.md). Installers never build or prefer cabal.
 #
 # Usage:
 #   ./install-fedora.sh
@@ -64,10 +64,10 @@ if [ -f target/release/libhashchat_rust.so ]; then
   cp -f target/release/libhashchat_rust.so rust-lib/
 fi
 
-echo "[6/6] Optional transitional Haskell path (skipped by default)."
+echo "[6/6] Haskell desktop: transitional / not recommended (skipped; never preferred)."
 echo "      To build the legacy Brick TUI later: install ghc/cabal, then"
 echo "      cabal update && cabal build -f-tui hashchat-tui"
-echo "      ./run-tui falls back to Haskell only if the Rust binary is missing."
+echo "      ./run-tui never prefers cabal while cargo can build; opt-in: HASHCHAT_ALLOW_HASKELL=1"
 
 echo ""
 echo "=== How to run ==="

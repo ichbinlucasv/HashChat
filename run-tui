@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 #
-# HashChat desktop launcher — prefers the native Rust TUI.
+# HashChat desktop launcher — Rust is the only recommended path.
 #
 # Order:
 #   1) ./target/release/hashchat-tui  (cargo --features tui)
 #   2) build it if cargo is available
-#   3) transitional Haskell: cabal run hashchat-tui
+#   3) opt-in transitional Haskell ONLY if HASHCHAT_ALLOW_HASKELL=1
+#
+# Haskell desktop is transitional / not recommended. Do not rely on cabal
+# for new installs or production use.
 #
 # OPSEC: prints environment diagnostics only — never secrets, cookies, or keys.
 #
@@ -25,7 +28,7 @@ if [ -f "$HOME/.cargo/env" ]; then
   source "$HOME/.cargo/env"
 fi
 
-echo "=== HashChat Desktop TUI Launcher (Rust-first) ==="
+echo "=== HashChat Desktop TUI Launcher (Rust recommended) ==="
 
 # --- Desktop environment diagnostics ---
 echo "=== Desktop Environment Check ==="
@@ -104,33 +107,47 @@ if [ -x "$RUST_BIN_DEBUG" ]; then
   exec "$RUST_BIN_DEBUG" "$@"
 fi
 
-if build_rust_tui && [ -x "$RUST_BIN_RELEASE" ]; then
-  echo "[INFO] Using freshly built Rust binary: $RUST_BIN_RELEASE"
-  export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-  echo "Starting HashChat Rust TUI (Tor-first, black + gold)..."
-  exec "$RUST_BIN_RELEASE" "$@"
-fi
-
-echo "[WARN] Rust TUI unavailable — trying transitional Haskell path (cabal)."
-ensure_rust_lib || {
-  if command -v cargo >/dev/null 2>&1; then
-    echo "[INFO] Building Rust FFI library for Haskell fallback..."
-    cargo build --release --locked || true
-    mkdir -p "$LIB_DIR"
-    cp -f "$SCRIPT_DIR/target/release/libhashchat_rust.so" "$LIB_DIR/" 2>/dev/null || true
+if command -v cargo >/dev/null 2>&1; then
+  if build_rust_tui && [ -x "$RUST_BIN_RELEASE" ]; then
+    echo "[INFO] Using freshly built Rust binary: $RUST_BIN_RELEASE"
+    export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    echo "Starting HashChat Rust TUI (Tor-first, black + gold)..."
+    exec "$RUST_BIN_RELEASE" "$@"
   fi
-}
-
-export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-if command -v cabal >/dev/null 2>&1; then
-  echo "Starting HashChat Haskell TUI (transitional)..."
-  exec cabal run hashchat-tui -- "$@"
+  echo "[ERROR] cargo is available but Rust hashchat-tui did not build."
+  echo "        Fix the Rust build — do not fall back to cabal while cargo is present."
+  echo "          cargo build --release --locked --bin hashchat-tui --features tui"
+  echo "        Haskell desktop is transitional / not recommended."
+  echo "        Opt-in only: HASHCHAT_ALLOW_HASKELL=1 ./run-tui"
+  echo "        See INSTALL.md (branch codeberg-primary)."
+  exit 1
 fi
 
-echo "[ERROR] Neither Rust hashchat-tui nor cabal is available."
+# No cargo: optional Haskell only with explicit opt-in
+if [ "${HASHCHAT_ALLOW_HASKELL:-}" = "1" ]; then
+  echo "[WARN] HASHCHAT_ALLOW_HASKELL=1 — transitional Haskell path (not recommended)."
+  ensure_rust_lib || {
+    echo "[ERROR] libhashchat_rust.so required for Haskell FFI; install Rust and run:"
+    echo "          cargo build --release --locked"
+    exit 1
+  }
+  export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  if command -v cabal >/dev/null 2>&1; then
+    echo "Starting HashChat Haskell TUI (transitional / not recommended)..."
+    exec cabal run hashchat-tui -- "$@"
+  fi
+  echo "[ERROR] HASHCHAT_ALLOW_HASKELL=1 but cabal is not available."
+  exit 1
+fi
+
+echo "[ERROR] Rust hashchat-tui is not available and cargo was not found."
 echo "        Install Rust (rustup), then:"
-echo "          cargo build --release --bin hashchat-tui --features tui"
+echo "          cargo build --release --locked --bin hashchat-tui --features tui"
+echo "          ./run-tui"
+echo "        Or: make tui"
+echo "        Haskell desktop is transitional / not recommended."
+echo "        Opt-in only when you intentionally keep the Brick TUI:"
+echo "          HASHCHAT_ALLOW_HASKELL=1 ./run-tui"
 echo "        Or use Nix/Flatpak: nix build .#hashchat-flatpak"
 echo "        See INSTALL.md (branch codeberg-primary)."
 exit 1
