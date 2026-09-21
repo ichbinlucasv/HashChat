@@ -4,182 +4,100 @@
   <img src="branding/hashchat-lockup.png" alt="HashChat" width="480"/>
 </p>
 
-> Anonymous messenger built with Haskell + Rust.
+> Anonymous messenger. **Rust-first** (crypto, Tor, persistence, and the long-term desktop path).
 > See [SECURITY.md](SECURITY.md) before contributing.
 
-**Repository Status (as of 2026)**
-- **Primary**: https://codeberg.org/ichbinlucasv/HashChat
-- **Mirror**: https://github.com/ichbinlucasv/HashChat (kept for discoverability)
+**Repositories**
+- **Primary**: https://codeberg.org/ichbinlucasv/HashChat (`codeberg-primary` is the active tip)
+- **Mirror**: https://github.com/ichbinlucasv/HashChat (read-only discoverability)
 
-All new development, issues, releases, and CI now happen on **Codeberg**. GitHub is kept only as a read-only mirror.
-
-> **Migration note**: The project has moved its primary home to Codeberg for better alignment with privacy-focused development. All links and processes have been updated.
+New work lands on **Codeberg** first; GitHub is mirrored afterward.
 
 ---
 
-**For Normal Users (Fedora / Ubuntu / Arch / Tails / Qubes)**
+## Direction
 
-You don't need to be a security researcher to use this.
+HashChat is moving to **maximum Rust**:
 
-Quick start:
-1. `git clone https://codeberg.org/ichbinlucasv/HashChat.git`
-2. `./run-tui` (it will guide you on audio and Tor)
-3. Press `n` for a burner profile
-4. Press `v` to test voice recording (real mic on most modern desktops)
-5. Use `:set-proxy` if you're in Qubes or behind a VPN
+| Layer | Target |
+|-------|--------|
+| Crypto, Tor, persist, wipe | Rust (done / hardening) |
+| Desktop client | Rust TUI, then Rust GUI if attack surface stays honest |
+| Android | Thin UI over the same Rust crate |
+| Legacy Haskell desktop | Transitional only — not the long-term stack |
 
-The TUI is text-based and aimed at normal users on the five recommended OSes without expanding the security model. A full GUI is not planned unless it can be done without increasing attack surface.
+Inspiration: SimpleX-class UX ideas, with paranoid defaults (Tor-first, no phone/account, nuclear wipe, signed contacts). Brand: black + gold (`#FFD700`), shield mark.
 
-See the expanded "Desktop Runtime Notes" section in INSTALL.md for your specific OS.
+---
 
-**Anonymous messenger** — Burner profiles, sender-key groups, contact actions, voice, and QR-style contact links. Rust Double Ratchet core over Tor v3 hidden services. Designed for metadata resistance; see THREATMODEL.md for honest limits.
+## For users (Fedora / Ubuntu / Arch / Tails / Qubes)
 
-Note on appearance: The desktop client is a text TUI (black + gold theme, dense status/security cues). It prioritizes a small attack surface and information density over graphical polish. That choice is intentional for the threat model.
+1. Clone the primary repo (use branch `codeberg-primary` for current work):
+   ```bash
+   git clone https://codeberg.org/ichbinlucasv/HashChat.git
+   cd HashChat
+   git checkout codeberg-primary
+   ```
+2. `./run-tui` (guides audio + Tor)
+3. Unlock / create identity with a passphrase (Argon2id-wrapped at rest)
+4. `:listen`, exchange signed `hashchat://` contacts, chat over Tor
 
-**No phone numbers or central user IDs. Tor-only transport. No central servers or server-side message logs.** (Endpoint and network adversaries still exist — see THREATMODEL.md.)
+See [INSTALL.md](INSTALL.md) for OS notes. Tor with ControlPort is required for the default path.
 
-**Current status (as of this build)**: Core crypto, Tor transport, persistence, and most desktop/Android UX features listed below are implemented.
+**Transport default:** Tor. Other networks (I2P, clearnet) or DNS choices are planned as **explicit** user modes — no silent fallback from Tor.
 
-### Current Working Features (What Actually Works Today)
-**Core security**
-- Real Double Ratchet (KDF chains, DH ratcheting, skipped keys) in Rust with mlock + basic seccomp
-- Bidirectional Tor v3 hidden services with proper sender-header framing
-- Encrypted-at-rest persistence (Argon2id + AES-GCM) for ratchets, messages, and groups
-- Panic wipe (multi-pass shred + Rust zeroize + kernel drop_caches + mlock)
-- Dynamic Security Posture (real environment checks + action refusals in low posture)
-- Burner profiles + plausible deniability decoy profiles with auto-wipe on switch
-- Disappearing messages with ratchet key erasure
+---
 
-**Desktop / Android UX (both platforms)**
-- Contact actions: Block, Mute, Delete chat, Report suspicious, View security info, Set disappearing timer
-- Group chats with sender-key forward secrecy + member management + QR join
-- Voice messages: chunked ratchet streaming + playback with seek bars (Android RecyclerView + TUI ffplay)
-- Burner profile switching (p/n keys)
-- Panic Wipe as first-class prominent action
-- Black + #FFD700 gold theme on both platforms
+## What works today (honest)
 
-**Android Specific**
-- RecyclerView chat + group member management
-- Hardware-backed Keystore + optional BiometricPrompt for ratchet unlock
-- QR scanning + group join
-- Background Tor receiver thread
+**Core**
+- Rust ratchet + AEAD (speculative receive; AAD-bound frames)
+- Signed contact links + SAS fingerprint (`docs/CONTACT_LINK_V1.md`)
+- Tor SOCKS / ControlPort path (fail-closed cookie auth; loopback proxy policy)
+- Passphrase-wrapped persistence for identity, contacts, ratchets, pending queue
+- Panic wipe of local sensitive state
 
-**Distribution & Reproducibility**
-- Pure-Nix reproducible Flatpak (one command: `nix build .#hashchat-flatpak`)
-- Nix cross-compile path for Android Rust libs
-- Qubes/Tails disposable VM build scripts that enforce clean-security + anti-forensics
+**Clients**
+- Desktop TUI (black + gold) — transitional Haskell UI over Rust FFI while Rust desktop lands
+- Android shell over the Rust library (production two-device path still maturing)
 
-Work continues on polish, tests, and documentation toward a stable, auditable release.
+**Brand / packaging**
+- Shield lockup + Flatpak hicolor icons under `branding/` and `flatpak/icons/`
 
-### Screenshots / Demo (Text Descriptions)
-- **TUI**: Black background, gold titles, contact list on left, active chat in center, input bar at bottom. Press 'g' for group menu, 'v' for voice, 'a' for contact actions (Block/Report/Delete/Disappear), 'w' for panic wipe.
-- **Android**: Black + gold theme, RecyclerView chat with gold bubbles for your messages, long-press contact actions, dedicated group management screen with member list + QR, voice recording + playback with seek bar.
-- **Flatpak**: One `nix build` produces a signed, reproducible .flatpak that runs the same TUI in a sandbox.
+Threat model and limits: [THREATMODEL.md](THREATMODEL.md).
 
-(Demo videos and real screenshots will be added before v0.2 tag.)
+---
 
-## Quick Start on Fedora (Easiest)
+## Build
 
 ```bash
-# Primary repository (recommended)
-git clone https://codeberg.org/ichbinlucasv/HashChat.git
+# Rust library / tests
+cargo test --lib
+cargo build --release
 
-# Mirror (GitHub)
-# git clone https://github.com/ichbinlucasv/HashChat.git
-
-cd HashChat
-chmod +x install-fedora.sh
-./install-fedora.sh
-```
-
-Then follow the printed instructions to set up Tor (critical).
-
-**Recommended easy install (one-command, reproducible):**
-```bash
-nix build .#hashchat-flatpak
-flatpak install --user result/hashchat-tui.flatpak
-flatpak run org.hashchat.HashChat
-```
-
-See `flake.nix` and [INSTALL.md](INSTALL.md) for details. This is now the primary distribution path.
-
-## Important: Tor is Required
-
-HashChat is designed as **Tor-only**. You must have a running Tor instance with ControlPort enabled (default 9051) for the anonymous hidden service to work.
-
-See [INSTALL.md](INSTALL.md) for exact steps on Fedora.
-
-### Core Design (Implemented)
-- Per-profile random ed25519/x25519 keys + per-contact Double Ratchet (real KDF + DH + skipped keys)
-- Tor v3 hidden services only (bidirectional framed messaging with sender hints)
-- Sender-key groups with forward secrecy + encrypted persistence
-- Voice streaming: per-chunk ratchet encryption + playback with seek (Android + TUI)
-- Android: RecyclerView chat + group management + Keystore + biometric ratchet unlock + QR
-- Pure-Nix reproducible Flatpak (no external scripts)
-- Panic wipe (multi-pass + mlock + kernel anti-forensics + Rust zeroize)
-- Dynamic Security Posture (real environment inspection + action refusals)
-- Burner + Decoy profiles with auto-wipe
-- Contact/group actions (block, report, delete, voice, groups, QR, disappearing, etc.) on both platforms (black + #FFD700 gold theme)
-
-### Security Features
-- Constant-time crypto in Rust (ring + zeroize)
-- Memory zeroization on every sensitive operation
-- Extra per-message HMAC verification
-- Yubikey-ready MFA hooks (closed for now)
-- Dark mode only (Twitter/X palette)
-- No light mode ever
-
-### Supported Platforms
-- Fedora
-- Debian
-- Arch Linux
-- Windows (via MSYS2)
-- Android (native APK via cargo-ndk + Gradle)
-
-### Build Instructions (Current)
-
-**Recommended (reproducible):**
-```bash
-nix build .#hashchat-flatpak   # Full pure-Nix Flatpak
-nix build .#hashchat-tui
-```
-
-**Quick:**
-```bash
-./build.sh tui
+# Desktop TUI (current entry)
 ./run-tui
+
+# Flatpak / Nix (when using the flake path)
+nix build .#hashchat-tui
+# nix build .#hashchat-flatpak
 ```
 
-Android cross:
-```bash
-nix build .#hashchat-android-rust
-```
-
-See [INSTALL.md](INSTALL.md) and `flake.nix`.
-
-### Flatpak (Recommended distribution method)
-
-The only supported and reproducible way to build the Flatpak is:
-
-```bash
-nix build .#hashchat-flatpak
-flatpak install --user result/hashchat-tui.flatpak
-flatpak run org.hashchat.HashChat
-```
-
-**Current status**: Manifest minimal install-only (no in-sandbox builds). Improved black+gold lock SVG placeholder committed + exact raster pipeline in ICONS.md. Real professional icons (64/128/256/512 PNGs) still critical blocker before v0.2/Flathub. See flatpak/ for details.
+Android Rust libs: `./build-android.sh` (needs NDK / `cargo-ndk`).
 
 ---
 
-## Security & Responsible Development
+## Security
 
-**This project is security-critical.**
+This is security-critical software.
 
-- Read [SECURITY.md](SECURITY.md)
-- Never commit anything from `tor/hidden_service/`
-- Never commit compiled libraries from `rust-lib/`
-- Use `./build.sh` — pure Bash, no Python required
+- Read [SECURITY.md](SECURITY.md) and [THREATMODEL.md](THREATMODEL.md)
+- Do not commit Tor private material or local `hashchat_data/`
+- Prefer `./build.sh` / documented Nix paths
+- Report vulnerabilities privately — do not open a public issue with exploit detail
 
-Large media files and old GTK code have been removed from git history for cleanliness.
+---
 
-If you find a vulnerability, please report it privately instead of opening a public issue.
+## Licence
+
+See [LICENSE](LICENSE).
