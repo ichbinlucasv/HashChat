@@ -775,19 +775,25 @@ impl App {
                 self.status_msg = "__QUIT__".into();
             }
             ":wipe" => {
+                // Loud confirm: blank chat/status residue so the modal is not overlaid on plaintext.
+                self.messages.clear();
+                self.input.clear();
                 self.screen = Screen::ConfirmWipe;
-                self.status_msg = "Type :wipe-confirm to erase local sensitive data.".into();
+                self.status_msg =
+                    "NUCLEAR WIPE: type :wipe-confirm to erase local secrets, or Esc to cancel."
+                        .into();
             }
             ":wipe-confirm" => {
                 self.hs = None;
                 wipe_local_sensitive();
                 if let Some(mut s) = self.session.take() {
-                    s.clear_pending_secure();
-                    s.clear_ratchets_secure();
-                    s.seed_zeroize_hint();
+                    s.wipe_memory_secure();
                 }
                 self.passphrase.zeroize();
                 self.passphrase.clear();
+                self.passphrase_confirm.zeroize();
+                self.passphrase_confirm.clear();
+                self.input.clear();
                 self.my_sas.clear();
                 self.my_contact_link.clear();
                 self.messages.clear();
@@ -796,7 +802,9 @@ impl App {
                 self.unlock_mode_create = true;
                 self.unlock_step = UnlockStep::EnterPass;
                 self.screen = Screen::Unlock;
-                self.status_msg = "Local sensitive data erased.".into();
+                // OPSEC: status must not echo prior chat/passphrase material.
+                self.status_msg =
+                    "Local sensitive data erased. Unlock with a new passphrase to continue.".into();
             }
             ":my-contact" => {
                 if self.my_contact_link.is_empty() {
@@ -891,17 +899,6 @@ impl App {
     }
 }
 
-trait SeedZeroize {
-    fn seed_zeroize_hint(&mut self);
-}
-
-impl SeedZeroize for SessionState {
-    fn seed_zeroize_hint(&mut self) {
-        self.identity.seed.zeroize();
-        self.identity.onion_key.zeroize();
-    }
-}
-
 fn gold_style() -> Style {
     Style::default().fg(GOLD).add_modifier(Modifier::BOLD)
 }
@@ -916,10 +913,8 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
     match app.screen {
         Screen::Unlock => draw_unlock(f, app, area),
         Screen::Main => draw_main(f, app, area),
-        Screen::ConfirmWipe => {
-            draw_main(f, app, area);
-            draw_wipe_modal(f, app, area);
-        }
+        // Full-screen confirm: never render chat/contacts under the wipe prompt.
+        Screen::ConfirmWipe => draw_wipe_modal(f, app, area),
     }
 }
 
@@ -1135,28 +1130,49 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_wipe_modal(f: &mut ratatui::Frame, app: &App, area: Rect) {
-    let w = area.width.min(64).max(40);
-    let h = 7u16;
+    // Full-area danger backdrop — no chat plaintext visible behind the confirm.
+    f.render_widget(Clear, area);
+    f.render_widget(Block::default().style(Style::default().bg(BG)), area);
+
+    let w = area.width.min(72).max(48);
+    let h = 12u16.min(area.height.saturating_sub(2)).max(10);
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
     let rect = Rect::new(x, y, w, h);
     f.render_widget(Clear, rect);
     let body = Paragraph::new(vec![
         Line::from(Span::styled(
-            "Erase local sensitive data?",
+            "NUCLEAR WIPE",
             Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "Type :wipe-confirm in input, or Esc to cancel.",
+            "Erases on-disk session (state.enc), Tor HS dir, and in-RAM",
             Style::default().fg(TEXT),
+        )),
+        Line::from(Span::styled(
+            "passphrase, onion_key, ratchets, and pending frames.",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Type :wipe-confirm then Enter.  Esc cancels.",
+            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Limits: not a kernel-implant / prior-exfil mitigator (THREATMODEL).",
+            Style::default().fg(DIM),
         )),
         Line::from(Span::styled(&app.status_msg, Style::default().fg(DIM))),
     ])
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title(Span::styled(" wipe ", Style::default().fg(DANGER)))
+            .title(Span::styled(
+                " DANGER · wipe ",
+                Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
+            ))
             .border_style(Style::default().fg(DANGER))
             .style(Style::default().bg(PANEL)),
     );
@@ -1222,17 +1238,36 @@ fn run() -> io::Result<()> {
             Screen::ConfirmWipe => match key.code {
                 KeyCode::Esc => {
                     app.screen = Screen::Main;
+                    app.input.clear();
                     app.status_msg = "Wipe cancelled.".into();
                     app.focus = Focus::Input;
                 }
                 KeyCode::Char(ch) => {
+                    // Collect confirm command without restoring the chat pane yet.
                     app.focus = Focus::Input;
-                    app.screen = Screen::Main;
                     app.input.push(ch);
+                    app.status_msg = format!("Confirm input: {}", app.input);
+                }
+                KeyCode::Backspace => {
+                    app.input.pop();
+                    app.status_msg = if app.input.is_empty() {
+                        "NUCLEAR WIPE: type :wipe-confirm to erase local secrets, or Esc to cancel."
+                            .into()
+                    } else {
+                        format!("Confirm input: {}", app.input)
+                    };
                 }
                 KeyCode::Enter => {
-                    app.screen = Screen::Main;
-                    app.focus = Focus::Input;
+                    let cmd = app.input.trim().to_string();
+                    app.input.clear();
+                    if cmd == ":wipe-confirm" {
+                        app.handle_command(&cmd);
+                    } else {
+                        app.screen = Screen::Main;
+                        app.status_msg =
+                            "Wipe cancelled (expected :wipe-confirm).".into();
+                        app.focus = Focus::Input;
+                    }
                 }
                 _ => {}
             },

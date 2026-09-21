@@ -70,17 +70,18 @@ These address transport priorities, contact-link QR alignment, pre-tag enforceme
 ### 3. Device Compromise / "Pegasus" Resistance
 **Best we can do (and what we are building toward):**
 
-- **Panic Wipe** (`w` key + confirmation):
-  - Securely erases ratchet state (via Rust zeroization).
-  - Deletes `hashchat_data/`, Tor hidden service keys, databases.
-  - Destroys in-memory ratchet objects.
+- **Panic Wipe** (Rust TUI `:wipe` → loud `:wipe-confirm`; Android `w` + confirmation):
+  - Securely erases in-RAM session material (passphrase buffers, `onion_key`, ratchet maps, pending ciphertext frames) via Rust zeroization.
+  - Deletes `hashchat_data/` (`state.enc`), Tor hidden service keys, legacy databases.
+  - Destroys in-memory ratchet / session objects before returning to unlock.
 
 - Encrypted-at-rest everything (ratchets + messages + identity/onion + contacts + pending queue) using user passphrase + Argon2id (H2/H3).
-- Minimal attack surface: No network stack in the main process until transport is added. Pure local TUI + FFI to Rust.
+- Minimal attack surface: Tor transport is fail-closed by network mode; core crypto stays in Rust.
 
 **Limitations (Honest):**
 - If an attacker has already compromised your device before you hit wipe, they may have already exfiltrated keys or memory.
-- Memory dumps before wipe are still dangerous.
+- Memory dumps, swap, and core files captured before wipe are still dangerous.
+- Kernel implants / ring-0 malware are out of scope: wipe cannot un-compromise a hostile kernel (same class as classic “Pegasus-class” limitations above).
 - The TUI process itself runs with your user privileges.
 
 ### 4. Deniability

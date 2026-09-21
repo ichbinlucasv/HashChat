@@ -1,11 +1,8 @@
-docs(desktop): Rust-only recommended path; demote Haskell
+fix(opsec): harden nuclear wipe — memory zeroize + loud TUI confirm
 
-Advance Haskell retirement without deleting the tree:
-- run-tui / install*.sh never prefer cabal when cargo can build;
-  Haskell opt-in only via HASHCHAT_ALLOW_HASKELL=1
-- build.sh Rust-first; Cabal only with --haskell
-- Makefile target tui → cargo release build --features tui
-- README/INSTALL/CONTRIBUTING/ROADMAP: Haskell desktop transitional /
-  not recommended; document removal criteria in INSTALL.md
-
-cargo test --lib: 51 passed. No push.
+- SessionState::wipe_memory_secure clears pending frames, ratchet maps,
+  onion_key, seed, and contacts (pair with wipe_disk / wipe_local_sensitive)
+- TUI :wipe → full-screen DANGER confirm; :wipe-confirm zeroizes passphrase
+  buffers and leaves OPSEC-safe status only (no chat under the modal)
+- Document honest limits (kernel implants / prior exfil) in THREATMODEL + SECURITY
+- Unit test wipe_memory_secure; cargo test --lib: 52 passed. No push.

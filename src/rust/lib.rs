@@ -79,8 +79,14 @@ pub extern "C" fn rust_hmac_verify(msg: *const u8, len: usize) -> bool {
     hmac::verify(&key, slice, slice).is_ok()
 }
 
-/// Wipe local sensitive material (session blob, Tor HS dir, legacy db).
+/// Wipe local sensitive material on disk (session blob, Tor HS dir, legacy db).
+///
 /// Safe Rust entry used by the FFI wipe and the Rust TUI.
+/// Callers holding a live [`session_persist::SessionState`] must also call
+/// [`session_persist::SessionState::wipe_memory_secure`] (TUI `:wipe-confirm` does this).
+///
+/// Honest limits: does not defeat kernel implants, prior memory exfiltration,
+/// swap/core residues, or forensic copies already taken — see THREATMODEL.md.
 pub fn wipe_local_sensitive() {
     let _ = fs::remove_dir_all("tor/hidden_service");
     let _ = fs::remove_file("hashchat.db");

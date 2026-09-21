@@ -56,8 +56,15 @@ Onion / identity private material must not appear as sibling plaintext files und
 `hashchat_data/` (Tor may still keep HS keys under `tor/hidden_service/` when Tor
 itself persists them; prefer `DiscardPK` / passphrase-wrapped copies in app state).
 
-Nuclear wipe deletes `state.enc` (and thus contacts/ratchets/pending) along with
-other local data under `hashchat_data/`.
+Nuclear wipe (`wipe_local_sensitive` / TUI `:wipe` → `:wipe-confirm`) deletes
+`state.enc` (and thus contacts/ratchets/pending) along with other local data under
+`hashchat_data/` and Tor HS material under `tor/hidden_service/`. The TUI confirm
+path also zeroizes in-RAM passphrase, `onion_key`, ratchet maps, and pending frame
+bodies via `SessionState::wipe_memory_secure`.
+
+**Honest limits:** wipe is a best-effort local erase. It does not defeat kernel
+implants, prior memory exfiltration, swap/core-dump residues, or forensic copies
+already taken. See THREATMODEL.md.
 
 **Durable send (H3):** prefer encrypt → durable queue commit → Tor send. A crash
 after commit but before Tor ACK may resend on restart; peers should tolerate

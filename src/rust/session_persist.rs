@@ -175,6 +175,22 @@ impl SessionState {
         }
         self.ratchets.clear();
     }
+
+    /// Nuclear in-RAM wipe for a loaded session (pending frames, ratchets, onion_key, seed).
+    /// Does not touch disk — pair with [`wipe_disk`] / [`crate::wipe_local_sensitive`].
+    ///
+    /// Honest limits: cannot erase copies already swapped, core-dumped, or exfiltrated;
+    /// cannot defeat a kernel implant. See THREATMODEL.md.
+    pub fn wipe_memory_secure(&mut self) {
+        self.clear_pending_secure();
+        self.clear_ratchets_secure();
+        self.contacts.clear();
+        self.identity.seed.zeroize();
+        self.identity.onion_key.zeroize();
+        self.identity.onion_key.clear();
+        // onion address is public routing material but still session residue — drop it.
+        self.identity.onion.clear();
+    }
 }
 
 fn data_paths(data_dir: &Path) -> (PathBuf, PathBuf) {
@@ -788,6 +804,33 @@ mod tests {
         assert!(loaded.ratchets.is_empty());
         assert!(loaded.pending.is_empty());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wipe_memory_secure_clears_pending_ratchets_onion_key() {
+        let mut session = SessionState::from_identity(IdentityOnionState {
+            seed: [0xAAu8; 32],
+            onion: "secret.onion".into(),
+            onion_key: b"ED25519-V3:deadbeef".to_vec(),
+        });
+        session.contacts.push(PersistedContact {
+            id: "bob".into(),
+            display_name: "Bob".into(),
+            onion: "bob.onion".into(),
+            x25519: [1u8; 32],
+            ed25519: [2u8; 32],
+        });
+        session.set_ratchet_bytes("bob", vec![0xBBu8; 64]);
+        session.queue_pending("bob.onion", vec![0xCCu8; 32]);
+
+        session.wipe_memory_secure();
+
+        assert!(session.pending.is_empty());
+        assert!(session.ratchets.is_empty());
+        assert!(session.contacts.is_empty());
+        assert!(session.identity.onion_key.is_empty());
+        assert!(session.identity.onion.is_empty());
+        assert_eq!(session.identity.seed, [0u8; 32]);
     }
 
     #[test]
