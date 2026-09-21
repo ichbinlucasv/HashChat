@@ -44,6 +44,7 @@ import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds, posixSecondsToUTCTime)
 import Data.Word (Word8, Word16, Word32, Word64)
 import Database.SQLite.Simple
 import Foreign.Ptr
+import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (malloc)
 import Foreign.Marshal.Array (withArray, peekArray, mallocArray, newArray)
 import Foreign.Storable (peek, poke)
@@ -102,6 +103,15 @@ foreign import ccall unsafe "rust_apply_basic_seccomp" rust_apply_basic_seccomp 
 foreign import ccall unsafe "rust_mlock" rust_mlock :: Ptr Word8 -> Int -> IO Bool
 foreign import ccall unsafe "rust_mlock_sensitive_ratchets" rust_mlock_sensitive_ratchets :: IO Bool
 foreign import ccall unsafe "rust_ratchet_wipe_skipped_key" rust_ratchet_wipe_skipped_key :: Word32 -> Word32 -> IO ()
+
+-- H1: verify signed contact link, static-DH, init_symmetric (never DH before verify)
+foreign import ccall unsafe "rust_contact_bootstrap" rust_contact_bootstrap
+  :: Word32 -> Ptr Word8 -> Ptr CChar -> Ptr Word8 -> Ptr Int -> IO Bool
+foreign import ccall unsafe "rust_contact_link_verify" rust_contact_link_verify
+  :: Ptr CChar -> Ptr Word8 -> Ptr Int -> Ptr Word8 -> Ptr Word8 -> Ptr Word8 -> Ptr Int -> IO Bool
+foreign import ccall unsafe "rust_longterm_generate" rust_longterm_generate
+  :: Ptr Word8 -> IO Bool
+
 
 initProfile :: IO ProfileKey
 initProfile = do

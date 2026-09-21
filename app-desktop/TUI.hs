@@ -39,7 +39,7 @@ import HashChat.Core
   , ratchetSend
   )
 import qualified HashChat.Contact as Contact
-import HashChat.Contact (Contact(..), defaultContact, ContactAddress(..), createContactAddress, contactAddressToLink, parseContactAddress, contactToAddress)
+import HashChat.Contact (Contact(..), defaultContact, ContactAddress(..), generateContactAddress, contactAddressToLink, parseContactAddress, parseContactAddressInsecure, contactSas, contactToAddress)
 import MessageUI
 import qualified HashChat.Tor as Tor
 import HashChat.Profile (ProfileProxyStore, setProfileProxy, defaultProxyForProfile)  -- Real Tor hidden service transport scaffolding started (SOCKS5/ProxyConfig foundation for I2P + bridges)
@@ -386,21 +386,15 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
             liftIO $ putStrLn "[SECURITY] This expands long-term identity surface. Only in trusted/strict environments."
             modify $ \st -> st { input = "", securityPosture = currentP }
           else do
-            liftIO $ putStrLn "=== MY CONTACT (Simplex-style shareable address) ==="
+            liftIO $ putStrLn "=== MY CONTACT (signed static-DH + SAS) ==="
             liftIO $ putStrLn "WARNING: PUBLIC DATA ONLY. Private keys never leave this device."
-            liftIO $ putStrLn "Wave 10: Using fresh random long-term pub for QR (minimal closure of 0xAB dummy). Full persisted per-profile identity keypair + X3DH is next major rec."
-            liftIO $ putStrLn "Share this link/QR with friends. They scan -> send ConnectionRequest back to your onion."
+            liftIO $ putStrLn "Bootstrap model: Ed25519-signed static X25519 DH (NOT X3DH). Compare SAS out-of-band."
             let demoOnion = "myhashchatv3demoaddressforqr.onion"
-            -- E (finishing): Use proper cryptographically secure random for the long-term pub in the QR.
-            -- This removes the last obvious pattern. Full persisted per-profile long-term keypair
-            -- (Rust + secure storage, only pub exported) remains the end goal (see THREATMODEL).
-            let longTermPub = unsafePerformIO $ do
-                  drg <- getSystemDRG
-                  let (bs, _) = randomBytesGenerate 32 drg
-                  pure bs
-            let addr = createContactAddress demoOnion longTermPub
+            addr <- liftIO $ generateContactAddress demoOnion
             let link = contactAddressToLink addr
+            let sas  = contactSas addr
             liftIO $ putStrLn $ "hashchat://contact link (copy or QR this): " ++ link
+            liftIO $ putStrLn $ "SAS fingerprint (compare verbally / OOB): " ++ sas
             liftIO $ putStrLn "============================================================"
             modify $ \st -> st { input = "", inputHistory = inputHistory st ++ [txt] }
       else if ":add-contact " `Data.List.isPrefixOf` inputStr
@@ -408,18 +402,46 @@ handleEvent (VtyEvent (V.EvKey V.KEnter [])) = do
         let link = drop (length ":add-contact ") inputStr
         case parseContactAddress link of
           Just ca -> do
-            liftIO $ putStrLn $ "[CONTACT] Parsed valid ContactAddress for onion: " ++ caOnion ca
-            liftIO $ putStrLn "[CONTACT] Adding as new contact (public key becomes pubHint base). Extreme mode would restrict this."
-            let newC = defaultContact (take 8 (caOnion ca)) (take 8 (caOnion ca)) (caOnion ca)
-            -- In real: store the caPubKey somewhere for future verification / ratchet init
+            liftIO $ putStrLn $ "[CONTACT] Verified signed ContactAddress for onion: " ++ caOnion ca
+            liftIO $ putStrLn $ "[CONTACT] SAS fingerprint: " ++ contactSas ca
+            liftIO $ putStrLn "[CONTACT] Signature OK — safe to proceed to static-DH bootstrap (verify-before-DH)."
+            let newC = (defaultContact (take 8 (caOnion ca)) (take 8 (caOnion ca)) (caOnion ca))
+                  { pubHint = BS.take 8 (caEd25519 ca) }
             modify $ \st -> st
               { contacts = newC : filter (\c -> Contact.onionAddress c /= caOnion ca) (contacts st)
               , input = ""
               , inputHistory = inputHistory st ++ [txt]
               }
-            liftIO $ putStrLn "[CONTACT] Contact added from QR/link. You can now send (ratchet will be created on first message)."
+            liftIO $ putStrLn "[CONTACT] Contact added from signed QR/link."
           Nothing -> do
-            liftIO $ putStrLn "[CONTACT] Invalid or malformed contact link. Must be hashchat://contact/v1/<onion>/<len:hexpub>"
+            liftIO $ putStrLn "[CONTACT] Rejected. Need signed hashchat://contact/v1/<onion>/<x25519>/<ed25519>/<sig>"
+            liftIO $ putStrLn "[CONTACT] Unsigned legacy links are TOFU-insecure — use :add-contact-insecure only if you accept that risk."
+            modify $ \st -> st { input = "" }
+      else if ":add-contact-insecure " `Data.List.isPrefixOf` inputStr
+      then do
+        let link = drop (length ":add-contact-insecure ") inputStr
+        case parseContactAddressInsecure link of
+          Just ca -> do
+            liftIO $ putStrLn "[SECURITY] WARNING: accepting UNSIGNED contact link (TOFU / QR-swap risk)."
+            liftIO $ putStrLn $ "[CONTACT] Insecure add for onion: " ++ caOnion ca
+            let newC = defaultContact (take 8 (caOnion ca)) (take 8 (caOnion ca)) (caOnion ca)
+            modify $ \st -> st
+              { contacts = newC : filter (\c -> Contact.onionAddress c /= caOnion ca) (contacts st)
+              , input = ""
+              , inputHistory = inputHistory st ++ [txt]
+              }
+          Nothing -> do
+            liftIO $ putStrLn "[CONTACT] Insecure parser could not read link."
+            modify $ \st -> st { input = "" }
+      else if ":sas " `Data.List.isPrefixOf` inputStr
+      then do
+        let link = drop (length ":sas ") inputStr
+        case parseContactAddress link of
+          Just ca -> do
+            liftIO $ putStrLn $ "[SAS] " ++ contactSas ca ++ "  onion=" ++ caOnion ca
+            modify $ \st -> st { input = "" }
+          Nothing -> do
+            liftIO $ putStrLn "[SAS] Need a valid signed contact link."
             modify $ \st -> st { input = "" }
       else if ":set-proxy " `Data.List.isPrefixOf` inputStr
       then do

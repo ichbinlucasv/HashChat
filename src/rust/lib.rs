@@ -9,6 +9,15 @@ use std::os::raw::c_void;
 use std::ptr;
 
 mod ratchet;
+mod longterm_identity;
+mod contact_link;
+
+pub use longterm_identity::LongTermIdentity;
+pub use contact_link::{
+    SignedContact, ContactLinkError, format_signed_contact_link, parse_signed_contact_link,
+    parse_unsigned_contact_link_insecure, bootstrap_ratchet_from_signed_link, sas_fingerprint,
+    sas_for_signed, canonical_payload,
+};
 
 // long-13: gated quantum module. Only compiled with `cargo build --features quantum`.
 // The module itself documents the strict constant-time / zeroize / side-channel
@@ -694,4 +703,218 @@ pub extern "C" fn rust_decrypt_blob_with_passphrase(
             Err(_) => false,
         }
     }
+}
+
+// =============================================================================
+// H1: Signed contact-link FFI (Haskell / TUI)
+// =============================================================================
+
+use std::ffi::CStr;
+use std::os::raw::c_char;
+
+/// Generate a fresh long-term identity seed into `out_seed` (32 bytes).
+#[no_mangle]
+pub extern "C" fn rust_longterm_generate(out_seed: *mut u8) -> bool {
+    if out_seed.is_null() {
+        return false;
+    }
+    match LongTermIdentity::generate() {
+        Ok(id) => {
+            let seed = id.seed_bytes();
+            unsafe {
+                std::ptr::copy_nonoverlapping(seed.as_ptr(), out_seed, 32);
+            }
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Create a signed contact link.
+/// `out` receives UTF-8 bytes (NOT NUL-terminated length in out_len); caller provides capacity via *out_len.
+/// Returns false if buffer too small (then *out_len = needed) or on error.
+#[no_mangle]
+pub extern "C" fn rust_contact_link_sign(
+    seed: *const u8,
+    onion: *const c_char,
+    out: *mut u8,
+    out_len: *mut usize,
+) -> bool {
+    if seed.is_null() || onion.is_null() || out_len.is_null() {
+        return false;
+    }
+    let seed_arr: [u8; 32] = unsafe {
+        match std::slice::from_raw_parts(seed, 32).try_into() {
+            Ok(a) => a,
+            Err(_) => return false,
+        }
+    };
+    let onion_str = unsafe {
+        match CStr::from_ptr(onion).to_str() {
+            Ok(s) => s,
+            Err(_) => return false,
+        }
+    };
+    let id = LongTermIdentity::from_seed(seed_arr);
+    let link = match format_signed_contact_link(&id, onion_str) {
+        Ok(l) => l,
+        Err(_) => return false,
+    };
+    let bytes = link.as_bytes();
+    unsafe {
+        if out.is_null() || *out_len < bytes.len() {
+            *out_len = bytes.len();
+            return false;
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
+        *out_len = bytes.len();
+    }
+    true
+}
+
+/// Verify + parse signed link. Writes onion CString to out_onion (capacity *onion_len),
+/// x25519 (32), ed25519 (32), sas CString to out_sas (capacity *sas_len).
+#[no_mangle]
+pub extern "C" fn rust_contact_link_verify(
+    link: *const c_char,
+    out_onion: *mut u8,
+    onion_len: *mut usize,
+    out_x25519: *mut u8,
+    out_ed25519: *mut u8,
+    out_sas: *mut u8,
+    sas_len: *mut usize,
+) -> bool {
+    if link.is_null() || onion_len.is_null() || sas_len.is_null() {
+        return false;
+    }
+    if out_x25519.is_null() || out_ed25519.is_null() {
+        return false;
+    }
+    let link_str = unsafe {
+        match CStr::from_ptr(link).to_str() {
+            Ok(s) => s,
+            Err(_) => return false,
+        }
+    };
+    let parsed = match parse_signed_contact_link(link_str) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let sas = sas_for_signed(&parsed);
+    let onion_bytes = parsed.onion.as_bytes();
+    let sas_bytes = sas.as_bytes();
+    unsafe {
+        if out_onion.is_null() || *onion_len < onion_bytes.len() + 1 {
+            *onion_len = onion_bytes.len() + 1;
+            return false;
+        }
+        if out_sas.is_null() || *sas_len < sas_bytes.len() + 1 {
+            *sas_len = sas_bytes.len() + 1;
+            return false;
+        }
+        std::ptr::copy_nonoverlapping(onion_bytes.as_ptr(), out_onion, onion_bytes.len());
+        *out_onion.add(onion_bytes.len()) = 0;
+        *onion_len = onion_bytes.len();
+        std::ptr::copy_nonoverlapping(parsed.x25519.as_ptr(), out_x25519, 32);
+        std::ptr::copy_nonoverlapping(parsed.ed25519.as_ptr(), out_ed25519, 32);
+        std::ptr::copy_nonoverlapping(sas_bytes.as_ptr(), out_sas, sas_bytes.len());
+        *out_sas.add(sas_bytes.len()) = 0;
+        *sas_len = sas_bytes.len();
+    }
+    true
+}
+
+/// Verify signed link, static-DH with local seed, init_symmetric on ratchet `state_id`.
+/// Writes SAS string to out_sas. Returns false on any verify/DH failure (ratchet untouched).
+#[no_mangle]
+pub extern "C" fn rust_contact_bootstrap(
+    state_id: u32,
+    local_seed: *const u8,
+    link: *const c_char,
+    out_sas: *mut u8,
+    sas_len: *mut usize,
+) -> bool {
+    if local_seed.is_null() || link.is_null() || sas_len.is_null() {
+        return false;
+    }
+    let seed_arr: [u8; 32] = unsafe {
+        match std::slice::from_raw_parts(local_seed, 32).try_into() {
+            Ok(a) => a,
+            Err(_) => return false,
+        }
+    };
+    let link_str = unsafe {
+        match CStr::from_ptr(link).to_str() {
+            Ok(s) => s,
+            Err(_) => return false,
+        }
+    };
+    let local = LongTermIdentity::from_seed(seed_arr);
+    let (ratchet, sas) = match bootstrap_ratchet_from_signed_link(&local, link_str) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let sas_bytes = sas.as_bytes();
+    unsafe {
+        if out_sas.is_null() || *sas_len < sas_bytes.len() + 1 {
+            *sas_len = sas_bytes.len() + 1;
+            return false;
+        }
+        // Only commit ratchet after verify+DH succeeded
+        if (state_id as usize) < RATCHET_STORE.len() {
+            RATCHET_STORE[state_id as usize] = ratchet;
+        } else if (state_id as usize) == RATCHET_STORE.len() {
+            RATCHET_STORE.push(ratchet);
+        } else {
+            return false;
+        }
+        std::ptr::copy_nonoverlapping(sas_bytes.as_ptr(), out_sas, sas_bytes.len());
+        *out_sas.add(sas_bytes.len()) = 0;
+        *sas_len = sas_bytes.len();
+    }
+    true
+}
+
+/// SAS for identity material already verified/stored (ed25519||x25519||onion).
+#[no_mangle]
+pub extern "C" fn rust_contact_sas(
+    ed25519: *const u8,
+    x25519: *const u8,
+    onion: *const c_char,
+    out_sas: *mut u8,
+    sas_len: *mut usize,
+) -> bool {
+    if ed25519.is_null() || x25519.is_null() || onion.is_null() || sas_len.is_null() {
+        return false;
+    }
+    let ed: [u8; 32] = unsafe {
+        match std::slice::from_raw_parts(ed25519, 32).try_into() {
+            Ok(a) => a,
+            Err(_) => return false,
+        }
+    };
+    let x: [u8; 32] = unsafe {
+        match std::slice::from_raw_parts(x25519, 32).try_into() {
+            Ok(a) => a,
+            Err(_) => return false,
+        }
+    };
+    let onion_str = unsafe {
+        match CStr::from_ptr(onion).to_str() {
+            Ok(s) => s,
+            Err(_) => return false,
+        }
+    };
+    let sas = sas_fingerprint(&ed, &x, onion_str);
+    let sas_bytes = sas.as_bytes();
+    unsafe {
+        if out_sas.is_null() || *sas_len < sas_bytes.len() + 1 {
+            *sas_len = sas_bytes.len() + 1;
+            return false;
+        }
+        std::ptr::copy_nonoverlapping(sas_bytes.as_ptr(), out_sas, sas_bytes.len());
+        *out_sas.add(sas_bytes.len()) = 0;
+        *sas_len = sas_bytes.len();
+    }
+    true
 }

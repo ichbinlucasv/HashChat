@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 module HashChat.Contact
   ( Contact(..)
   , ContactId
@@ -5,55 +6,55 @@ module HashChat.Contact
   , getContactOnion
   , contactPubHint
   , defaultContact
-  -- Contact / Profile sharing (Simplex-style)
+  -- Signed contact bootstrap (audit H1)
   , ContactAddress(..)
   , createContactAddress
+  , generateContactAddress
   , contactAddressToLink
   , parseContactAddress
-  -- Connection request (what the scanner sends back) + helpers for full Simplex-style roundtrip
+  , parseContactAddressInsecure
+  , contactSas
+  , canonicalContactPayload
+  , contactToAddress
+  -- Connection request helpers
   , ConnectionRequest(..)
   , createConnectionRequest
   , connectionRequestToLink
-  , contactToAddress
   ) where
 
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
-import Data.Word (Word32)
+import Data.Word (Word32, Word8)
 import Data.List (isPrefixOf)
 import Text.Read (readMaybe)
 import Numeric (readHex)
 import Text.Printf (printf)
 import Control.Monad (guard)
+import Crypto.Error (eitherCryptoError)
+import qualified Crypto.PubKey.Ed25519 as Ed25519
+import qualified Crypto.PubKey.Curve25519 as X25519
+import Crypto.Random (getSystemDRG, randomBytesGenerate)
+import Crypto.Hash (hash, Digest, SHA256)
+import Data.ByteArray (convert)
 
 type ContactId = String
 
--- Real per-contact identity for metadata-resistant addressing.
--- onionAddress: the v3 .onion the contact listens on (for sending to them)
--- pubHint: short public identity (first bytes of their ratchet public or ed25519) used in wire framing
 data Contact = Contact
   { contactId      :: ContactId
   , displayName    :: String
-  , onionAddress   :: String          -- full .onion for Tor send
-  , pubHint        :: ByteString      -- used for sender identification in framed messages
-  , ratchetId      :: Maybe Word32    -- local ratchet for this contact
+  , onionAddress   :: String
+  , pubHint        :: ByteString
+  , ratchetId      :: Maybe Word32
   }
 
--- Simple constructor
 defaultContact :: ContactId -> String -> String -> Contact
 defaultContact cid name onion = Contact
   { contactId    = cid
   , displayName  = name
   , onionAddress = onion
-  , pubHint      = BS.take 8 (BS.pack (map (fromIntegral . fromEnum) cid))  -- deterministic hint for framing
+  , pubHint      = BS.take 8 (BS.pack (map (fromIntegral . fromEnum) cid))
   , ratchetId    = Nothing
   }
-
--- Expanded rec-14: Minimal protocol message format example (for future implementation)
--- type IntroBlob = (ByteString, ByteString, Word64, ByteString)  -- (onion, pubHint, timestamp, sig)
--- Functions to implement later:
--- createIntroductionBlob :: Contact -> ByteString -> IO ByteString
--- verifyIntroductionBlob :: ByteString -> ByteString -> IO (Maybe Contact)
 
 addContact :: Contact -> [Contact] -> [Contact]
 addContact c cs = c : filter ((/= contactId c) . contactId) cs
@@ -64,22 +65,199 @@ getContactOnion cid = fmap onionAddress . Prelude.lookup cid . map (\c -> (conta
 contactPubHint :: Contact -> ByteString
 contactPubHint = pubHint
 
--- Wave 10: Create ContactAddress from Contact.
--- TUI generation no longer uses obvious 0xAB dummy (fresh pattern + note).
--- Real per-profile long-term identity keypair (generated in Rust, persisted via Keystore,
--- only pub exported for QR) + X3DH setup is the next major recommendation after this closure.
--- The current path provides usable Simplex-style QR with good metadata resistance.
-contactToAddress :: Contact -> ByteString -> ContactAddress
-contactToAddress contact pubKey = createContactAddress (onionAddress contact) pubKey
+--------------------------------------------------------------------------------
+-- Signed contact bootstrap (audit H1)
+--
+-- NOT X3DH. Bootstrap is: Ed25519-signed static-DH x25519 + onion, then
+-- verify-before-DH, then init_symmetric. Show SAS for manual compare.
+--
+-- Link format (signed v1 — required by default):
+--   hashchat://contact/v1/<onion>/<x25519-hex>/<ed25519-hex>/<sig-hex>
+--
+-- Canonical signed payload (exact bytes; must match src/rust/contact_link.rs):
+--   ASCII "v1" || ASCII onion-without-.onion || 32 raw x25519 public bytes
+-- Sig = Ed25519.Sign(long-term sk, payload) (detached, 64 bytes).
+--
+-- Unsigned legacy links are REJECTED by parseContactAddress.
+-- parseContactAddressInsecure / :add-contact-insecure = explicit TOFU escape hatch.
+--------------------------------------------------------------------------------
 
--- =====================================================================
--- Simplex-style Connection Request (Wave 7)
--- =====================================================================
--- When someone scans your ContactAddress (QR), they create this and send it to your onion.
--- It contains their public info so you can reply securely.
+data ContactAddress = ContactAddress
+  { caOnion   :: String      -- full .onion
+  , caX25519  :: ByteString  -- 32 bytes (static DH public)
+  , caEd25519 :: ByteString  -- 32 bytes (identity verifying key)
+  , caSig     :: ByteString  -- 64 bytes
+  , caVersion :: Int
+  }
+  deriving (Show, Eq)
+
+canonicalContactPayload :: String -> ByteString -> ByteString
+canonicalContactPayload onionNoSuffix x25519 =
+  BS.pack (map (fromIntegral . fromEnum) "v1")
+  <> BS.pack (map (fromIntegral . fromEnum) onionNoSuffix)
+  <> x25519
+
+onionBare :: String -> String
+onionBare = takeWhile (/= '.')
+
+onionFull :: String -> String
+onionFull o
+  | ".onion" `isPrefixOf` dropWhile (/= '.') o = o
+  | otherwise = onionBare o ++ ".onion"
+
+toHex :: ByteString -> String
+toHex = concatMap (printf "%02x") . BS.unpack
+
+fromHex8 :: String -> Maybe ByteString
+fromHex8 s
+  | null s || odd (length s) = Nothing
+  | otherwise = fmap BS.pack (mapM dec (chunksOf 2 s))
+  where
+    dec p = case readHex p of
+      (x, ""):_ -> Just (fromIntegral x :: Word8)
+      _         -> Nothing
+    chunksOf _ [] = []
+    chunksOf n xs = take n xs : chunksOf n (drop n xs)
+
+contactSas :: ContactAddress -> String
+contactSas ca =
+  let material = caEd25519 ca <> caX25519 ca
+                 <> BS.pack (map (fromIntegral . fromEnum) (caOnion ca))
+      digest = hash material :: Digest SHA256
+      bs = BS.take 4 (convert digest)
+  in case BS.unpack bs of
+       [a,b,c,d] -> printf "%02X%02X-%02X%02X" a b c d
+       _         -> "????-????"
+
+verifySig :: ByteString -> ByteString -> ByteString -> Bool
+verifySig pub msg sig =
+  case (eitherCryptoError (Ed25519.publicKey pub),
+        eitherCryptoError (Ed25519.signature sig)) of
+    (Right pk, Right sg) -> Ed25519.verify pk msg sg
+    _                    -> False
+
+-- | Sign onion+x25519 under ed25519 secret seed (32 bytes).
+createContactAddress :: String -> ByteString -> ByteString -> Maybe ContactAddress
+createContactAddress onion edSeed x25519Pub = do
+  guard (BS.length edSeed == 32 && BS.length x25519Pub == 32)
+  sk <- case eitherCryptoError (Ed25519.secretKey edSeed) of
+          Right s -> Just s
+          Left _  -> Nothing
+  let pk      = Ed25519.toPublic sk
+      bare    = onionBare onion
+      full    = onionFull onion
+      payload = canonicalContactPayload bare x25519Pub
+      sg      = Ed25519.sign sk pk payload
+  pure ContactAddress
+    { caOnion   = full
+    , caX25519  = x25519Pub
+    , caEd25519 = convert pk
+    , caSig     = convert sg
+    , caVersion = 1
+    }
+
+-- | Demo/TUI helper: fresh random ed25519 seed + x25519 pub, return signed address.
+-- Production should persist the seed via Argon2id envelope (see longterm_identity.rs).
+generateContactAddress :: String -> IO ContactAddress
+generateContactAddress onion = do
+  drg0 <- getSystemDRG
+  let (edSeed, drg1) = randomBytesGenerate 32 drg0
+      (xSecBytes, _) = randomBytesGenerate 32 drg1
+  case eitherCryptoError (X25519.secretKey xSecBytes) of
+    Left _ -> error "generateContactAddress: x25519 seed rejected"
+    Right xsk -> do
+      let x25519Pub = convert (X25519.toPublic xsk)
+      case createContactAddress onion edSeed x25519Pub of
+        Just ca -> pure ca
+        Nothing -> error "generateContactAddress: ed25519 seed rejected"
+
+contactAddressToLink :: ContactAddress -> String
+contactAddressToLink ca =
+  "hashchat://contact/v" ++ show (caVersion ca) ++ "/" ++
+  onionBare (caOnion ca) ++ "/" ++
+  toHex (caX25519 ca) ++ "/" ++
+  toHex (caEd25519 ca) ++ "/" ++
+  toHex (caSig ca)
+
+-- | Paranoid default: require signed v1 and verify Ed25519.
+parseContactAddress :: String -> Maybe ContactAddress
+parseContactAddress link = do
+  guard ("hashchat://contact/v" `isPrefixOf` link)
+  let rest = drop (length "hashchat://contact/v") link
+  (verStr, afterVer) <- breakOn '/' rest
+  ver <- readMaybe verStr
+  guard (ver == 1)
+  let segs = splitOn '/' afterVer
+  guard (length segs == 4)
+  let [onionPart, xHex, edHex, sigHex] = segs
+  x25519  <- fromHex8 xHex
+  ed25519 <- fromHex8 edHex
+  sig     <- fromHex8 sigHex
+  guard (BS.length x25519 == 32 && BS.length ed25519 == 32 && BS.length sig == 64)
+  let bare    = onionPart
+      full    = onionFull onionPart
+      payload = canonicalContactPayload bare x25519
+  guard (verifySig ed25519 payload sig)
+  pure ContactAddress
+    { caOnion   = full
+    , caX25519  = x25519
+    , caEd25519 = ed25519
+    , caSig     = sig
+    , caVersion = ver
+    }
+  where
+    breakOn c s = case break (== c) s of
+      (a, _ : b) -> Just (a, b)
+      _          -> Nothing
+    splitOn _ [] = []
+    splitOn c xs =
+      let (a, rest) = break (== c) xs
+      in a : case rest of
+               []     -> []
+               (_:ys) -> splitOn c ys
+
+-- | Explicit TOFU-insecure parser for unsigned legacy links.
+-- WARNING: no signature — MITM/QR-swap silent. Prefer parseContactAddress.
+parseContactAddressInsecure :: String -> Maybe ContactAddress
+parseContactAddressInsecure link = do
+  guard ("hashchat://contact/v" `isPrefixOf` link)
+  let rest = drop (length "hashchat://contact/v") link
+  (verStr, afterVer) <- breakOn '/' rest
+  ver <- readMaybe verStr
+  guard (ver == 1)
+  (onionPart, keyPart) <- breakOn '/' afterVer
+  guard ('/' `notElem` keyPart)
+  let hexKey = case break (== ':') keyPart of
+        (_, ':':h) -> h
+        _          -> keyPart
+  keyBytes <- fromHex8 hexKey
+  guard (BS.length keyBytes == 32)
+  pure ContactAddress
+    { caOnion   = onionFull onionPart
+    , caX25519  = keyBytes
+    , caEd25519 = BS.replicate 32 0
+    , caSig     = BS.replicate 64 0
+    , caVersion = ver
+    }
+  where
+    breakOn c s = case break (== c) s of
+      (a, _ : b) -> Just (a, b)
+      _          -> Nothing
+
+-- Legacy helper: unsigned placeholder (do not share — use generateContactAddress).
+contactToAddress :: Contact -> ByteString -> ContactAddress
+contactToAddress contact pubKey = ContactAddress
+  { caOnion   = onionAddress contact
+  , caX25519  = pubKey
+  , caEd25519 = BS.replicate 32 0
+  , caSig     = BS.replicate 64 0
+  , caVersion = 1
+  }
+
+--------------------------------------------------------------------------------
 data ConnectionRequest = ConnectionRequest
-  { crOnion  :: String
-  , crPubKey :: ByteString
+  { crOnion   :: String
+  , crPubKey  :: ByteString
   , crVersion :: Int
   }
 
@@ -89,90 +267,6 @@ createConnectionRequest onion pubKey = ConnectionRequest onion pubKey 1
 connectionRequestToLink :: ConnectionRequest -> String
 connectionRequestToLink cr =
   "hashchat://connect/v" ++ show (crVersion cr) ++ "/" ++
-  takeWhile (/= '.') (crOnion cr) ++ "/" ++
+  onionBare (crOnion cr) ++ "/" ++
   show (BS.length (crPubKey cr)) ++ ":" ++
-  concatMap (printf "%02x") (BS.unpack (crPubKey cr))
-
--- EXTREME MODE NOTE (Wave 8):
--- Generation of fresh ContactAddress / ConnectionRequest (i.e. profile QR) should be refused
--- or heavily rate-limited when EXTREME_MODE or strict posture is active. The TUI/Android layers
--- must call isStrictMode / EXTREME_MODE checks before exposing "share my contact" UI.
--- This minimizes long-term identity surface.
-
--- In the real app these would be persisted encrypted per profile (like ratchets)
--- and exchanged via QR / link (X3DH-style) over Tor.
-
--- Note on Extreme mode (Wave 7):
--- When EXTREME_MODE is active, generation of new contact addresses / profile QR
--- should be disabled or heavily restricted to minimize attack surface.
-
--- =====================================================================
--- Contact Address / Profile Sharing (Simplex-inspired, Wave 7)
--- =====================================================================
--- Following SimplexChat's simple and effective model:
--- - The QR/link contains only PUBLIC information (your onion + public identity key).
--- - Your private keys never leave your device.
--- - The other party can use this to initiate a secure connection.
---
--- Format example:
---   hashchat://contact/v1/<onion-without-.onion>/<hex-or-base64-public-key>
---
--- This is the recommended way to share profiles with friends.
-
-data ContactAddress = ContactAddress
-  { caOnion     :: String      -- full .onion address (public)
-  , caPubKey    :: ByteString  -- public identity / signing key (public)
-  , caVersion   :: Int         -- for future format evolution
-  }
-  deriving (Show, Eq)
-
--- Create a shareable contact address (public data only)
--- The private key must never be included here.
-createContactAddress :: String -> ByteString -> ContactAddress
-createContactAddress onion pubKey = ContactAddress
-  { caOnion   = onion
-  , caPubKey  = pubKey
-  , caVersion = 1
-  }
-
--- Generate a shareable link string suitable for QR code
-contactAddressToLink :: ContactAddress -> String
-contactAddressToLink ca =
-  "hashchat://contact/v" ++ show (caVersion ca) ++ "/" ++
-  takeWhile (/= '.') (caOnion ca) ++ "/" ++
-  show (BS.length (caPubKey ca)) ++ ":" ++
-  concatMap (printf "%02x") (BS.unpack (caPubKey ca))
-
--- Parse a contact link (from QR or pasted)
--- Returns Nothing if format is invalid or data malformed.
--- SECURITY MODEL (Simplex-style, Wave 7/8): QR/link carries ONLY public onion + public identity key.
--- Private ratchet keys + long-term identity secrets stay on device and are never shared.
--- Progress on E (as of this wave):
--- - Desktop TUI now uses proper crypto random (cryptonite getSystemDRG) for the pub in generated QR links.
--- - Android side has a minimal generator (still fresh random for now).
--- Remaining: Real persisted per-profile long-term signing/identity keypair (generated + stored securely,
--- only pub exported for QR). See THREATMODEL "big remaining gap". This is the last major placeholder
--- for full Simplex-style profile sharing strength.
-parseContactAddress :: String -> Maybe ContactAddress
-parseContactAddress link = do
-  guard ( "hashchat://contact/v" `isPrefixOf` link )
-  let rest = drop (length "hashchat://contact/v") link
-  (verStr, afterVer) <- breakOn '/' rest
-  ver <- readMaybe verStr
-  guard (ver == 1)
-  let (onionPart, keyPart) = breakOn '/' afterVer
-  let onion = onionPart ++ ".onion"
-  (lenStr, hexKey) <- breakOn ':' keyPart
-  keyLen <- readMaybe lenStr
-  -- Safer decode: skip empty/invalid hex pairs from malformed input (QR damage, paste error)
-  let decodedPairs = chunksOf 2 hexKey
-  let safeDecode p = case readHex p of (x:_) -> [fst x]; _ -> []
-  let keyBytes = BS.pack $ map fromIntegral (concatMap safeDecode decodedPairs)
-  guard (BS.length keyBytes == keyLen)
-  pure $ ContactAddress onion keyBytes ver
-  where
-    breakOn c s = case break (== c) s of
-      (a, _ : b) -> Just (a, b)
-      _          -> Nothing
-    chunksOf _ [] = []
-    chunksOf n xs = take n xs : chunksOf n (drop n xs)
+  toHex (crPubKey cr)

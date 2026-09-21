@@ -111,7 +111,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_isStrictMode(_env: JNIEnv, _
 // Wave 10: Minimal long-term identity pub for ContactAddress / profile QR (Simplex-style).
 // Returns 32 fresh random bytes as the "public identity key" to put in hashchat://contact links.
 // Private material is never exported. Full persisted per-profile X25519/ed25519 identity
-// + X3DH is the next major recommendation after this closure of the 0xAB dummy.
+// + signed static-DH contact links + SAS (NOT X3DH) are the desktop H1 path; persist long-term keys next.
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_generateLongTermIdentityPub(
     mut env: JNIEnv,

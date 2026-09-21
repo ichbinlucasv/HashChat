@@ -4,7 +4,7 @@ import HashChat.Core
 import HashChat.Profile
 import HashChat.Queue
 import HashChat.FileTransfer
-import HashChat.Contact
+import HashChat.Contact (ContactAddress(..), generateContactAddress, contactAddressToLink, parseContactAddress, parseContactAddressInsecure, contactSas)
 import HashChat.Voice
 import HashChat.Call
 import HashChat.Settings
@@ -63,7 +63,7 @@ startCLI = do
   initAll
   putStrLn "HashChat CLI - Interactive Secure Messaging (Double Ratchet)"
   putStrLn "Commands: send <contact> <msg> | chat <contact> | ratchet-demo | wipe | my-contact | add-contact <hashchat://...> | quit"
-  putStrLn "  (my-contact / add-contact: Wave 8 Simplex-style profile QR links - public onion+key only)"
+  putStrLn "  (my-contact / add-contact: signed static-DH contact links + SAS; add-contact-insecure = TOFU)"
   cliMessageLoop Map.empty Map.empty   -- (ratchetId per contact, messages per contact)
 
 -- Per-contact state for the demo message system
@@ -92,7 +92,7 @@ cliMessageLoop ratchets messages = do
         Just r  -> pure (r, ratchets)
         Nothing -> do
           r <- newRatchet
-          -- In real app we'd do X3DH here to get shared secret + remote pub
+          -- Bootstrap is signed static-DH + SAS (NOT X3DH); real path verifies link then DH.
           let dummyRemote = BS.pack (Prelude.replicate 32 0xAA)
           let dummyShared = BS.pack (Prelude.replicate 32 0xBB)
           initRatchet r dummyRemote dummyShared
@@ -122,17 +122,28 @@ cliMessageLoop ratchets messages = do
       putStrLn "Everything wiped."
       cliMessageLoop Map.empty Map.empty
     ["my-contact"] -> do
-      putStrLn "=== MY CONTACT (Simplex-style) ==="
-      putStrLn "WARNING: PUBLIC ONLY. Share link/QR. Private stays here. (pubkey placeholder until X3DH key mgmt)"
-      putStrLn "hashchat://contact/v1/myhashchatv3demoaddressforqr.onion/32:abababababababababababababababababababababababababababababababab"
+      putStrLn "=== MY CONTACT (signed static-DH + SAS) ==="
+      putStrLn "WARNING: PUBLIC ONLY. Bootstrap = Ed25519-signed static X25519 (NOT X3DH). Compare SAS OOB."
+      addr <- generateContactAddress "myhashchatv3demoaddressforqr.onion"
+      putStrLn $ contactAddressToLink addr
+      putStrLn $ "SAS: " ++ contactSas addr
       cliMessageLoop ratchets messages
     ("add-contact":link:_) -> do
       case parseContactAddress link of
         Just ca -> do
-          putStrLn $ "[CONTACT] Added from link: " ++ caOnion ca
+          putStrLn $ "[CONTACT] Verified signed link: " ++ caOnion ca
+          putStrLn $ "[CONTACT] SAS: " ++ contactSas ca
           cliMessageLoop ratchets messages
         Nothing -> do
-          putStrLn "[CONTACT] Bad link format."
+          putStrLn "[CONTACT] Rejected (need signed v1 link). Unsigned: add-contact-insecure <link>"
+          cliMessageLoop ratchets messages
+    ("add-contact-insecure":link:_) -> do
+      case parseContactAddressInsecure link of
+        Just ca -> do
+          putStrLn $ "[SECURITY] UNSIGNED TOFU add: " ++ caOnion ca
+          cliMessageLoop ratchets messages
+        Nothing -> do
+          putStrLn "[CONTACT] Bad insecure link format."
           cliMessageLoop ratchets messages
     _ -> do
       putStrLn "Unknown. Type 'help'."
