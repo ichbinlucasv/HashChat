@@ -16,6 +16,7 @@ mod session_persist;
 mod tor_socks;
 mod hidden_service;
 mod wire;
+mod net_mode;
 
 pub use longterm_identity::LongTermIdentity;
 pub use longterm_identity::{export_encrypted as longterm_export_encrypted, import_encrypted as longterm_import_encrypted};
@@ -38,6 +39,9 @@ pub use hidden_service::{
     start_hidden_service_with_key, cookie_path_from_protocolinfo, HiddenService,
 };
 pub use wire::{frame_v2, unframe_v2};
+pub use net_mode::{
+    DnsPreference, NetConfig, NetModeError, NetworkMode, PostureProfile,
+};
 
 // long-13: gated quantum module. Only compiled with `cargo build --features quantum`.
 // The module itself documents the strict constant-time / zeroize / side-channel

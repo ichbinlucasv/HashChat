@@ -4,7 +4,7 @@
 //!
 //! Uses crate APIs: session_persist, contact_link, LongTermIdentity, wipe,
 //! Tor ControlPort cookie auth + ADD_ONION listen, SOCKS send (fail-closed).
-//! Transport policy: Tor SOCKS only — no clearnet fallback.
+//! Transport policy: Tor default (explicit modes via :mode / env); no silent fallback.
 
 use std::io::{self, stdout};
 use std::path::Path;
@@ -20,8 +20,9 @@ use hashchat_rust::{
     format_signed_contact_link, frame_v2, is_onion_destination, load_session,
     parse_signed_contact_link, sas_fingerprint, save_session, socks5_send,
     start_hidden_service_with_key, state_exists, tor_probe, unframe_v2, wipe_local_sensitive,
-    DoubleRatchet, HiddenService, IdentityOnionState, LongTermIdentity, PersistMode,
-    PersistedContact, SessionState, WIRE_VERSION_V2,
+    DnsPreference, DoubleRatchet, HiddenService, IdentityOnionState, LongTermIdentity,
+    NetConfig, NetworkMode, PersistMode, PersistedContact, PostureProfile, SessionState,
+    WIRE_VERSION_V2,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -76,6 +77,8 @@ struct App {
     last_tor_check: Instant,
     socks_port: u16,
     hs: Option<HiddenService>,
+    /// In-memory network mode (env + :mode). Not yet in session blob.
+    net: NetConfig,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -140,6 +143,7 @@ impl App {
             last_tor_check: Instant::now() - Duration::from_secs(60),
             socks_port: 9050,
             hs: None,
+            net: NetConfig::from_env(),
         }
     }
 
@@ -294,6 +298,11 @@ impl App {
     }
 
     fn listen(&mut self) {
+        if let Err(e) = self.net.require_messenger_transport() {
+            self.status_msg = format!(":listen refused: {e}");
+            self.messages.push(self.status_msg.clone());
+            return;
+        }
         if self.hs.is_some() {
             let onion = self
                 .session
@@ -361,6 +370,10 @@ impl App {
     }
 
     fn retry_pending(&mut self) {
+        if let Err(e) = self.net.require_messenger_transport() {
+            self.status_msg = format!(":retry refused: {e}");
+            return;
+        }
         let Some(session) = self.session.as_mut() else {
             return;
         };
@@ -544,6 +557,10 @@ impl App {
     }
 
     fn send_text(&mut self, text: &str) {
+        if let Err(e) = self.net.require_messenger_transport() {
+            self.messages.push(format!("Send refused: {e}"));
+            return;
+        }
         if self.tor_status != TorStatus::Available {
             self.messages.push(
                 "Send refused: Tor SOCKS not available (Tor-only policy).".into(),
@@ -657,6 +674,100 @@ impl App {
         }
     }
 
+    /// `:mode` — inspect / set network mode (in-memory; env also applies at start).
+    fn handle_mode(&mut self, args: &str) {
+        let args = args.trim();
+        if args.is_empty() || args == "status" || args == "show" {
+            self.messages.push(self.net.status_line());
+            self.status_msg = self.net.status_line();
+            return;
+        }
+        let mut parts = args.split_whitespace();
+        let Some(head) = parts.next() else {
+            return;
+        };
+        let head_l = head.to_ascii_lowercase();
+        match head_l.as_str() {
+            "tor" | "i2p" | "clearnet" | "clear" | "onion" | "garlic" | "direct" => {
+                match NetworkMode::parse_token(&head_l) {
+                    Ok(mode) => match self.net.set_mode(mode) {
+                        Ok(()) => {
+                            self.status_msg = format!("Network mode set to {}", self.net.mode);
+                            self.messages.push(self.net.status_line());
+                        }
+                        Err(e) => {
+                            self.status_msg = e.to_string();
+                            self.messages.push(e.to_string());
+                        }
+                    },
+                    Err(e) => {
+                        self.status_msg = e.to_string();
+                        self.messages.push(e.to_string());
+                    }
+                }
+            }
+            "dns" => {
+                let Some(tok) = parts.next() else {
+                    self.status_msg = "Usage: :mode dns system|quad9|custom <addr>".into();
+                    return;
+                };
+                match DnsPreference::parse_token(tok) {
+                    Ok(DnsPreference::Custom) => {
+                        let addr = parts.next().map(|s| s.to_string());
+                        match self.net.set_dns(DnsPreference::Custom, addr) {
+                            Ok(()) => {
+                                self.status_msg = self.net.status_line();
+                                self.messages.push(self.status_msg.clone());
+                            }
+                            Err(e) => {
+                                self.status_msg = e.to_string();
+                                self.messages.push(e.to_string());
+                            }
+                        }
+                    }
+                    Ok(dns) => match self.net.set_dns(dns, None) {
+                        Ok(()) => {
+                            self.status_msg = self.net.status_line();
+                            self.messages.push(self.status_msg.clone());
+                        }
+                        Err(e) => {
+                            self.status_msg = e.to_string();
+                            self.messages.push(e.to_string());
+                        }
+                    },
+                    Err(e) => {
+                        self.status_msg = e.to_string();
+                        self.messages.push(e.to_string());
+                    }
+                }
+            }
+            "extreme" | "paranoid" => {
+                self.net.set_posture(PostureProfile::Extreme);
+                self.status_msg = format!("Posture extreme (Tor-only). {}", self.net.status_line());
+                self.messages.push(self.status_msg.clone());
+            }
+            "standard" | "normal" => {
+                self.net.set_posture(PostureProfile::Standard);
+                self.status_msg = format!("Posture standard. {}", self.net.status_line());
+                self.messages.push(self.status_msg.clone());
+            }
+            "help" => {
+                self.messages.push(
+                    "Usage: :mode [status|tor|i2p|clearnet|dns system|dns quad9|dns custom <addr>|extreme|standard]"
+                        .into(),
+                );
+                self.messages.push(
+                    "Default Tor. I2P/clearnet refuse messenger sockets until implemented. Extreme locks Tor-only."
+                        .into(),
+                );
+            }
+            other => {
+                self.status_msg = format!("Unknown :mode argument: {other} (:mode help)");
+                self.messages.push(self.status_msg.clone());
+            }
+        }
+    }
+
     fn handle_command(&mut self, cmd: &str) {
         let c = cmd.trim();
         match c {
@@ -724,15 +835,20 @@ impl App {
                         .map(|s| s.pending.len())
                         .unwrap_or(0)
                 ));
+                self.messages.push(self.net.status_line());
                 self.status_msg = self.tor_status.label(listening);
             }
             ":help" => {
                 self.messages.push(
-                    "Commands: :listen  :my-contact  :add-contact <link>  :tor  :retry  :wipe  :quit"
+                    "Commands: :listen  :my-contact  :add-contact <link>  :tor  :mode  :retry  :wipe  :quit"
                         .into(),
                 );
                 self.messages.push(
                     "Two devices: both :listen, exchange :my-contact links via :add-contact, then chat."
+                        .into(),
+                );
+                self.messages.push(
+                    "Transport: Tor default; :mode selects explicit network (no silent fallback)."
                         .into(),
                 );
             }
@@ -740,6 +856,10 @@ impl App {
             other if other.starts_with(":add-contact ") => {
                 let link = other.strip_prefix(":add-contact ").unwrap_or("").trim();
                 self.add_contact_link(link);
+            }
+            other if other == ":mode" || other.starts_with(":mode ") => {
+                let args = other.strip_prefix(":mode").unwrap_or("").trim();
+                self.handle_mode(args);
             }
             other if other.starts_with(':') => {
                 self.messages
@@ -874,7 +994,7 @@ fn draw_unlock(f: &mut ratatui::Frame, app: &App, area: Rect) {
     f.render_widget(body, chunks[1]);
 
     let foot = Paragraph::new(Line::from(Span::styled(
-        "Transport default: Tor · Cookie ControlPort · No clearnet fallback",
+        "Transport default: Tor · :mode for explicit nets · No silent fallback",
         Style::default().fg(DIM),
     )))
     .block(
@@ -906,6 +1026,11 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         Span::styled(
             app.tor_status.label(listening),
             app.tor_status.style(),
+        ),
+        Span::styled(" · ", Style::default().fg(DIM)),
+        Span::styled(
+            format!("mode={}", app.net.mode),
+            Style::default().fg(DIM),
         ),
     ]))
     .block(

@@ -51,7 +51,7 @@ Inspiration: SimpleX-class UX ideas, with paranoid defaults (Tor-first, no phone
 
 See [INSTALL.md](INSTALL.md) for Fedora / Ubuntu / Arch / Tails / Qubes walkthroughs, Flatpak, and packaging notes.
 
-**Transport default:** Tor. Other networks (I2P, clearnet) or DNS choices are planned as **explicit** user modes — no silent fallback from Tor.
+**Transport default:** Tor (fail-closed). Explicit modes live in Rust `net_mode` (`Tor` / `I2P` / `Clearnet`, DNS preference separate). Only Tor send/listen is implemented; I2P and clearnet return a clear refusal and do **not** open messenger sockets. Extreme posture locks Tor-only. TUI: `:mode` / env `HASHCHAT_NET_MODE`, `HASHCHAT_DNS`, `HASHCHAT_POSTURE` (in-memory for now — not yet in the session blob).
 
 ---
 
