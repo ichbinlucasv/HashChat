@@ -1,25 +1,16 @@
 # HashChat branding
 
-Visual direction: black + gold (`#FFD700`), SimpleX-like clarity without copying their marks.
+**Name:** HashChat  
+**Colours:** black `#0A0A0A` + gold `#FFD700` (see COLORS.md)
 
-## Canonical lockup
+## Canonical mark
 
-User-approved: **`hashchat-wordmark.png` / `hashchat-lockup.png`** — gold shield + “HashChat” on black.
+Gold **chat bubble** with a **hash (#)** and **typing dots (...)** on black.
 
-## Primary mark
+| File | Use |
+|------|-----|
+| `hashchat-icon-1024.png` / `512.png` / `hashchat-icon.svg` | App / launcher icon |
+| `hashchat-lockup.png` / `hashchat-wordmark.png` | README, stores, splash |
+| Flatpak hicolor | `flatpak/icons/hicolor/*/apps/org.hashchat.HashChat.png` |
 
-Heraldic **shield** in gold (`#FFD700`) on black, with an **H** monogram. No chat-bubble frame.
-
-## Assets
-
-| File | Purpose |
-|------|---------|
-| `hashchat-icon.svg` | Vector source of truth |
-| `hashchat-icon-1024.png` / `512.png` | Master rasters |
-| `hashchat-wordmark.png` | README / store header |
-| `hashchat-foreground.png` | Adaptive / glyph explorations |
-| Flatpak hicolor PNGs | `flatpak/icons/hicolor/*/apps/org.hashchat.HashChat.png` |
-
-## Voice
-
-Product stands for voluntary association, user sovereignty over data and keys, and honest engineering. Keep UI copy short and professional. Do not put political or religious slogans in the chrome; values show up as defaults (Tor, no account, nuclear wipe), not banners.
+Older shield explorations may remain under `alts/` for reference only.

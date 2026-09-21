@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="HashChat">
   <rect width="512" height="512" rx="96" fill="#0A0A0A"/>
-  <!-- outer shield -->
-  <path fill="#FFD700" d="M256 72c48 28 120 36 168 44v132c0 92-56 156-168 208C144 404 88 340 88 248V116c48-8 120-16 168-44z"/>
-  <!-- inner well -->
-  <path fill="#0A0A0A" d="M256 118c36 20 92 26 132 32v98c0 70-42 120-132 160-90-40-132-90-132-160v-98c40-6 96-12 132-32z"/>
-  <!-- H -->
-  <path fill="#FFD700" d="M196 210h36v40h48v-40h36v116h-36v-48h-48v48h-36z"/>
+  <!-- chat bubble -->
+  <path fill="#FFD700" d="M118 96h276c40 0 72 32 72 72v168c0 40-32 72-72 72H248l-78 78V408H118c-40 0-72-32-72-72V168c0-40 32-72 72-72z"/>
+  <!-- hash # -->
+  <path fill="#0A0A0A" d="M214 168h28l8 40h40l-8-40h28l8 40h36v24h-32l10 48h34v24h-30l10 52h-28l-10-52h-40l10 52h-28l-10-52h-36v-24h32l-10-48h-34v-24h30l-8-40zm52 64h40l-10 48h-40l10-48z"/>
+  <!-- dots -->
+  <circle cx="220" cy="360" r="14" fill="#0A0A0A"/>
+  <circle cx="256" cy="360" r="14" fill="#0A0A0A"/>
+  <circle cx="292" cy="360" r="14" fill="#0A0A0A"/>
 </svg>
