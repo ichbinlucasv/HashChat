@@ -2,7 +2,7 @@
 
 **Snapshot:** 22 September 2026 (Europe/Zurich)  
 **Branch:** `codeberg-primary`  
-**Tip:** `a782d172b396a34887032680c11f465066e7e26e`
+**Tip:** `1cd057db5961eb87658e0a09d91484a2d27153b7`
 
 ## Executive summary
 
@@ -30,7 +30,7 @@ The Rust desktop path moved from scaffold to a usable, Tor-first two-peer TUI. T
 - **Extreme persistence minimization (Rust TUI) — `e917681`:** Under Extreme posture, `SessionState::for_disk` / `save_session` persist identity + onion + net prefs + disappear TTL only; contacts / ratchets / pending are written empty (blob stays v4). Load keeps legacy contacts in RAM for the current session; next Extreme save strips them. Switching *to* Extreme clears in-memory chat transcript (zeroize). `:status`/`:help` note contacts/queue are not durable and do not claim Android Extreme parity. Standard H3 round-trip unchanged. Tests: Extreme save→load empty contacts/pending; Standard keeps contacts; legacy Extreme-with-contacts then Extreme save strips.
 
 
-- **Contact block / mute (Rust TUI):** `:block` / `:unblock` / `:blocked` plus optional `:mute` / `:unmute`. Session blob **v5** stores blocked/muted contact-id lists under Standard (v1–v4 load empty lists). Block = refuse send + drop inbound without decrypt/display (fail-closed; no plaintext in status). Mute = decrypt for ratchet sync, suppress UI. Extreme `for_disk` strips deny lists with contacts/queue. Tests: v5 round-trip, v4→empty deny lists, SAS-prefix resolve + refuse helpers, Extreme strip. THREATMODEL + EXTREME_PROFILE honesty. No push.
+- **Contact block / mute (Rust TUI) — `1cd057d`:** `:block` / `:unblock` / `:blocked` plus optional `:mute` / `:unmute`. Session blob **v5** stores blocked/muted contact-id lists under Standard (v1–v4 load empty lists). Block = refuse send + drop inbound without decrypt/display (fail-closed; no plaintext in status). Mute = decrypt for ratchet sync, suppress UI. Extreme `for_disk` strips deny lists with contacts/queue. Tests: v5 round-trip, v4→empty deny lists, SAS-prefix resolve + refuse helpers, Extreme strip. THREATMODEL + EXTREME_PROFILE honesty. No push.
 
 
 ## How to run
