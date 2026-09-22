@@ -133,6 +133,9 @@ pub struct NetConfig {
     /// Host or `host:port` for [`DnsPreference::Custom`] only. Never log secrets.
     pub custom_dns: Option<String>,
     pub posture: PostureProfile,
+    /// Tor SOCKS5 `IsolateSOCKSAuth` per-contact credentials (default on).
+    /// Extreme posture forces this on; `:isolate off` is refused under Extreme.
+    pub socks_isolation: bool,
 }
 
 impl Default for NetConfig {
@@ -142,6 +145,7 @@ impl Default for NetConfig {
             dns: DnsPreference::System,
             custom_dns: None,
             posture: PostureProfile::Standard,
+            socks_isolation: true,
         }
     }
 }
@@ -183,9 +187,10 @@ impl NetConfig {
                 cfg.posture = p;
             }
         }
-        // Extreme wins: force Tor regardless of env mode.
+        // Extreme wins: force Tor + SOCKS isolation regardless of env mode.
         if cfg.posture.locks_tor_only() {
             cfg.mode = NetworkMode::Tor;
+            cfg.socks_isolation = true;
         }
         cfg
     }
@@ -196,14 +201,16 @@ impl NetConfig {
             (DnsPreference::Custom, Some(addr)) => format!("dns=custom({addr})"),
             (d, _) => format!("dns={d}"),
         };
+        let isol = if self.socks_isolation { "on" } else { "off" };
         let base = format!(
-            "mode={} · {} · posture={}",
+            "mode={} · {} · posture={} · socks_isol={}",
             self.mode,
             dns,
-            self.posture.as_str()
+            self.posture.as_str(),
+            isol
         );
         if self.is_extreme() {
-            format!("{base} · locks=tor-only,no-contact-export,no-groups,no-voice")
+            format!("{base} · locks=tor-only,socks-isol,no-contact-export,no-groups,no-voice")
         } else {
             base
         }
@@ -245,34 +252,70 @@ impl NetConfig {
         self.posture = posture;
         if posture.locks_tor_only() {
             self.mode = NetworkMode::Tor;
+            self.socks_isolation = true;
+        }
+    }
+
+    /// Enable/disable Tor SOCKS stream isolation. Extreme refuses off.
+    pub fn set_socks_isolation(&mut self, on: bool) -> Result<(), NetModeError> {
+        if self.posture.locks_tor_only() && !on {
+            return Err(NetModeError::ExtremeSocksIsolation);
+        }
+        self.socks_isolation = on;
+        Ok(())
+    }
+
+    /// Effective isolation flag (Extreme always on).
+    pub fn socks_isolation_enabled(&self) -> bool {
+        if self.posture.locks_tor_only() {
+            true
+        } else {
+            self.socks_isolation
         }
     }
 
     /// Compact UTF-8 token encoding for session blob prefs (no serde).
     ///
-    /// Layout: mode\0dns\0custom_dns\0posture as four length-prefixed strings
-    /// (u32 BE length + UTF-8). Empty custom_dns means `None`.
+    /// Layout: mode, dns, custom_dns, posture, socks_isolation as length-prefixed
+    /// strings (u32 BE length + UTF-8). Empty custom_dns means `None`.
+    /// `socks_isolation` is `on` / `off` (default on when absent on older blobs).
     pub fn to_persist_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         write_persist_str(&mut out, self.mode.as_str());
         write_persist_str(&mut out, self.dns.as_str());
         write_persist_str(&mut out, self.custom_dns.as_deref().unwrap_or(""));
         write_persist_str(&mut out, self.posture.as_str());
+        write_persist_str(
+            &mut out,
+            if self.socks_isolation { "on" } else { "off" },
+        );
         out
     }
 
     /// Decode prefs written by [`Self::to_persist_bytes`]. Unknown tokens fail.
-    /// Extreme posture forces Tor after restore (same lock as live `set_posture`).
+    /// Older four-field blobs omit socks_isolation → default **on**.
+    /// Extreme posture forces Tor + isolation after restore.
     pub fn from_persist_bytes(buf: &[u8]) -> Result<Self, NetModeError> {
         let mut pos = 0usize;
         let mode_s = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidMode)?;
         let dns_s = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidDns)?;
         let custom_s = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidDns)?;
         let posture_s = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidPosture)?;
-        if pos != buf.len() {
-            // Trailing junk → refuse (fail closed on corrupt prefs).
-            return Err(NetModeError::InvalidMode);
-        }
+        let socks_isolation = if pos == buf.len() {
+            // Pre-isolation blob: default on (safe).
+            true
+        } else {
+            let isol_s = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidMode)?;
+            if pos != buf.len() {
+                // Trailing junk → refuse (fail closed on corrupt prefs).
+                return Err(NetModeError::InvalidMode);
+            }
+            match isol_s.trim().to_ascii_lowercase().as_str() {
+                "on" | "1" | "true" | "yes" => true,
+                "off" | "0" | "false" | "no" => false,
+                _ => return Err(NetModeError::InvalidMode),
+            }
+        };
         let mode = NetworkMode::parse_token(&mode_s)?;
         let dns = DnsPreference::parse_token(&dns_s)?;
         let posture = PostureProfile::parse_token(&posture_s)?;
@@ -289,9 +332,11 @@ impl NetConfig {
             dns,
             custom_dns,
             posture,
+            socks_isolation,
         };
         if cfg.posture.locks_tor_only() {
             cfg.mode = NetworkMode::Tor;
+            cfg.socks_isolation = true;
         }
         Ok(cfg)
     }
@@ -341,7 +386,7 @@ impl NetConfig {
             return None;
         }
         Some(
-            "Extreme active — locked: Tor-only; :my-contact export; groups; voice; :send-unverified; contacts/queue/block-mute/verify lists not durable across restart. SAS ok (short). Onion tails preferred. Not Android Extreme parity.",
+            "Extreme active — locked: Tor-only; SOCKS isolation on; :my-contact export; groups; voice; :send-unverified; contacts/queue/block-mute/verify lists not durable across restart. SAS ok (short). Onion tails preferred. Not Android Extreme parity.",
         )
     }
 }
@@ -373,6 +418,7 @@ pub enum NetModeError {
     InvalidDns,
     InvalidPosture,
     ExtremeTorOnly,
+    ExtremeSocksIsolation,
     ExtremeContactExport,
     ExtremeGroups,
     ExtremeVoice,
@@ -388,6 +434,9 @@ impl NetModeError {
             NetModeError::InvalidDns => "invalid DNS preference (use system|quad9|custom)",
             NetModeError::InvalidPosture => "invalid posture (use standard|extreme)",
             NetModeError::ExtremeTorOnly => "extreme posture locks Tor-only",
+            NetModeError::ExtremeSocksIsolation => {
+                "extreme posture forces SOCKS stream isolation on"
+            }
             NetModeError::ExtremeContactExport => {
                 "extreme posture refuses contact-link export (minimize link sharing)"
             }
@@ -422,6 +471,8 @@ mod tests {
         assert_eq!(cfg.mode, NetworkMode::Tor);
         assert_eq!(cfg.dns, DnsPreference::System);
         assert_eq!(cfg.posture, PostureProfile::Standard);
+        assert!(cfg.socks_isolation);
+        assert!(cfg.socks_isolation_enabled());
         assert!(cfg.require_messenger_transport().is_ok());
         assert!(cfg.is_tor());
     }
@@ -449,6 +500,7 @@ mod tests {
         let mut cfg = NetConfig::default();
         cfg.set_posture(PostureProfile::Extreme);
         assert_eq!(cfg.mode, NetworkMode::Tor);
+        assert!(cfg.socks_isolation_enabled());
         assert_eq!(
             cfg.set_mode(NetworkMode::Clearnet).unwrap_err(),
             NetModeError::ExtremeTorOnly
@@ -459,6 +511,34 @@ mod tests {
         );
         assert!(cfg.set_mode(NetworkMode::Tor).is_ok());
         assert!(cfg.require_messenger_transport().is_ok());
+    }
+
+    #[test]
+    fn extreme_forces_socks_isolation_on() {
+        let mut cfg = NetConfig::default();
+        cfg.set_socks_isolation(false).unwrap();
+        assert!(!cfg.socks_isolation_enabled());
+        cfg.set_posture(PostureProfile::Extreme);
+        assert!(cfg.socks_isolation);
+        assert!(cfg.socks_isolation_enabled());
+        assert_eq!(
+            cfg.set_socks_isolation(false).unwrap_err(),
+            NetModeError::ExtremeSocksIsolation
+        );
+        assert!(cfg.set_socks_isolation(true).is_ok());
+    }
+
+    #[test]
+    fn persist_legacy_four_field_defaults_isolation_on() {
+        // Craft old four-field prefs blob (no socks_isolation field).
+        let mut buf = Vec::new();
+        write_persist_str(&mut buf, "tor");
+        write_persist_str(&mut buf, "system");
+        write_persist_str(&mut buf, "");
+        write_persist_str(&mut buf, "standard");
+        let loaded = NetConfig::from_persist_bytes(&buf).unwrap();
+        assert!(loaded.socks_isolation);
+        assert!(loaded.socks_isolation_enabled());
     }
 
     #[test]
@@ -539,9 +619,14 @@ mod tests {
         let mut loaded = NetConfig::from_persist_bytes(&bytes).unwrap();
         assert_eq!(loaded.posture, PostureProfile::Extreme);
         assert_eq!(loaded.mode, NetworkMode::Tor);
+        assert!(loaded.socks_isolation);
         assert_eq!(
             loaded.set_mode(NetworkMode::Clearnet).unwrap_err(),
             NetModeError::ExtremeTorOnly
+        );
+        assert_eq!(
+            loaded.set_socks_isolation(false).unwrap_err(),
+            NetModeError::ExtremeSocksIsolation
         );
         assert!(loaded.require_messenger_transport().is_ok());
     }
@@ -583,8 +668,10 @@ mod tests {
         cfg.set_posture(PostureProfile::Extreme);
         let line = cfg.status_line();
         assert!(line.contains("posture=extreme"));
+        assert!(line.contains("socks_isol=on"));
         assert!(line.contains("no-contact-export"));
         assert!(line.contains("tor-only"));
+        assert!(line.contains("socks-isol"));
         assert!(!line.contains("cookie"));
         assert!(!line.contains("pass"));
     }

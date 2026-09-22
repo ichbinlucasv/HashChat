@@ -65,8 +65,23 @@ pass "TUI references require_messenger_transport"
   || fail "is_onion_destination missing from tor_socks.rs"
 "${SEARCH[@]}" 'fn socks_isolation_credentials' src/rust/tor_socks.rs >/dev/null \
   || fail "socks_isolation_credentials missing from tor_socks.rs"
+"${SEARCH[@]}" 'fn socks_isolation_for_contact' src/rust/tor_socks.rs >/dev/null \
+  || fail "socks_isolation_for_contact missing from tor_socks.rs"
+"${SEARCH[@]}" 'fn socks_isolation_for_onion' src/rust/tor_socks.rs >/dev/null \
+  || fail "socks_isolation_for_onion missing from tor_socks.rs"
+"${SEARCH[@]}" 'struct SocksIsolationCreds' src/rust/tor_socks.rs >/dev/null \
+  || fail "SocksIsolationCreds missing from tor_socks.rs"
+"${SEARCH[@]}" 'REDACTED' src/rust/tor_socks.rs >/dev/null \
+  || fail "SocksIsolationCreds Debug redaction missing"
 "${SEARCH[@]}" '0x02' src/rust/tor_socks.rs >/dev/null \
   || fail "SOCKS username/password method (0x02) missing from tor_socks.rs"
+"${SEARCH[@]}" 'socks_isolation_enabled' src/rust/net_mode.rs >/dev/null \
+  || fail "socks_isolation_enabled missing from net_mode.rs"
+"${SEARCH[@]}" 'ExtremeSocksIsolation' src/rust/net_mode.rs >/dev/null \
+  || fail "ExtremeSocksIsolation missing from net_mode.rs"
+if ! "${SEARCH[@]}" 'socks_isolation_for_contact' src/bin/hashchat_tui.rs >/dev/null; then
+  fail "hashchat_tui.rs does not wire socks_isolation_for_contact"
+fi
 pass "tor_socks loopback + onion + IsolateSOCKSAuth helpers present"
 
 # Lightweight smell: no TcpStream connect/connect_timeout to well-known clearnet

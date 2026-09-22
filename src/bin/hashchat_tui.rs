@@ -24,6 +24,7 @@ use hashchat_rust::{
     install_terminate_signal_flag, is_onion_destination, load_session, mlock_bytes,
     mlockall_current, parse_lock_timeout_token, parse_signed_contact_link, parse_ttl_token,
     register_scrub_callback, sas_fingerprint, sas_for_signed, save_session, socks5_send,
+    socks_isolation_for_contact, socks_isolation_for_onion, SocksIsolationCreds,
     start_hidden_service_with_key, state_exists, take_terminate_signal, tor_probe, unframe_v2,
     unlock_backoff_delay_secs, wipe_local_sensitive, DnsPreference, DoubleRatchet, HiddenService,
     IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode, PersistMode,
@@ -1051,6 +1052,27 @@ impl App {
         }
     }
 
+
+    /// Build SOCKS isolation credentials when prefs enable isolation.
+    /// Prefer contact-id + local seed; fall back to onion tags for pending retries.
+    fn socks_isolation_creds_for(
+        &self,
+        contact_id: Option<&str>,
+        onion: &str,
+    ) -> Option<SocksIsolationCreds> {
+        if !self.net.socks_isolation_enabled() {
+            return None;
+        }
+        let session = self.session.as_ref()?;
+        if let Some(id) = contact_id {
+            return Some(socks_isolation_for_contact(id, &session.identity.seed));
+        }
+        if let Some(c) = session.contacts.iter().find(|c| c.onion == onion) {
+            return Some(socks_isolation_for_contact(&c.id, &session.identity.seed));
+        }
+        socks_isolation_for_onion(onion).ok()
+    }
+
     /// Flush pending outbound frames. `report_empty` is true for explicit `:retry`
     /// (listen auto-flush must not clobber the listening status when the queue is empty).
     fn retry_pending(&mut self, report_empty: bool) {
@@ -1064,22 +1086,33 @@ impl App {
             self.push_msg(self.status_msg.clone());
             return;
         }
-        let Some(session) = self.session.as_mut() else {
-            self.status_msg = "Unlock first.".into();
-            return;
-        };
-        if session.pending.is_empty() {
-            if report_empty {
-                self.status_msg = "No pending frames".into();
+        let waiting: Vec<(String, Vec<u8>)> = {
+            let Some(session) = self.session.as_mut() else {
+                self.status_msg = "Unlock first.".into();
+                return;
+            };
+            if session.pending.is_empty() {
+                if report_empty {
+                    self.status_msg = "No pending frames".into();
+                }
+                return;
             }
-            return;
-        }
-        let waiting: Vec<(String, Vec<u8>)> = session.pending.drain(..).collect();
+            session.pending.drain(..).collect()
+        };
         let mut fail = 0usize;
         let mut ok = 0usize;
         let mut remain = Vec::new();
         for (onion, frame) in waiting {
-            match socks5_send(SOCKS_HOST, self.socks_port, &onion, 80, &frame) {
+            // Session borrow ended above so isolation helper can read contacts/seed.
+            let isol = self.socks_isolation_creds_for(None, &onion);
+            match socks5_send(
+                SOCKS_HOST,
+                self.socks_port,
+                &onion,
+                80,
+                &frame,
+                isol.as_ref(),
+            ) {
                 Ok(()) => ok += 1,
                 Err(_) => {
                     remain.push((onion, frame));
@@ -1087,8 +1120,10 @@ impl App {
                 }
             }
         }
-        for (o, f) in remain {
-            session.queue_pending(o, f);
+        if let Some(session) = self.session.as_mut() {
+            for (o, f) in remain {
+                session.queue_pending(o, f);
+            }
         }
         let _ = self.persist_session();
         self.status_msg = if fail == 0 {
@@ -1422,7 +1457,16 @@ impl App {
             session.queue_pending(&contact.onion, frame.clone());
         }
 
-        let sent_ok = socks5_send(SOCKS_HOST, self.socks_port, &contact.onion, 80, &frame).is_ok();
+        let isol = self.socks_isolation_creds_for(Some(&contact.id), &contact.onion);
+        let sent_ok = socks5_send(
+            SOCKS_HOST,
+            self.socks_port,
+            &contact.onion,
+            80,
+            &frame,
+            isol.as_ref(),
+        )
+        .is_ok();
         if sent_ok {
             if let Some(session) = self.session.as_mut() {
                 session.ack_pending_frame(&contact.onion, &frame);
@@ -1434,7 +1478,11 @@ impl App {
                 &contact.id,
                 msg_number,
             );
-            self.status_msg = format!("Sent {frame_len} B via SOCKS (isol)");
+            self.status_msg = if isol.is_some() {
+                format!("Sent {frame_len} B via SOCKS (isol)")
+            } else {
+                format!("Sent {frame_len} B via SOCKS")
+            };
         } else {
             // OPSEC: short reason only — frame stays queued for :retry.
             self.push_msg(format!("[{peer_label}] queued offline (SOCKS send failed)"));
@@ -1559,6 +1607,65 @@ impl App {
             }
             other => {
                 self.status_msg = format!("Unknown :mode argument: {other} (:mode help)");
+                self.push_msg(self.status_msg.clone());
+            }
+        }
+    }
+
+
+    /// `:isolate` — Tor SOCKS stream isolation on/off/status (durable prefs).
+    fn handle_isolate(&mut self, args: &str) {
+        let args = args.trim().to_ascii_lowercase();
+        if args.is_empty() || args == "status" || args == "show" {
+            let on = self.net.socks_isolation_enabled();
+            let line = format!(
+                "socks_isol={}{}",
+                if on { "on" } else { "off" },
+                if self.net.is_extreme() {
+                    " (Extreme forces on)"
+                } else {
+                    ""
+                }
+            );
+            // Never print isolation username/password tags.
+            self.push_msg(line.clone());
+            self.status_msg = line;
+            return;
+        }
+        match args.as_str() {
+            "on" | "1" | "true" | "yes" => match self.net.set_socks_isolation(true) {
+                Ok(()) => {
+                    let saved = self.persist_net_after_mode_change();
+                    let tag = if saved { "saved" } else { "not saved" };
+                    self.status_msg = format!("SOCKS isolation on ({tag})");
+                    self.push_msg(self.status_msg.clone());
+                }
+                Err(e) => {
+                    self.status_msg = e.to_string();
+                    self.push_msg(e.to_string());
+                }
+            },
+            "off" | "0" | "false" | "no" => match self.net.set_socks_isolation(false) {
+                Ok(()) => {
+                    let saved = self.persist_net_after_mode_change();
+                    let tag = if saved { "saved" } else { "not saved" };
+                    self.status_msg = format!("SOCKS isolation off ({tag})");
+                    self.push_msg(self.status_msg.clone());
+                }
+                Err(e) => {
+                    self.status_msg = e.to_string();
+                    self.push_msg(e.to_string());
+                }
+            },
+            "help" => {
+                self.push_msg("Usage: :isolate [on|off|status]");
+                self.push_msg(
+                    "Default on. Uses Tor IsolateSOCKSAuth tags per contact (never logged).",
+                );
+                self.push_msg("Extreme posture forces isolation on (refuse off).");
+            }
+            other => {
+                self.status_msg = format!("Unknown :isolate argument: {other} (:isolate help)");
                 self.push_msg(self.status_msg.clone());
             }
         }
@@ -1978,7 +2085,11 @@ impl App {
         let control = if probe.control_ok { "ok" } else { "fail" };
         self.push_msg(format!("tor: socks={socks} · control={control}"));
         // Token only — never echo isolation username/password tags.
-        self.push_msg("socks_isol=per-dest (IsolateSOCKSAuth tags; not logged)");
+        self.push_msg(format!(
+            "socks_isol={}{}",
+            if self.net.socks_isolation_enabled() { "on" } else { "off" },
+            if self.net.is_extreme() { " (Extreme forces on)" } else { "" }
+        ));
 
         let listening = self.hs.is_some();
         let drops = self
@@ -2138,6 +2249,9 @@ impl App {
                 self.push_msg("  :sas [link]             short SAS (selected contact or link)");
                 self.push_msg("  :mode [tor|status|…]    network mode (Tor default; fail-closed)");
                 self.push_msg(
+                    "  :isolate [on|off|status] Tor SOCKS stream isolation (default on)",
+                );
+                self.push_msg(
                     "  :retry                  flush pending queue (Tor / net_mode gate)",
                 );
                 self.push_msg(
@@ -2203,6 +2317,10 @@ impl App {
             other if other == ":mode" || other.starts_with(":mode ") => {
                 let args = other.strip_prefix(":mode").unwrap_or("").trim();
                 self.handle_mode(args);
+            }
+            other if other == ":isolate" || other.starts_with(":isolate ") => {
+                let args = other.strip_prefix(":isolate").unwrap_or("").trim();
+                self.handle_isolate(args);
             }
             other if other == ":block" || other.starts_with(":block ") => {
                 let args = other.strip_prefix(":block").unwrap_or("").trim();
