@@ -2,7 +2,7 @@
 
 **Snapshot:** 22 September 2026 (Europe/Zurich)  
 **Branch:** `codeberg-primary`  
-**Tip:** `d84e1df64c19368423bd5d03d25b5aff3b9eb571`
+**Tip:** `4b7bd573dbbaffc015ea23e8edd1ce7d5a195696`
 
 ## Executive summary
 
@@ -38,7 +38,7 @@ The Rust desktop path moved from scaffold to a usable, Tor-first two-peer TUI. T
 
 - **Best-effort TUI mlock — `d84e1df`:** After successful unlock/create, Rust TUI calls `mlockall(MCL_CURRENT|MCL_FUTURE)` + `mlock` on the live passphrase `String` bytes (safe wrappers `mlockall_current` / `mlock_bytes` in lib; FFI unchanged for Android stubs). Failure never aborts; status notes once “mlock unavailable (best-effort)”. Unit smoke: wrappers return bool without panicking (no CAP_IPC_LOCK). **Honesty:** mlock is best-effort; String reallocation makes per-buffer lock imperfect; Tails/Qubes stronger; Android still weaker. CI gate optional anchor that TUI references `mlockall_current`. No push.
 
-- **SAS verify gate before send — `PENDING_SHA`:** New `:add-contact` entries start **unverified**; session blob **v6** stores `verified_ids` (Standard durable). Pre-v6 contacts load as verified for continuity. `:verify` / `:unverify` after short SAS compare (Extreme: short SAS only). Send refuses unverified; `:send-unverified` Standard-only (Extreme: no bypass). Contact list shows `[unverified]`. Extreme `for_disk` strips verified set with contacts/queue/deny lists. **Honesty:** TOFU helper on Ed25519 link verify — not extra cryptographic binding. Tests: v6 round-trip, pre-v6 continuity, Extreme strip, refuse helpers. THREATMODEL + EXTREME_PROFILE. No push.
+- **SAS verify gate before send — `4b7bd57`:** New `:add-contact` entries start **unverified**; session blob **v6** stores `verified_ids` (Standard durable). Pre-v6 contacts load as verified for continuity. `:verify` / `:unverify` after short SAS compare (Extreme: short SAS only). Send refuses unverified; `:send-unverified` Standard-only (Extreme: no bypass). Contact list shows `[unverified]`. Extreme `for_disk` strips verified set with contacts/queue/deny lists. **Honesty:** TOFU helper on Ed25519 link verify — not extra cryptographic binding. Tests: v6 round-trip, pre-v6 continuity, Extreme strip, refuse helpers. THREATMODEL + EXTREME_PROFILE. No push.
 
 
 
