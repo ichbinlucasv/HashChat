@@ -2,7 +2,7 @@
 
 **Snapshot:** 22 September 2026 (Europe/Zurich)  
 **Branch:** `codeberg-primary`  
-**Tip:** `TIP_SHA_PLACEHOLDER`
+**Tip:** `4bdc085`
 
 ## Executive summary
 
@@ -10,7 +10,7 @@ HashChat now has a usable Rust two-peer TUI with fail-closed Tor transport, encr
 
 ## Shipped since the previous checkpoint
 
-- **Contact SOCKS isolation polish — `TIP_SHA_PLACEHOLDER`:** TUI send/retry pass optional `SocksIsolationCreds` into `socks5_send`. Prefer `socks_isolation_for_contact(contact_id, &seed)` when unlocked; fall back to `socks_isolation_for_onion` for pending retries. Creds use redacted `Debug`; never logged. Default-on NetConfig `socks_isolation` with optional `:isolate on|off|status` (Extreme forces on / refuses off); older prefs blobs default on. `:evidence` prints `socks_isol=on|off` only. Fail-closed loopback + onion policy unchanged.
+- **Contact SOCKS isolation polish — `4bdc085`:** TUI send/retry pass optional `SocksIsolationCreds` into `socks5_send`. Prefer `socks_isolation_for_contact(contact_id, &seed)` when unlocked; fall back to `socks_isolation_for_onion` for pending retries. Creds use redacted `Debug`; never logged. Default-on NetConfig `socks_isolation` with optional `:isolate on|off|status` (Extreme forces on / refuses off); older prefs blobs default on. `:evidence` prints `socks_isol=on|off` only. Fail-closed loopback + onion policy unchanged.
 - **SOCKS IsolateSOCKSAuth (initial) — `b4c7d9d`:** first cut used per-destination onion tags (`socks_isolation_credentials`) for Tor `IsolateSOCKSAuth`. Superseded for contact paths by the polish tip above; onion fallback remains for unmatched pending retries.
 - **Branding — `950cd8c`, `d8e9c1c`:** adopted the black-and-gold chat-bubble/hash mark, marked the lockup as canonical, and refreshed packaged icons.
 - **Native Rust TUI — `a626d05`:** added the `ratatui`/`crossterm` desktop path with passphrase unlock/create, encrypted session persistence, contacts, SAS display, Tor status, and wipe entry points.
@@ -56,7 +56,7 @@ cargo build --release --locked --bin hashchat-tui --features tui
 
 Unlock or create an identity, run `:listen`, exchange signed `hashchat://` contacts, compare SAS out of band, then `:verify` before sending. Use `:evidence` for posture metadata. Never copy Tor cookies, onion private material, passphrases, SAS values, or message bodies into evidence.
 
-Recorded validation at tip `TIP_SHA_PLACEHOLDER`: `cargo test --lib` passed 115 tests, `cargo build --bin hashchat-tui --features tui` succeeded, and `./scripts/ci-security-gate.sh` passed offline.
+Recorded validation at tip `4bdc085`: `cargo test --lib` passed 115 tests, `cargo build --bin hashchat-tui --features tui` succeeded, and `./scripts/ci-security-gate.sh` passed offline.
 
 ## When Lucas wakes
 
