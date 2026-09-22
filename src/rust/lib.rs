@@ -555,15 +555,29 @@ pub extern "C" fn rust_ratchet_import_encrypted(
 }
 
 // === Ultra Paranoid Kernel-Level Security Primitives ===
+//
+// Safe Rust wrappers for the desktop/TUI path. FFI below delegates to these.
+// Android keeps its own weaker best-effort stub in `android/src/main/rust`
+// (no reliable MCL_CURRENT|MCL_FUTURE for unprivileged apps) — do not weaken
+// or replace that path from here.
+//
+// Honesty: mlock/mlockall are best-effort. Unprivileged users often lack
+// RLIMIT_MEMLOCK / CAP_IPC_LOCK; failure must never abort a session.
+// Tails/Qubes (RAM-backed / disposable) remain stronger than desktop mlock.
+// Per-buffer mlock on a `String`/`Vec` is imperfect if the allocation later
+// reallocates — prefer mlockall(MCL_FUTURE) when it succeeds, and always
+// zeroize on wipe (munlock is unnecessary).
 
-// Lock all current and future memory (strong anti-swap / anti-memory forensics)
-#[no_mangle]
-pub extern "C" fn rust_mlockall_current() -> bool {
+/// Best-effort `mlockall(MCL_CURRENT | MCL_FUTURE)` (Linux only).
+///
+/// Returns `true` on success. Never panics. Non-Linux returns `false`.
+/// Callers (TUI) must treat `false` as non-fatal.
+pub fn mlockall_current() -> bool {
     #[cfg(target_os = "linux")]
     {
-        unsafe {
-            libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) == 0
-        }
+        // SAFETY: mlockall with MCL_CURRENT|MCL_FUTURE is a process-wide hint;
+        // errno on failure is ignored — caller gets `false`.
+        unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) == 0 }
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -571,17 +585,49 @@ pub extern "C" fn rust_mlockall_current() -> bool {
     }
 }
 
-// Lock a specific allocation (call this on sensitive buffers after allocation)
-#[no_mangle]
-pub extern "C" fn rust_mlock(ptr: *const u8, len: usize) -> bool {
+/// Best-effort `mlock` on a contiguous byte slice (Linux only).
+///
+/// Returns `true` on success (empty slices succeed). Never panics.
+///
+/// **Imperfection:** if `buf` is backed by a growable `String`/`Vec` that later
+/// reallocates, only the old pages stay locked. Prefer calling after the buffer
+/// is finalized for the session, and/or rely on [`mlockall_current`] with
+/// `MCL_FUTURE` when available.
+pub fn mlock_bytes(buf: &[u8]) -> bool {
+    if buf.is_empty() {
+        return true;
+    }
     #[cfg(target_os = "linux")]
     {
-        unsafe { libc::mlock(ptr as *const libc::c_void, len) == 0 }
+        // SAFETY: `buf` is a valid Rust slice for `buf.len()` bytes.
+        unsafe { libc::mlock(buf.as_ptr() as *const libc::c_void, buf.len()) == 0 }
     }
     #[cfg(not(target_os = "linux"))]
     {
         false
     }
+}
+
+/// FFI: lock all current and future memory (delegates to [`mlockall_current`]).
+#[no_mangle]
+pub extern "C" fn rust_mlockall_current() -> bool {
+    mlockall_current()
+}
+
+/// FFI: lock a specific allocation (delegates to [`mlock_bytes`]).
+///
+/// Null + non-zero len → `false`. Empty len → `true`.
+#[no_mangle]
+pub extern "C" fn rust_mlock(ptr: *const u8, len: usize) -> bool {
+    if len == 0 {
+        return true;
+    }
+    if ptr.is_null() {
+        return false;
+    }
+    // SAFETY: caller guarantees `ptr` is valid for `len` bytes (FFI contract).
+    let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+    mlock_bytes(slice)
 }
 
 // Aggressive zero + drop hint
@@ -627,18 +673,9 @@ pub extern "C" fn rust_apply_basic_seccomp() -> bool {
 // Called after ratchet creation/import so the DoubleRatchet Vec data stays out of swap.
 #[no_mangle]
 pub extern "C" fn rust_mlock_sensitive_ratchets() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        unsafe {
-            // mlockall already covers future allocations when called at startup.
-            // This is an extra belt-and-suspenders for the global store.
-            libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) == 0
-        }
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        false
-    }
+    // Extra belt-and-suspenders for the global ratchet store; same best-effort
+    // semantics as mlockall_current (non-fatal on failure / non-Linux).
+    mlockall_current()
 }
 
 // === Dedicated Passphrase-based Blob Encryption (for message logs, etc.) ===
@@ -1506,3 +1543,21 @@ pub extern "C" fn rust_session_commit_outgoing(
     }
 }
 
+
+#[cfg(test)]
+mod memlock_tests {
+    use super::{mlock_bytes, mlockall_current, rust_mlock, rust_mlockall_current};
+
+    /// Smoke: wrappers return a bool and must not panic (no CAP_IPC_LOCK required).
+    #[test]
+    fn mlock_wrappers_return_bool_without_panic() {
+        let _ = mlockall_current();
+        let sample = b"hashchat-mlock-smoke";
+        let _ = mlock_bytes(sample);
+        let _ = mlock_bytes(&[]);
+        let _ = rust_mlockall_current();
+        let _ = rust_mlock(sample.as_ptr(), sample.len());
+        let _ = rust_mlock(std::ptr::null(), 0);
+        let _ = rust_mlock(std::ptr::null(), 1); // null+nonzero → false, no panic
+    }
+}

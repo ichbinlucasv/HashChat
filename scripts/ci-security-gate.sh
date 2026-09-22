@@ -160,6 +160,13 @@ pass "HS_INBOUND_QUEUE_CAP present"
 pass "HS sync_channel (bounded inbound queue) present"
 
 
+# Best-effort memory lock: TUI must call mlockall after unlock (desktop anti-swap).
+"${SEARCH[@]}" 'mlockall_current' src/bin/hashchat_tui.rs >/dev/null \
+  || fail "hashchat_tui.rs does not call mlockall_current (best-effort anti-swap)"
+pass "TUI references mlockall_current"
+
+
+
 # ---------------------------------------------------------------------------
 # 4) Workflow wires this script (self-check when present).
 # ---------------------------------------------------------------------------

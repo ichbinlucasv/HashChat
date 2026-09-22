@@ -18,11 +18,11 @@ use crossterm::terminal::{
 use hashchat_rust::{
     bootstrap_ratchet_from_signed_link, build_wire_aad, commit_outgoing, encrypt_with_key,
     extreme_default_ttl, format_signed_contact_link, format_ttl, frame_v2, is_onion_destination,
-    load_session, parse_signed_contact_link, parse_ttl_token, sas_fingerprint, sas_for_signed,
-    save_session, socks5_send, start_hidden_service_with_key, state_exists, tor_probe, unframe_v2,
-    wipe_local_sensitive, DnsPreference, DoubleRatchet, HiddenService, IdentityOnionState,
-    InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode, PersistMode, PersistedContact,
-    PostureProfile, SessionState, WIRE_VERSION_V2,
+    load_session, mlock_bytes, mlockall_current, parse_signed_contact_link, parse_ttl_token,
+    sas_fingerprint, sas_for_signed, save_session, socks5_send, start_hidden_service_with_key,
+    state_exists, tor_probe, unframe_v2, wipe_local_sensitive, DnsPreference, DoubleRatchet,
+    HiddenService, IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig,
+    NetworkMode, PersistMode, PersistedContact, PostureProfile, SessionState, WIRE_VERSION_V2,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -98,6 +98,8 @@ struct App {
     passphrase_confirm: String,
     unlock_mode_create: bool,
     unlock_step: UnlockStep,
+    /// Status note "mlock unavailable (best-effort)" shown at most once per process.
+    mlock_note_shown: bool,
     status_msg: String,
     input: String,
     session: Option<SessionState>,
@@ -166,6 +168,7 @@ impl App {
             passphrase_confirm: String::new(),
             unlock_mode_create: !exists,
             unlock_step: UnlockStep::EnterPass,
+            mlock_note_shown: false,
             status_msg: if exists {
                 "Enter passphrase to unlock.".into()
             } else {
@@ -503,6 +506,31 @@ impl App {
         }
     }
 
+
+    /// Best-effort anti-swap after passphrase accepted.
+    ///
+    /// Calls `mlockall(MCL_CURRENT|MCL_FUTURE)` then `mlock` on the live passphrase
+    /// `String` heap bytes. Failure never aborts the session (unprivileged users often
+    /// lack `RLIMIT_MEMLOCK`). Status notes once: "mlock unavailable (best-effort)".
+    ///
+    /// **Imperfection:** `String` may reallocate on later growth; that drops the per-buffer
+    /// lock on old pages. `mlockall(...|MCL_FUTURE)` covers new pages when it succeeds.
+    /// Wipe path only zeroizes (no `munlock`) — keep wipe strong.
+    fn apply_mlock_best_effort(&mut self) {
+        let all_ok = mlockall_current();
+        // Lock current passphrase allocation (contiguous heap of String).
+        let pass_ok = mlock_bytes(self.passphrase.as_bytes());
+        if !(all_ok && pass_ok) && !self.mlock_note_shown {
+            self.mlock_note_shown = true;
+            let note = "mlock unavailable (best-effort)";
+            if self.status_msg.is_empty() {
+                self.status_msg = note.into();
+            } else if !self.status_msg.contains(note) {
+                self.status_msg = format!("{} · {}", self.status_msg, note);
+            }
+        }
+    }
+
     fn try_unlock(&mut self) {
         let pass = self.passphrase.as_bytes();
         if pass.is_empty() {
@@ -548,6 +576,7 @@ impl App {
                             self.screen = Screen::Main;
                             self.status_msg =
                                 "Session created. Use :listen when Tor ControlPort is ready.".into();
+                            self.apply_mlock_best_effort();
                             self.push_msg(
                                 "Session initialized. :listen then :my-contact to share a signed link.",
                             );
@@ -588,6 +617,7 @@ impl App {
                         self.status_msg =
                             "Session unlocked. :listen then :add-contact to begin.".into();
                     }
+                    self.apply_mlock_best_effort();
                 }
                 Err(_) => {
                     self.status_msg = "Unlock failed (wrong passphrase or corrupt store).".into();

@@ -82,9 +82,12 @@ These address transport priorities, contact-link QR alignment, pre-tag enforceme
 - Encrypted-at-rest everything (ratchets + messages + identity/onion + contacts + pending queue) using user passphrase + Argon2id (H2/H3).
 - Minimal attack surface: Tor transport is fail-closed by network mode; core crypto stays in Rust.
 
+- **Desktop Rust TUI mlock (honest, best-effort):** After successful passphrase unlock/create, the TUI calls `mlockall(MCL_CURRENT|MCL_FUTURE)` and best-effort `mlock` on the live passphrase buffer. Failure is non-fatal (unprivileged users often lack `RLIMIT_MEMLOCK` / `CAP_IPC_LOCK`); status notes once: “mlock unavailable (best-effort)”. Per-buffer `mlock` on a growable `String` is imperfect if the allocation later reallocates — `MCL_FUTURE` covers new pages only when `mlockall` itself succeeded. Wipe still zeroizes in-RAM secrets; `munlock` is unnecessary. **Tails / Qubes (RAM-backed / disposable VMs) remain stronger** than desktop mlock. Android remains weaker (see Android mlock below) — this TUI path does not claim Android parity.
+
 **Limitations (Honest):**
 - If an attacker has already compromised your device before you hit wipe, they may have already exfiltrated keys or memory.
 - Memory dumps, swap, and core files captured before wipe are still dangerous.
+- Desktop mlock is best-effort only (may fail without CAP_IPC_LOCK); Tails/Qubes are stronger; Android mlock remains weak.
 - Kernel implants / ring-0 malware are out of scope: wipe cannot un-compromise a hostile kernel (same class as classic “Pegasus-class” limitations above).
 - The TUI process itself runs with your user privileges.
 

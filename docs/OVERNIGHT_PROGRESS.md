@@ -36,6 +36,9 @@ The Rust desktop path moved from scaffold to a usable, Tor-first two-peer TUI. T
 
 - **HS accept backpressure — `fc46840`:** App-side bounds on Tor HS local accept path: `MAX_HS_INBOUND_FRAME` = 16 KiB (≤ `MAX_SOCKS_FRAME`), bounded inbound `sync_channel` (`HS_INBOUND_QUEUE_CAP` = 64; full → drop + count, never unbounded), soft per-connection frame budget (64). Oversize length closes stream without reading/queuing body. Drop counter exposed (no frame contents in status/logs). Unit tests for oversize rejection + queue-full drops (local TCP, no Tor). **Honesty:** local HS still depends on Tor for real availability; this is process memory/queue backpressure only. THREATMODEL DDoS note updated. No push.
 
+- **Best-effort TUI mlock — `PENDING_SHA`:** After successful unlock/create, Rust TUI calls `mlockall(MCL_CURRENT|MCL_FUTURE)` + `mlock` on the live passphrase `String` bytes (safe wrappers `mlockall_current` / `mlock_bytes` in lib; FFI unchanged for Android stubs). Failure never aborts; status notes once “mlock unavailable (best-effort)”. Unit smoke: wrappers return bool without panicking (no CAP_IPC_LOCK). **Honesty:** mlock is best-effort; String reallocation makes per-buffer lock imperfect; Tails/Qubes stronger; Android still weaker. CI gate optional anchor that TUI references `mlockall_current`. No push.
+
+
 
 
 
