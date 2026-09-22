@@ -2,7 +2,7 @@
 
 **Snapshot:** 22 September 2026 (Europe/Zurich)  
 **Branch:** `codeberg-primary`  
-**Tip:** `76cd1aaa1761e5301dc3fa703ca1e9fd8ce9368d`
+**Tip:** `0e4ae16`
 
 ## Executive summary
 
@@ -47,6 +47,8 @@ The Rust desktop path moved from scaffold to a usable, Tor-first two-peer TUI. T
 - **Idle auto-lock + `:lock` (Rust TUI) — `76cd1aa`:** After N minutes without input (default **5m**; `:lock-timeout off|1m|5m|15m|30m|…`) or on manual `:lock`, the TUI zeroizes passphrase + chat lines + contact-link display strings, drops `SessionState` from RAM (`wipe_memory_secure`), and stops the HS accept / Tor listen path. Disk `state.enc` untouched; re-unlock via existing `load_session` (onion key stays inside the passphrase wrap only). Session blob **v7** stores `lock_timeout_secs` (pre-v7 loads default 300). Extreme shortens to **1m** when timeout is off or longer. `:status`/`:help`/header document; no plaintext in lock messages. Tests: timeout parse + prefs round-trip + pre-v7 default; TUI build; `ci-security-gate` `lock_ui` anchor. **Honesty:** local UI defense only — not remote wipe. THREATMODEL + EXTREME_PROFILE. No push.
 
 
+- **Panic / signal best-effort scrub — `0e4ae16`:** Rust TUI now scrubs the live passphrase, session/ratchet state, transcript, draft, SAS, and contact-link display buffers on normal drop, quit, Ctrl-C, and polled SIGINT/SIGTERM paths; panic unwinding restores the terminal and reaches the same `Drop` scrub. The CI security gate checks hook installation. **Honesty:** this does not erase disk, allocator copies may remain, and hard abort/kill paths cannot be guaranteed.
+
 ## How to run
 
 From a checkout of `codeberg-primary`, with a compatible Rust toolchain and a local Tor service configured for SOCKS plus cookie-authenticated ControlPort:
@@ -66,7 +68,7 @@ cargo build --release --locked --bin hashchat-tui --features tui
 
 Inside the TUI, unlock or create an identity, use `:listen`, then exchange signed `hashchat://` contacts with the other peer. The default transport is Tor and the application fails closed if the required Tor path is unavailable. Do not copy Tor cookies, onion private material, passphrases, or message bodies into logs, tickets, or chat.
 
-The tip commit records `cargo test --lib` passing (includes idle lock/v7 blob + lock-timeout parse + SAS verify/v6 + mlock wrapper smoke + HS oversize/queue-full + framed max tests) and a successful `cargo build --bin hashchat-tui --features tui`, plus offline `./scripts/ci-security-gate.sh` (TUI mlockall_current + lock_ui anchors).
+The tip commit records `cargo test --lib` passing with 100 tests (including panic/signal scrub, idle lock/v7 blob, SAS verify/v6, mlock wrapper smoke, HS backpressure, and framed limits) and a successful `cargo build --bin hashchat-tui --features tui`, plus offline `./scripts/ci-security-gate.sh` (TUI mlockall_current + lock_ui anchors).
 
 ## Remaining backlog
 
