@@ -170,7 +170,10 @@ pass "TUI references mlockall_current"
   || fail "hashchat_tui.rs missing lock_ui (idle/:lock RAM clear)"
 pass "TUI references lock_ui"
 
-
+# Panic path must install the best-effort scrub hook before entering the TUI.
+"${SEARCH[@]}" 'install_panic_scrub_hook' src/bin/hashchat_tui.rs >/dev/null \
+  || fail "hashchat_tui.rs does not install the panic scrub hook"
+pass "TUI installs panic scrub hook"
 
 # ---------------------------------------------------------------------------
 # 4) Workflow wires this script (self-check when present).

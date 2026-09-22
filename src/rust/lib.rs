@@ -1,55 +1,60 @@
-#![allow(static_mut_refs)]  // Intentional global store for FFI ratchet handles (safe in our single-threaded usage)
+#![allow(static_mut_refs)] // Intentional global store for FFI ratchet handles (safe in our single-threaded usage)
 
-use ring::hmac;
-use zeroize::Zeroize;
 use ed25519_dalek::SigningKey;
-use subtle::ConstantTimeEq;  // OPSEC: audited constant-time comparison (replaces deprecated ring internal API)
+use ring::hmac;
 use std::fs;
 use std::os::raw::c_void;
 use std::ptr;
+use subtle::ConstantTimeEq; // OPSEC: audited constant-time comparison (replaces deprecated ring internal API)
+use zeroize::Zeroize;
 
-mod ratchet;
-mod longterm_identity;
 mod contact_link;
+mod disappearing;
+mod emergency_scrub;
 mod envelope;
+mod hidden_service;
+mod longterm_identity;
+mod net_mode;
+mod ratchet;
 mod session_persist;
 mod tor_socks;
-mod hidden_service;
 mod wire;
-mod net_mode;
-mod disappearing;
 
-pub use longterm_identity::LongTermIdentity;
-pub use longterm_identity::{export_encrypted as longterm_export_encrypted, import_encrypted as longterm_import_encrypted};
 pub use contact_link::{
-    SignedContact, ContactLinkError, format_signed_contact_link, parse_signed_contact_link,
-    parse_unsigned_contact_link_insecure, bootstrap_ratchet_from_signed_link, sas_fingerprint,
-    sas_for_signed, canonical_payload,
-};
-pub use session_persist::{
-    IdentityOnionState, PersistedContact, SessionState, PersistMode, InboundDenyPolicy,
-    save_disk, load_disk, save_session, load_session, commit_outgoing, wipe_disk, state_exists,
-};
-pub use ratchet::{
-    DoubleRatchet, build_wire_aad, encrypt_with_key, decrypt_with_key, WIRE_VERSION_V2,
-};
-pub use tor_socks::{
-    is_loopback_host, is_onion_destination, probe as tor_probe, socks5_send, TorProbe,
-    MAX_SOCKS_FRAME, read_framed_u16, read_framed_u16_max, write_framed_u16,
-};
-pub use hidden_service::{
-    start_hidden_service_with_key, cookie_path_from_protocolinfo, HiddenService,
-    MAX_HS_INBOUND_FRAME, HS_INBOUND_QUEUE_CAP,
-};
-pub use wire::{frame_v2, unframe_v2};
-pub use net_mode::{
-    DnsPreference, NetConfig, NetModeError, NetworkMode, PostureProfile,
+    bootstrap_ratchet_from_signed_link, canonical_payload, format_signed_contact_link,
+    parse_signed_contact_link, parse_unsigned_contact_link_insecure, sas_fingerprint,
+    sas_for_signed, ContactLinkError, SignedContact,
 };
 pub use disappearing::{
-    parse_ttl_token, format_ttl, extreme_default_ttl, EXTREME_DEFAULT_TTL_SECS,
-    parse_lock_timeout_token, format_lock_timeout, extreme_default_lock_timeout,
-    DEFAULT_LOCK_TIMEOUT_SECS, EXTREME_DEFAULT_LOCK_TIMEOUT_SECS,
+    extreme_default_lock_timeout, extreme_default_ttl, format_lock_timeout, format_ttl,
+    parse_lock_timeout_token, parse_ttl_token, DEFAULT_LOCK_TIMEOUT_SECS,
+    EXTREME_DEFAULT_LOCK_TIMEOUT_SECS, EXTREME_DEFAULT_TTL_SECS,
 };
+pub use emergency_scrub::{
+    clear_scrub_callback, emergency_scrub, install_panic_scrub_hook, install_terminate_signal_flag,
+    register_scrub_callback, scrub_bytes, take_terminate_signal, terminate_signal_pending,
+};
+pub use hidden_service::{
+    cookie_path_from_protocolinfo, start_hidden_service_with_key, HiddenService,
+    HS_INBOUND_QUEUE_CAP, MAX_HS_INBOUND_FRAME,
+};
+pub use longterm_identity::LongTermIdentity;
+pub use longterm_identity::{
+    export_encrypted as longterm_export_encrypted, import_encrypted as longterm_import_encrypted,
+};
+pub use net_mode::{DnsPreference, NetConfig, NetModeError, NetworkMode, PostureProfile};
+pub use ratchet::{
+    build_wire_aad, decrypt_with_key, encrypt_with_key, DoubleRatchet, WIRE_VERSION_V2,
+};
+pub use session_persist::{
+    commit_outgoing, load_disk, load_session, save_disk, save_session, state_exists, wipe_disk,
+    IdentityOnionState, InboundDenyPolicy, PersistMode, PersistedContact, SessionState,
+};
+pub use tor_socks::{
+    is_loopback_host, is_onion_destination, probe as tor_probe, read_framed_u16,
+    read_framed_u16_max, socks5_send, write_framed_u16, TorProbe, MAX_SOCKS_FRAME,
+};
+pub use wire::{frame_v2, unframe_v2};
 
 // long-13: gated quantum module. Only compiled with `cargo build --features quantum`.
 // The module itself documents the strict constant-time / zeroize / side-channel
@@ -131,14 +136,18 @@ pub extern "C" fn rust_constant_time_eq(a: *const u8, b: *const u8, len: usize) 
 pub extern "C" fn rust_wipe_slice(ptr: *mut u8, len: usize) {
     let slice = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
     slice.zeroize();
-    unsafe { ptr::write_bytes(ptr, 0, len); }
+    unsafe {
+        ptr::write_bytes(ptr, 0, len);
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn rust_wipe_memory(ptr: *mut u8, len: usize) {
     let slice = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
     slice.zeroize();
-    unsafe { ptr::write_bytes(ptr, 0, len); }
+    unsafe {
+        ptr::write_bytes(ptr, 0, len);
+    }
 }
 
 #[no_mangle]
@@ -152,7 +161,9 @@ pub extern "C" fn rust_secure_copy(src: *const u8, dst: *mut u8, len: usize) {
 pub extern "C" fn rust_secure_zero(ptr: *mut u8, len: usize) {
     let slice = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
     slice.zeroize();
-    unsafe { ptr::write_bytes(ptr, 0, len); }
+    unsafe {
+        ptr::write_bytes(ptr, 0, len);
+    }
 }
 
 #[no_mangle]
@@ -166,7 +177,6 @@ pub extern "C" fn rust_secure_compare(a: *const u8, b: *const u8, len: usize) ->
 
 // ==================== Double Ratchet FFI (for message system) ====================
 
-
 static mut RATCHET_STORE: Vec<DoubleRatchet> = Vec::new();
 
 #[no_mangle]
@@ -179,10 +189,16 @@ pub extern "C" fn rust_ratchet_new() -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn rust_ratchet_init(state_id: u32, remote_pub: *const u8, shared_secret: *const u8) {
+pub extern "C" fn rust_ratchet_init(
+    state_id: u32,
+    remote_pub: *const u8,
+    shared_secret: *const u8,
+) {
     unsafe {
         if let Some(r) = RATCHET_STORE.get_mut(state_id as usize) {
-            let rp = x25519_dalek::PublicKey::from(*<&[u8; 32]>::try_from(std::slice::from_raw_parts(remote_pub, 32)).unwrap());
+            let rp = x25519_dalek::PublicKey::from(
+                *<&[u8; 32]>::try_from(std::slice::from_raw_parts(remote_pub, 32)).unwrap(),
+            );
             let sh = *<&[u8; 32]>::try_from(std::slice::from_raw_parts(shared_secret, 32)).unwrap();
             r.init_from_shared(rp, &sh);
         }
@@ -201,10 +217,17 @@ pub extern "C" fn rust_ratchet_send(state_id: u32, out_key: *mut u8, out_count: 
 }
 
 #[no_mangle]
-pub extern "C" fn rust_ratchet_recv(state_id: u32, remote_pub: *const u8, out_key: *mut u8, out_count: *mut u32) {
+pub extern "C" fn rust_ratchet_recv(
+    state_id: u32,
+    remote_pub: *const u8,
+    out_key: *mut u8,
+    out_count: *mut u32,
+) {
     unsafe {
         if let Some(r) = RATCHET_STORE.get_mut(state_id as usize) {
-            let rp = x25519_dalek::PublicKey::from(*<&[u8; 32]>::try_from(std::slice::from_raw_parts(remote_pub, 32)).unwrap());
+            let rp = x25519_dalek::PublicKey::from(
+                *<&[u8; 32]>::try_from(std::slice::from_raw_parts(remote_pub, 32)).unwrap(),
+            );
             let (key, count) = r.ratchet_recv(&rp);
             std::ptr::copy_nonoverlapping(key.as_ptr(), out_key, 32);
             *out_count = count;
@@ -418,8 +441,8 @@ pub extern "C" fn rust_ratchet_from_bytes(state_id: u32, data: *const u8, len: u
 // ============================================================================
 
 use argon2::{Argon2, Params, Version};
-use ring::aead::{Nonce, UnboundKey, LessSafeKey, Aad, AES_256_GCM};
 use rand::RngCore;
+use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 
 /// Fixed parameters for Argon2id (memory-hard, good defaults for local passphrase)
 const ARGON_MEM_KIB: u32 = 64 * 1024; // 64 MiB
@@ -434,7 +457,8 @@ fn derive_key_argon2id(passphrase: &[u8], salt: &[u8; SALT_LEN]) -> Result<[u8; 
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
 
     let mut key = [0u8; 32];
-    argon2.hash_password_into(passphrase, salt, &mut key)
+    argon2
+        .hash_password_into(passphrase, salt, &mut key)
         .map_err(|_| "argon2 kdf failed")?;
     Ok(key)
 }
@@ -479,7 +503,10 @@ pub extern "C" fn rust_ratchet_export_encrypted(
             let mut buf = plaintext;
             let _tag_len = AES_256_GCM.tag_len();
 
-            if lsk.seal_in_place_append_tag(nonce, Aad::empty(), &mut buf).is_err() {
+            if lsk
+                .seal_in_place_append_tag(nonce, Aad::empty(), &mut buf)
+                .is_err()
+            {
                 return false;
             }
 
@@ -523,7 +550,9 @@ pub extern "C" fn rust_ratchet_import_encrypted(
         }
 
         let salt: [u8; SALT_LEN] = envelope[1..1 + SALT_LEN].try_into().unwrap();
-        let nonce_bytes: [u8; NONCE_LEN] = envelope[1 + SALT_LEN..1 + SALT_LEN + NONCE_LEN].try_into().unwrap();
+        let nonce_bytes: [u8; NONCE_LEN] = envelope[1 + SALT_LEN..1 + SALT_LEN + NONCE_LEN]
+            .try_into()
+            .unwrap();
         let ciphertext = &envelope[1 + SALT_LEN + NONCE_LEN..];
 
         let key = match derive_key_argon2id(pass, &salt) {
@@ -540,19 +569,17 @@ pub extern "C" fn rust_ratchet_import_encrypted(
         let mut buf = ciphertext.to_vec();
 
         match lsk.open_in_place(nonce, Aad::empty(), &mut buf) {
-            Ok(plain) => {
-                match DoubleRatchet::from_bytes(plain) {
-                    Ok(r) => {
-                        if (state_id as usize) < RATCHET_STORE.len() {
-                            RATCHET_STORE[state_id as usize] = r;
-                        } else {
-                            RATCHET_STORE.push(r);
-                        }
-                        true
+            Ok(plain) => match DoubleRatchet::from_bytes(plain) {
+                Ok(r) => {
+                    if (state_id as usize) < RATCHET_STORE.len() {
+                        RATCHET_STORE[state_id as usize] = r;
+                    } else {
+                        RATCHET_STORE.push(r);
                     }
-                    Err(_) => false,
+                    true
                 }
-            }
+                Err(_) => false,
+            },
             Err(_) => false,
         }
     }
@@ -719,7 +746,10 @@ pub extern "C" fn rust_encrypt_blob_with_passphrase(
         let nonce = Nonce::assume_unique_for_key(nonce_bytes);
         let mut buf = plaintext.to_vec();
 
-        if lsk.seal_in_place_append_tag(nonce, Aad::empty(), &mut buf).is_err() {
+        if lsk
+            .seal_in_place_append_tag(nonce, Aad::empty(), &mut buf)
+            .is_err()
+        {
             return false;
         }
 
@@ -762,9 +792,11 @@ pub extern "C" fn rust_decrypt_blob_with_passphrase(
             return false;
         }
 
-        let salt: [u8; SALT_LEN] = envelope[1..1+SALT_LEN].try_into().unwrap();
-        let nonce_bytes: [u8; NONCE_LEN] = envelope[1+SALT_LEN..1+SALT_LEN+NONCE_LEN].try_into().unwrap();
-        let ciphertext = &envelope[1+SALT_LEN+NONCE_LEN..];
+        let salt: [u8; SALT_LEN] = envelope[1..1 + SALT_LEN].try_into().unwrap();
+        let nonce_bytes: [u8; NONCE_LEN] = envelope[1 + SALT_LEN..1 + SALT_LEN + NONCE_LEN]
+            .try_into()
+            .unwrap();
+        let ciphertext = &envelope[1 + SALT_LEN + NONCE_LEN..];
 
         let key = match derive_key_argon2id(pass, &salt) {
             Ok(k) => k,
@@ -1146,8 +1178,7 @@ pub extern "C" fn rust_identity_state_load(
     out_onion_key: *mut u8,
     onion_key_len: *mut usize,
 ) -> bool {
-    if data_dir.is_null() || out_seed.is_null() || onion_len.is_null() || onion_key_len.is_null()
-    {
+    if data_dir.is_null() || out_seed.is_null() || onion_len.is_null() || onion_key_len.is_null() {
         return false;
     }
     unsafe {
@@ -1548,7 +1579,6 @@ pub extern "C" fn rust_session_commit_outgoing(
         commit_outgoing(Path::new(dir), mode, pass, cid, rb, onion, fr).is_ok()
     }
 }
-
 
 #[cfg(test)]
 mod memlock_tests {

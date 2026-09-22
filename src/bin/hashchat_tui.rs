@@ -5,6 +5,8 @@
 //! Uses crate APIs: session_persist, contact_link, LongTermIdentity, wipe,
 //! Tor ControlPort cookie auth + ADD_ONION listen, SOCKS send (fail-closed).
 //! Transport policy: Tor default (explicit modes via :mode / env); no silent fallback.
+//!
+//! Panic / SIGINT / SIGTERM: best-effort in-RAM secret scrub (not a substitute for `:wipe`).
 
 use std::io::{self, stdout};
 use std::path::Path;
@@ -16,15 +18,16 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use hashchat_rust::{
-    bootstrap_ratchet_from_signed_link, build_wire_aad, commit_outgoing, encrypt_with_key,
-    extreme_default_lock_timeout, extreme_default_ttl, format_lock_timeout,
-    format_signed_contact_link, format_ttl, frame_v2, is_onion_destination, load_session,
-    mlock_bytes, mlockall_current, parse_lock_timeout_token, parse_signed_contact_link,
-    parse_ttl_token, DEFAULT_LOCK_TIMEOUT_SECS,
-    sas_fingerprint, sas_for_signed, save_session, socks5_send, start_hidden_service_with_key,
-    state_exists, tor_probe, unframe_v2, wipe_local_sensitive, DnsPreference, DoubleRatchet,
-    HiddenService, IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig,
-    NetworkMode, PersistMode, PersistedContact, PostureProfile, SessionState, WIRE_VERSION_V2,
+    bootstrap_ratchet_from_signed_link, build_wire_aad, clear_scrub_callback, commit_outgoing,
+    encrypt_with_key, extreme_default_lock_timeout, extreme_default_ttl, format_lock_timeout,
+    format_signed_contact_link, format_ttl, frame_v2, install_panic_scrub_hook,
+    install_terminate_signal_flag, is_onion_destination, load_session, mlock_bytes,
+    mlockall_current, parse_lock_timeout_token, parse_signed_contact_link, parse_ttl_token,
+    register_scrub_callback, sas_fingerprint, sas_for_signed, save_session, socks5_send,
+    start_hidden_service_with_key, state_exists, take_terminate_signal, tor_probe, unframe_v2,
+    wipe_local_sensitive, DnsPreference, DoubleRatchet, HiddenService, IdentityOnionState,
+    InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode, PersistMode, PersistedContact,
+    PostureProfile, SessionState, DEFAULT_LOCK_TIMEOUT_SECS, WIRE_VERSION_V2,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -42,6 +45,28 @@ const TEXT: Color = Color::Rgb(245, 245, 245);
 const DIM: Color = Color::Rgb(160, 160, 160);
 const DANGER: Color = Color::Rgb(255, 77, 77);
 const OK: Color = Color::Rgb(61, 220, 151);
+
+fn tui_restore_terminal_best_effort() {
+    let _ = disable_raw_mode();
+    let _ = execute!(stdout(), LeaveAlternateScreen);
+}
+
+/// Panic-hook callback: restore the terminal without touching `App`.
+///
+/// The earlier raw-pointer callback was unsound if panic began while `App` was
+/// already mutably borrowed. Rust unwinding drops `App` and its safe `Drop`
+/// implementation performs the actual best-effort secret scrub.
+fn tui_registered_scrub() {
+    tui_restore_terminal_best_effort();
+}
+
+fn bind_app_scrub() {
+    register_scrub_callback(tui_registered_scrub);
+}
+
+fn unbind_app_scrub() {
+    clear_scrub_callback();
+}
 
 const SOCKS_HOST: &str = "127.0.0.1";
 const SOCKS_PORTS: [u16; 2] = [9050, 9150];
@@ -89,6 +114,15 @@ impl ChatLine {
             text: text.into(),
             expires_at,
             wipe_key,
+        }
+    }
+}
+
+impl Drop for ChatLine {
+    fn drop(&mut self) {
+        self.text.zeroize();
+        if let Some((ref mut cid, _)) = self.wipe_key {
+            cid.zeroize();
         }
     }
 }
@@ -226,8 +260,7 @@ impl App {
         match format_signed_contact_link(&id, &onion) {
             Ok(link) => self.my_contact_link = link,
             Err(_) => {
-                self.my_contact_link =
-                    "(contact link unavailable — check onion address)".into();
+                self.my_contact_link = "(contact link unavailable — check onion address)".into();
             }
         }
     }
@@ -261,14 +294,11 @@ impl App {
         match self.persist_session() {
             Ok(()) => true,
             Err(_) => {
-                self.push_msg(
-                    "Mode updated in memory; durable save failed (unlock/passphrase?).",
-                );
+                self.push_msg("Mode updated in memory; durable save failed (unlock/passphrase?).");
                 false
             }
         }
     }
-
 
     fn push_msg(&mut self, text: impl Into<String>) {
         self.messages.push(ChatLine::sys(text));
@@ -290,10 +320,7 @@ impl App {
         let mut to_wipe: Vec<(String, u32)> = Vec::new();
         let mut kept: Vec<ChatLine> = Vec::with_capacity(self.messages.len());
         for mut line in self.messages.drain(..) {
-            let expired = line
-                .expires_at
-                .map(|t| now >= t)
-                .unwrap_or(false);
+            let expired = line.expires_at.map(|t| now >= t).unwrap_or(false);
             if expired {
                 if let Some(w) = line.wipe_key.take() {
                     to_wipe.push(w);
@@ -328,12 +355,7 @@ impl App {
         r.wipe_skipped_key(msg_number);
         session.set_ratchet_bytes(contact_id, r.to_bytes());
         if !pass.is_empty() {
-            let _ = save_session(
-                Path::new(DATA_DIR),
-                PersistMode::Passphrase,
-                &pass,
-                session,
-            );
+            let _ = save_session(Path::new(DATA_DIR), PersistMode::Passphrase, &pass, session);
         }
     }
 
@@ -368,11 +390,7 @@ impl App {
 
     /// Adjust selection after removing contact at `removed_idx`.
     fn fix_selection_after_contact_removal(&mut self, removed_idx: usize) {
-        let len = self
-            .session
-            .as_ref()
-            .map(|s| s.contacts.len())
-            .unwrap_or(0);
+        let len = self.session.as_ref().map(|s| s.contacts.len()).unwrap_or(0);
         match self.selected_contact {
             Some(sel) if sel == removed_idx => {
                 self.selected_contact = None;
@@ -527,6 +545,33 @@ impl App {
         self.status_msg = "Session locked. Enter passphrase to unlock.".into();
     }
 
+    /// Best-effort in-RAM secret wipe for panic / signal / quit / Drop.
+    ///
+    /// Zeroizes passphrase buffers, `SessionState` (via `wipe_memory_secure`),
+    /// chat lines, SAS / contact-link display strings, and the draft input.
+    /// Does **not** touch disk — not a substitute for `:wipe`.
+    fn emergency_scrub_fields(&mut self) {
+        self.hs = None;
+        self.hs_drops_seen = 0;
+        if let Some(mut s) = self.session.take() {
+            s.wipe_memory_secure();
+        }
+        self.passphrase.zeroize();
+        self.passphrase.clear();
+        self.passphrase_confirm.zeroize();
+        self.passphrase_confirm.clear();
+        self.input.zeroize();
+        self.input.clear();
+        self.my_sas.zeroize();
+        self.my_sas.clear();
+        self.my_contact_link.zeroize();
+        self.my_contact_link.clear();
+        self.clear_transcript_secure();
+        self.pending_delete_contact = None;
+        self.contacts_state = ListState::default();
+        self.selected_contact = None;
+    }
+
     fn handle_lock_timeout(&mut self, args: &str) {
         let args = args.trim();
         if args.is_empty() || args == "status" || args == "show" {
@@ -581,7 +626,6 @@ impl App {
         }
     }
 
-
     fn handle_disappear(&mut self, args: &str) {
         let args = args.trim();
         if args.is_empty() || args == "status" || args == "show" {
@@ -615,10 +659,7 @@ impl App {
                         format_ttl(secs)
                     )
                 } else {
-                    format!(
-                        "Disappearing TTL set to {} (memory only)",
-                        format_ttl(secs)
-                    )
+                    format!("Disappearing TTL set to {} (memory only)", format_ttl(secs))
                 };
                 self.status_msg = line.clone();
                 self.push_msg(line);
@@ -628,13 +669,10 @@ impl App {
             }
             Err(e) => {
                 self.status_msg = e.into();
-                self.push_msg(format!(
-                    "Usage: :disappear [off|30s|5m|1h|1d|status] — {e}"
-                ));
+                self.push_msg(format!("Usage: :disappear [off|30s|5m|1h|1d|status] — {e}"));
             }
         }
     }
-
 
     /// Best-effort anti-swap after passphrase accepted.
     ///
@@ -688,14 +726,8 @@ impl App {
                         onion: String::new(),
                         onion_key: Vec::new(),
                     };
-                    let state =
-                        SessionState::from_identity_with_net(identity, self.net.clone());
-                    match save_session(
-                        Path::new(DATA_DIR),
-                        PersistMode::Passphrase,
-                        pass,
-                        &state,
-                    ) {
+                    let state = SessionState::from_identity_with_net(identity, self.net.clone());
+                    match save_session(Path::new(DATA_DIR), PersistMode::Passphrase, pass, &state) {
                         Ok(()) => {
                             self.session = Some(state);
                             self.disappear_ttl_secs = 0;
@@ -707,7 +739,8 @@ impl App {
                             self.screen = Screen::Main;
                             self.touch_input();
                             self.status_msg =
-                                "Session created. Use :listen when Tor ControlPort is ready.".into();
+                                "Session created. Use :listen when Tor ControlPort is ready."
+                                    .into();
                             self.apply_mlock_best_effort();
                             self.push_msg(
                                 "Session initialized. :listen then :my-contact to share a signed link.",
@@ -926,10 +959,8 @@ impl App {
                     Ok(()) => {
                         if self.net.is_extreme() {
                             let tail = Self::onion_tail(&hs.onion);
-                            self.status_msg = format!(
-                                "Listening (Extreme · …{tail} · local :{})",
-                                hs.local_port
-                            );
+                            self.status_msg =
+                                format!("Listening (Extreme · …{tail} · local :{})", hs.local_port);
                             self.push_msg(
                                 "Hidden service published (Extreme: Tor-only; contact-link export locked).",
                             );
@@ -937,10 +968,8 @@ impl App {
                                 "Peer exchange: use :add-contact with an out-of-band link; :my-contact is refused under Extreme.",
                             );
                         } else {
-                            self.status_msg = format!(
-                                "Listening on {} (local :{})",
-                                hs.onion, hs.local_port
-                            );
+                            self.status_msg =
+                                format!("Listening on {} (local :{})", hs.onion, hs.local_port);
                             self.push_msg(
                                 "Hidden service published; accept loop running (framed wire v2).",
                             );
@@ -1074,13 +1103,22 @@ impl App {
             unframe_v2(transport_frame).map_err(|_| "malformed wire frame".to_string())?;
         let pass = self.passphrase.as_bytes().to_vec();
         let net = self.net.clone();
-        let session = self.session.as_mut().ok_or_else(|| "no session".to_string())?;
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| "no session".to_string())?;
         session.net = net;
         let contacts = session.contacts.clone();
         // Wire hint is the sender's static x25519 — try matching contacts first.
         let mut order: Vec<usize> = (0..contacts.len()).collect();
         if hint.len() == 32 {
-            order.sort_by_key(|&i| if contacts[i].x25519.as_slice() == hint.as_slice() { 0 } else { 1 });
+            order.sort_by_key(|&i| {
+                if contacts[i].x25519.as_slice() == hint.as_slice() {
+                    0
+                } else {
+                    1
+                }
+            });
         }
         for idx in order {
             let c = &contacts[idx];
@@ -1102,7 +1140,8 @@ impl App {
             let Some(rb) = ratchet_bytes else {
                 continue;
             };
-            let mut r = DoubleRatchet::from_bytes(&rb).map_err(|_| "ratchet restore".to_string())?;
+            let mut r =
+                DoubleRatchet::from_bytes(&rb).map_err(|_| "ratchet restore".to_string())?;
             let aad = build_wire_aad(WIRE_VERSION_V2, &hint, step, &sender_dh);
             let remote = x25519_dalek::PublicKey::from(sender_dh);
             match r.try_recv_decrypt(&remote, &ct, &aad) {
@@ -1117,12 +1156,8 @@ impl App {
                         c.display_name.clone()
                     };
                     let display = !session.is_muted_id(&contact_id);
-                    let _ = save_session(
-                        Path::new(DATA_DIR),
-                        PersistMode::Passphrase,
-                        &pass,
-                        session,
-                    );
+                    let _ =
+                        save_session(Path::new(DATA_DIR), PersistMode::Passphrase, &pass, session);
                     return Ok((label, text, contact_id, step, display));
                 }
                 Err(_) => continue,
@@ -1180,12 +1215,14 @@ impl App {
                 match self.persist_session() {
                     Ok(()) => {
                         let verb = if was_update { "Updated" } else { "Added" };
-                        let trust = if verified { "verified" } else { "unverified — :verify after SAS compare" };
+                        let trust = if verified {
+                            "verified"
+                        } else {
+                            "unverified — :verify after SAS compare"
+                        };
                         self.status_msg = format!("{verb} contact (SAS {sas}, {trust})");
                         if was_update {
-                            self.push_msg(format!(
-                                "{verb} {sas} — onion …{onion_tail} ({trust})"
-                            ));
+                            self.push_msg(format!("{verb} {sas} — onion …{onion_tail} ({trust})"));
                         } else {
                             self.push_msg(format!(
                                 "{verb} {sas} [unverified] — onion …{onion_tail}; compare SAS then :verify (peer must :add-contact you too)"
@@ -1288,9 +1325,7 @@ impl App {
                 r.init_symmetric(&shared);
                 r
             } else {
-                self.push_msg(
-                    "No ratchet for contact — add via :add-contact <signed link>.",
-                );
+                self.push_msg("No ratchet for contact — add via :add-contact <signed link>.");
                 return;
             };
 
@@ -1442,10 +1477,7 @@ impl App {
                 self.apply_extreme_lock_default();
                 let saved = self.persist_net_after_mode_change();
                 let tag = if saved { "saved" } else { "not saved" };
-                self.status_msg = format!(
-                    "Posture extreme ({tag}). {}",
-                    self.net.status_line()
-                );
+                self.status_msg = format!("Posture extreme ({tag}). {}", self.net.status_line());
                 self.push_msg(self.status_msg.clone());
                 if let Some(note) = self.net.extreme_lock_summary() {
                     self.push_msg(note);
@@ -1455,10 +1487,7 @@ impl App {
                 self.net.set_posture(PostureProfile::Standard);
                 let saved = self.persist_net_after_mode_change();
                 let tag = if saved { "saved" } else { "not saved" };
-                self.status_msg = format!(
-                    "Posture standard ({tag}). {}",
-                    self.net.status_line()
-                );
+                self.status_msg = format!("Posture standard ({tag}). {}", self.net.status_line());
                 self.push_msg(self.status_msg.clone());
             }
             "help" => {
@@ -1482,7 +1511,6 @@ impl App {
         }
     }
 
-
     fn deny_token_or_selected(&self, args: &str) -> Result<String, &'static str> {
         let args = args.trim();
         let session = self.session.as_ref().ok_or("Unlock first.")?;
@@ -1496,7 +1524,6 @@ impl App {
             .ok_or("Select a contact or pass id/SAS prefix")?;
         Ok(c.id.clone())
     }
-
 
     fn handle_verify_command(&mut self, args: &str) {
         let id = match self.deny_token_or_selected(args) {
@@ -1538,7 +1565,11 @@ impl App {
             .unwrap_or(false);
         match self.persist_session() {
             Ok(()) => {
-                let verb = if newly { "Verified" } else { "Already verified" };
+                let verb = if newly {
+                    "Verified"
+                } else {
+                    "Already verified"
+                };
                 self.status_msg = format!("{verb} SAS {label} (send allowed)");
                 self.push_msg(self.status_msg.clone());
             }
@@ -1586,8 +1617,7 @@ impl App {
             return;
         }
         if self.net.is_extreme() {
-            self.status_msg =
-                "Extreme refuses :send-unverified — compare SAS then :verify.".into();
+            self.status_msg = "Extreme refuses :send-unverified — compare SAS then :verify.".into();
             self.push_msg(self.status_msg.clone());
             return;
         }
@@ -1773,6 +1803,7 @@ impl App {
         let c = cmd.trim();
         match c {
             ":q" | ":quit" | ":exit" => {
+                self.emergency_scrub_fields();
                 self.status_msg = "__QUIT__".into();
             }
             ":wipe" => {
@@ -1856,10 +1887,7 @@ impl App {
                     probe.note,
                     onion_disp,
                     listening,
-                    self.session
-                        .as_ref()
-                        .map(|s| s.pending.len())
-                        .unwrap_or(0)
+                    self.session.as_ref().map(|s| s.pending.len()).unwrap_or(0)
                 ));
                 self.push_msg(self.net.status_line());
                 self.push_msg(format!(
@@ -1896,42 +1924,26 @@ impl App {
             ":help" => {
                 self.push_msg("HashChat commands:");
                 self.push_msg("  :listen                 publish Tor v3 onion (ControlPort)");
-                self.push_msg(
-                    "  :add-contact <link>     verify signed link + bootstrap ratchet",
-                );
+                self.push_msg("  :add-contact <link>     verify signed link + bootstrap ratchet");
                 self.push_msg("  :my-contact             your signed link + short SAS");
                 self.push_msg("  :sas [link]             short SAS (selected contact or link)");
-                self.push_msg(
-                    "  :mode [tor|status|…]    network mode (Tor default; fail-closed)",
-                );
+                self.push_msg("  :mode [tor|status|…]    network mode (Tor default; fail-closed)");
                 self.push_msg(
                     "  :retry                  flush pending queue (Tor / net_mode gate)",
                 );
                 self.push_msg(
                     "  :disappear [off|30s|…]  local TTL erase + ratchet skipped-key wipe",
                 );
-                self.push_msg(
-                    "  :lock                   lock UI now (clear RAM; disk untouched)",
-                );
-                self.push_msg(
-                    "  :lock-timeout [off|…]   idle auto-lock (default 5m; Extreme→1m)",
-                );
-                self.push_msg(
-                    "  :block / :unblock [id]  refuse send + drop inbound (fail-closed)",
-                );
-                self.push_msg(
-                    "  :mute / :unmute [id]    suppress inbound UI (decrypt for sync)",
-                );
+                self.push_msg("  :lock                   lock UI now (clear RAM; disk untouched)");
+                self.push_msg("  :lock-timeout [off|…]   idle auto-lock (default 5m; Extreme→1m)");
+                self.push_msg("  :block / :unblock [id]  refuse send + drop inbound (fail-closed)");
+                self.push_msg("  :mute / :unmute [id]    suppress inbound UI (decrypt for sync)");
                 self.push_msg("  :blocked                list blocked + muted ids");
                 self.push_msg(
                     "  :verify / :unverify [id] SAS trust gate (new contacts unverified)",
                 );
-                self.push_msg(
-                    "  :send-unverified <msg>  Standard only — Extreme: no bypass",
-                );
-                self.push_msg(
-                    "  :delete-contact [id]    remove contact + wipe ratchet (confirm)",
-                );
+                self.push_msg("  :send-unverified <msg>  Standard only — Extreme: no bypass");
+                self.push_msg("  :delete-contact [id]    remove contact + wipe ratchet (confirm)");
                 self.push_msg("  :wipe                   nuclear local wipe (confirm)");
                 self.push_msg("  :quit                   exit");
                 self.push_msg(
@@ -2005,10 +2017,11 @@ impl App {
                 let args = other.strip_prefix(":unmute").unwrap_or("").trim();
                 self.handle_unmute_command(args);
             }
-            other if other == ":delete-contact"
-                || other.starts_with(":delete-contact ")
-                || other == ":rm-contact"
-                || other.starts_with(":rm-contact ") =>
+            other
+                if other == ":delete-contact"
+                    || other.starts_with(":delete-contact ")
+                    || other == ":rm-contact"
+                    || other.starts_with(":rm-contact ") =>
             {
                 let args = if other.starts_with(":rm-contact") {
                     other.strip_prefix(":rm-contact").unwrap_or("").trim()
@@ -2028,10 +2041,11 @@ impl App {
                 let args = other.strip_prefix(":lock-timeout").unwrap_or("").trim();
                 self.handle_lock_timeout(args);
             }
-            other if other == ":disappear"
-                || other.starts_with(":disappear ")
-                || other == ":ttl"
-                || other.starts_with(":ttl ") =>
+            other
+                if other == ":disappear"
+                    || other.starts_with(":disappear ")
+                    || other == ":ttl"
+                    || other.starts_with(":ttl ") =>
             {
                 let args = if other.starts_with(":ttl") {
                     other.strip_prefix(":ttl").unwrap_or("").trim()
@@ -2189,15 +2203,9 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         Span::styled("│ ", Style::default().fg(DIM)),
         Span::styled(format!("SAS {}", app.my_sas), Style::default().fg(GOLD)),
         Span::styled(" │ ", Style::default().fg(DIM)),
-        Span::styled(
-            app.tor_status.label(listening),
-            app.tor_status.style(),
-        ),
+        Span::styled(app.tor_status.label(listening), app.tor_status.style()),
         Span::styled(" · ", Style::default().fg(DIM)),
-        Span::styled(
-            format!("mode={}", app.net.mode),
-            Style::default().fg(DIM),
-        ),
+        Span::styled(format!("mode={}", app.net.mode), Style::default().fg(DIM)),
         Span::styled(" · ", Style::default().fg(DIM)),
         Span::styled(
             format!("ttl={}", format_ttl(app.disappear_ttl_secs)),
@@ -2413,6 +2421,13 @@ fn draw_delete_contact_modal(f: &mut ratatui::Frame, app: &App, area: Rect) {
     f.render_widget(body, rect);
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        // Also runs during panic unwinding, after active borrows have ended.
+        self.emergency_scrub_fields();
+    }
+}
+
 fn run() -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = stdout();
@@ -2421,10 +2436,15 @@ fn run() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
+    bind_app_scrub();
     app.check_tor(true);
 
     let tick = Duration::from_millis(100);
     loop {
+        if take_terminate_signal() {
+            app.emergency_scrub_fields();
+            break;
+        }
         app.check_tor(false);
         app.drain_incoming();
         app.expire_messages();
@@ -2433,10 +2453,23 @@ fn run() -> io::Result<()> {
         }
         terminal.draw(|f| ui(f, &mut app))?;
 
-        if !event::poll(tick)? {
+        let ready = match event::poll(tick) {
+            Ok(v) => v,
+            Err(_) => {
+                app.emergency_scrub_fields();
+                break;
+            }
+        };
+        if !ready {
             continue;
         }
-        let Event::Key(key) = event::read()? else {
+        let Event::Key(key) = (match event::read() {
+            Ok(ev) => ev,
+            Err(_) => {
+                app.emergency_scrub_fields();
+                break;
+            }
+        }) else {
             continue;
         };
         if key.kind != KeyEventKind::Press {
@@ -2444,6 +2477,7 @@ fn run() -> io::Result<()> {
         }
 
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            app.emergency_scrub_fields();
             break;
         }
 
@@ -2510,8 +2544,7 @@ fn run() -> io::Result<()> {
                         app.handle_command(&cmd);
                     } else {
                         app.screen = Screen::Main;
-                        app.status_msg =
-                            "Wipe cancelled (expected :wipe-confirm).".into();
+                        app.status_msg = "Wipe cancelled (expected :wipe-confirm).".into();
                         app.focus = Focus::Input;
                     }
                 }
@@ -2609,6 +2642,7 @@ fn run() -> io::Result<()> {
         }
     }
 
+    unbind_app_scrub();
     app.hs = None;
     app.passphrase.zeroize();
     app.passphrase_confirm.zeroize();
@@ -2625,6 +2659,9 @@ fn main() {
         );
         std::process::exit(2);
     }
+    // Before App exists: hook is a no-op until bind_app_scrub.
+    install_panic_scrub_hook();
+    install_terminate_signal_flag();
     if let Err(e) = run() {
         eprintln!("hashchat-tui error: {e}");
         std::process::exit(1);
