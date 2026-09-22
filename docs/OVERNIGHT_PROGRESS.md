@@ -6,10 +6,11 @@
 
 ## Executive summary
 
-HashChat now has a usable Rust two-peer TUI with fail-closed Tor transport, encrypted session blob v7, 107 passing library tests, and an offline CI security gate. Shipped controls include local disappearing TTL, Extreme minimal persistence, block/mute/delete with ratchet wipe, a SAS verification gate, idle/manual lock, unlock-attempt backoff, `:clear` transcript scrub, best-effort `mlock`, panic/signal secret scrubbing, and contact display-name rename (`:rename`). The Haskell desktop remains transitional and non-recommended; this is a hardened preview path, not a claim of production readiness.
+HashChat now has a usable Rust two-peer TUI with fail-closed Tor transport, encrypted session blob v7, 111 passing library tests, and an offline CI security gate. Shipped controls include local disappearing TTL, Extreme minimal persistence, block/mute/delete with ratchet wipe, a SAS verification gate, idle/manual lock, unlock-attempt backoff, `:clear` transcript scrub, best-effort `mlock`, panic/signal secret scrubbing, and contact display-name rename (`:rename`). The Haskell desktop remains transitional and non-recommended; this is a hardened preview path, not a claim of production readiness.
 
 ## Shipped since the previous checkpoint
 
+- **SOCKS IsolateSOCKSAuth:** outbound `socks5_connect` / `socks5_send` use RFC1929 username/password tags derived per destination onion (`socks_isolation_credentials`) so Tor’s default `IsolateSOCKSAuth` keeps distinct circuits per peer. Tags are never logged; `:evidence` prints `socks_isol=per-dest` only. Fail-closed loopback + onion policy unchanged. Inbound HS accept remains a single local listener.
 - **Branding — `950cd8c`, `d8e9c1c`:** adopted the black-and-gold chat-bubble/hash mark, marked the lockup as canonical, and refreshed packaged icons.
 - **Native Rust TUI — `a626d05`:** added the `ratatui`/`crossterm` desktop path with passphrase unlock/create, encrypted session persistence, contacts, SAS display, Tor status, and wipe entry points.
 - **Tor transport — `63bbb4f`:** added cookie-authenticated ControlPort use, `ADD_ONION` listening, loopback-only SOCKS, `.onion` destination policy, framed transport, and a durable outgoing queue. There is no bare ControlPort authentication or silent clearnet fallback.
@@ -54,7 +55,7 @@ cargo build --release --locked --bin hashchat-tui --features tui
 
 Unlock or create an identity, run `:listen`, exchange signed `hashchat://` contacts, compare SAS out of band, then `:verify` before sending. Use `:evidence` for posture metadata. Never copy Tor cookies, onion private material, passphrases, SAS values, or message bodies into evidence.
 
-Recorded validation at tip `2b4a0df`: `cargo test --lib` passed 107 tests, `cargo build --bin hashchat-tui --features tui` succeeded, and `./scripts/ci-security-gate.sh` passed offline.
+Recorded validation at tip `2b4a0df`: `cargo test --lib` passed 111 tests, `cargo build --bin hashchat-tui --features tui` succeeded, and `./scripts/ci-security-gate.sh` passed offline.
 
 ## When Lucas wakes
 

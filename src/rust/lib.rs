@@ -55,7 +55,8 @@ pub use session_persist::{
 pub use unlock_backoff::{unlock_backoff_delay_secs, UnlockBackoffPolicy};
 pub use tor_socks::{
     is_loopback_host, is_onion_destination, probe as tor_probe, read_framed_u16,
-    read_framed_u16_max, socks5_send, write_framed_u16, TorProbe, MAX_SOCKS_FRAME,
+    read_framed_u16_max, socks5_connect_with_auth, socks5_send, socks_isolation_credentials,
+    write_framed_u16, TorProbe, MAX_SOCKS_FRAME,
 };
 pub use wire::{frame_v2, unframe_v2};
 

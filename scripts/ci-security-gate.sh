@@ -63,7 +63,11 @@ pass "TUI references require_messenger_transport"
   || fail "is_loopback_host missing from tor_socks.rs"
 "${SEARCH[@]}" 'fn is_onion_destination' src/rust/tor_socks.rs >/dev/null \
   || fail "is_onion_destination missing from tor_socks.rs"
-pass "tor_socks loopback + onion policy helpers present"
+"${SEARCH[@]}" 'fn socks_isolation_credentials' src/rust/tor_socks.rs >/dev/null \
+  || fail "socks_isolation_credentials missing from tor_socks.rs"
+"${SEARCH[@]}" '0x02' src/rust/tor_socks.rs >/dev/null \
+  || fail "SOCKS username/password method (0x02) missing from tor_socks.rs"
+pass "tor_socks loopback + onion + IsolateSOCKSAuth helpers present"
 
 # Lightweight smell: no TcpStream connect/connect_timeout to well-known clearnet
 # literals in production sources (tests may use loopback only).

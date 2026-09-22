@@ -1434,7 +1434,7 @@ impl App {
                 &contact.id,
                 msg_number,
             );
-            self.status_msg = format!("Sent {frame_len} B via SOCKS");
+            self.status_msg = format!("Sent {frame_len} B via SOCKS (isol)");
         } else {
             // OPSEC: short reason only — frame stays queued for :retry.
             self.push_msg(format!("[{peer_label}] queued offline (SOCKS send failed)"));
@@ -1977,6 +1977,8 @@ impl App {
         let socks = if probe.socks_ok { "ok" } else { "fail" };
         let control = if probe.control_ok { "ok" } else { "fail" };
         self.push_msg(format!("tor: socks={socks} · control={control}"));
+        // Token only — never echo isolation username/password tags.
+        self.push_msg("socks_isol=per-dest (IsolateSOCKSAuth tags; not logged)");
 
         let listening = self.hs.is_some();
         let drops = self
