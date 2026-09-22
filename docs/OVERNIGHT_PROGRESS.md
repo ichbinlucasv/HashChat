@@ -2,7 +2,7 @@
 
 **Snapshot:** 22 September 2026 (Europe/Zurich)  
 **Branch:** `codeberg-primary`  
-**Tip:** `6b87dde101b0e0c1f9038a8adb3939404691bbdc`
+**Tip:** `56326daf2f4f012024609f07a2b61245cb1d9ac0`
 
 ## Executive summary
 
@@ -21,7 +21,7 @@ The Rust desktop path moved from scaffold to a usable, Tor-first two-peer TUI. T
 - **TUI polish — `c542aff`:** added contact selection and short SAS presentation, selected-peer context, `:sas`, clearer `:help`, and Tor/SOCKS-gated `:retry` behavior without exposing plaintext bodies in status text.
 - **Durable NetConfig — `c36caa2`:** session blob v3 stores mode / DNS preference / posture inside the passphrase wrap; TUI `:mode` / `:mode extreme` changes survive restart. Env still seeds cold start / new identity; loaded blob wins after unlock. `:my-contact` / listen / send remain transport-gated (fail-closed).
 - **Extreme TUI metadata gates — `5c932fb`:** `NetConfig::extreme_blocks_contact_export` (plus groups/voice helpers) centralize Extreme refusals. Rust TUI refuses `:my-contact` under Extreme, keeps short `:sas`, shortens onion display in `:status`/listen status, announces locks in `:help`/`:status`, and refuses `:group`/`:voice` stubs. Docs: THREATMODEL + EXTREME_PROFILE honesty pass; INSTALL Haskell removal criteria marked MET/MET/OPEN (criterion 2 closed this pass); ROADMAP item 0 one-line status.
-- **Haskell removal criterion 2 MET — `6b87dde101b0e0c1f9038a8adb3939404691bbdc`:** Distro installers no longer print Cabal recipes on the happy path; `flake.nix` default package/`devShell` are Rust-only with opt-in `haskellDev`; Forgejo CI builds Rust TUI without requiring Cabal (manual `haskell-parity` only); SBOM/Flatpak notes demote Cabal. INSTALL criterion 2 → MET; opt-in hatch kept (`HASHCHAT_ALLOW_HASKELL=1`, `./build.sh --haskell`).
+- **Haskell removal criterion 2 MET — `56326daf2f4f012024609f07a2b61245cb1d9ac0`:** Distro installers no longer print Cabal recipes on the happy path; `flake.nix` default package/`devShell` are Rust-only with opt-in `haskellDev`; Forgejo CI builds Rust TUI without requiring Cabal (manual `haskell-parity` only); SBOM/Flatpak notes demote Cabal. INSTALL criterion 2 → MET; opt-in hatch kept (`HASHCHAT_ALLOW_HASKELL=1`, `./build.sh --haskell`).
 
 ## How to run
 
