@@ -117,3 +117,71 @@ mod tests {
         assert_eq!(extreme_default_ttl(false, 0), 0);
     }
 }
+
+/// Default idle auto-lock timeout (5 minutes). Local UI defense only.
+pub const DEFAULT_LOCK_TIMEOUT_SECS: u32 = 300;
+
+/// Extreme posture shorter default when timeout is off or longer than this (1 minute).
+pub const EXTREME_DEFAULT_LOCK_TIMEOUT_SECS: u32 = 60;
+
+/// Parse `:lock-timeout` token into seconds. Reuses TTL grammar (`off|1m|5m|…`).
+///
+/// `0` / `off` disables idle auto-lock (manual `:lock` still works).
+pub fn parse_lock_timeout_token(raw: &str) -> Result<u32, &'static str> {
+    parse_ttl_token(raw).map_err(|_| "bad lock-timeout (use off|1m|5m|15m|30m or seconds)")
+}
+
+/// Short label for status / `:lock-timeout` (no secrets).
+pub fn format_lock_timeout(secs: u32) -> String {
+    format_ttl(secs)
+}
+
+/// Under Extreme, shorten idle lock when currently off or longer than the Extreme default.
+pub fn extreme_default_lock_timeout(is_extreme: bool, current: u32) -> u32 {
+    if !is_extreme {
+        return current;
+    }
+    if current == 0 || current > EXTREME_DEFAULT_LOCK_TIMEOUT_SECS {
+        EXTREME_DEFAULT_LOCK_TIMEOUT_SECS
+    } else {
+        current
+    }
+}
+
+#[cfg(test)]
+mod lock_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn parse_lock_timeout_tokens() {
+        assert_eq!(parse_lock_timeout_token("off").unwrap(), 0);
+        assert_eq!(parse_lock_timeout_token("1m").unwrap(), 60);
+        assert_eq!(parse_lock_timeout_token("5m").unwrap(), 300);
+        assert_eq!(parse_lock_timeout_token("15m").unwrap(), 900);
+        assert_eq!(parse_lock_timeout_token("30m").unwrap(), 1800);
+        assert!(parse_lock_timeout_token("").is_err());
+        assert!(parse_lock_timeout_token("xyz").is_err());
+    }
+
+    #[test]
+    fn extreme_shortens_off_or_longer() {
+        assert_eq!(
+            extreme_default_lock_timeout(true, 0),
+            EXTREME_DEFAULT_LOCK_TIMEOUT_SECS
+        );
+        assert_eq!(
+            extreme_default_lock_timeout(true, 300),
+            EXTREME_DEFAULT_LOCK_TIMEOUT_SECS
+        );
+        assert_eq!(extreme_default_lock_timeout(true, 30), 30);
+        assert_eq!(extreme_default_lock_timeout(false, 0), 0);
+        assert_eq!(extreme_default_lock_timeout(false, 300), 300);
+    }
+
+    #[test]
+    fn format_lock_timeout_labels() {
+        assert_eq!(format_lock_timeout(0), "off");
+        assert_eq!(format_lock_timeout(60), "1m");
+        assert_eq!(format_lock_timeout(300), "5m");
+    }
+}

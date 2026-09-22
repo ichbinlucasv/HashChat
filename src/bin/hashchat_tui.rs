@@ -17,8 +17,10 @@ use crossterm::terminal::{
 };
 use hashchat_rust::{
     bootstrap_ratchet_from_signed_link, build_wire_aad, commit_outgoing, encrypt_with_key,
-    extreme_default_ttl, format_signed_contact_link, format_ttl, frame_v2, is_onion_destination,
-    load_session, mlock_bytes, mlockall_current, parse_signed_contact_link, parse_ttl_token,
+    extreme_default_lock_timeout, extreme_default_ttl, format_lock_timeout,
+    format_signed_contact_link, format_ttl, frame_v2, is_onion_destination, load_session,
+    mlock_bytes, mlockall_current, parse_lock_timeout_token, parse_signed_contact_link,
+    parse_ttl_token, DEFAULT_LOCK_TIMEOUT_SECS,
     sas_fingerprint, sas_for_signed, save_session, socks5_send, start_hidden_service_with_key,
     state_exists, tor_probe, unframe_v2, wipe_local_sensitive, DnsPreference, DoubleRatchet,
     HiddenService, IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig,
@@ -118,6 +120,10 @@ struct App {
     net: NetConfig,
     /// Local disappearing TTL seconds (0 = off). Synced into session blob v4+.
     disappear_ttl_secs: u32,
+    /// Idle auto-lock timeout seconds (0 = off). Synced into session blob v7+.
+    lock_timeout_secs: u32,
+    /// Last user input Instant (Main / confirm screens). Used for idle auto-lock.
+    last_input_at: Instant,
     /// Pending contact id for `:delete-contact-confirm` (cleared on Esc / success).
     pending_delete_contact: Option<String>,
 }
@@ -188,6 +194,8 @@ impl App {
             hs_drops_seen: 0,
             net: NetConfig::from_env(),
             disappear_ttl_secs: 0,
+            lock_timeout_secs: DEFAULT_LOCK_TIMEOUT_SECS,
+            last_input_at: Instant::now(),
             pending_delete_contact: None,
         }
     }
@@ -231,9 +239,10 @@ impl App {
         if self.passphrase.is_empty() {
             return Err("passphrase required");
         }
-        // Keep blob prefs aligned with live NetConfig + disappearing TTL.
+        // Keep blob prefs aligned with live NetConfig + TTL + idle lock.
         session.net = self.net.clone();
         session.disappear_ttl_secs = self.disappear_ttl_secs;
+        session.lock_timeout_secs = self.lock_timeout_secs;
         save_session(
             Path::new(DATA_DIR),
             PersistMode::Passphrase,
@@ -453,6 +462,126 @@ impl App {
         }
     }
 
+    fn apply_extreme_lock_default(&mut self) {
+        let next = extreme_default_lock_timeout(self.net.is_extreme(), self.lock_timeout_secs);
+        if next != self.lock_timeout_secs {
+            self.lock_timeout_secs = next;
+            self.push_msg(format!(
+                "Idle auto-lock defaulted to {} under Extreme (local UI lock; not remote wipe).",
+                format_lock_timeout(next)
+            ));
+        }
+    }
+
+    /// Touch idle timer (any key while unlocked).
+    fn touch_input(&mut self) {
+        self.last_input_at = Instant::now();
+    }
+
+    /// True when unlocked and idle past configured timeout (0 = never).
+    fn idle_should_lock(&self) -> bool {
+        if self.lock_timeout_secs == 0 {
+            return false;
+        }
+        if !matches!(
+            self.screen,
+            Screen::Main | Screen::ConfirmWipe | Screen::ConfirmDeleteContact
+        ) {
+            return false;
+        }
+        if self.session.is_none() {
+            return false;
+        }
+        self.last_input_at.elapsed() >= Duration::from_secs(u64::from(self.lock_timeout_secs))
+    }
+
+    /// Idle / manual lock: zeroize secrets in RAM, stop HS accept, return to unlock.
+    /// Disk `state.enc` is left intact (prefer durable save first). Re-unlock via load_session.
+    fn lock_ui(&mut self) {
+        // Best-effort save while passphrase still available (prefs / pending).
+        if self.session.is_some() && !self.passphrase.is_empty() {
+            let _ = self.persist_session();
+        }
+        // Drop HS: stops accept thread + closes ControlPort (onion key stays in state.enc).
+        self.hs = None;
+        self.hs_drops_seen = 0;
+        if let Some(mut s) = self.session.take() {
+            s.wipe_memory_secure();
+        }
+        self.passphrase.zeroize();
+        self.passphrase.clear();
+        self.passphrase_confirm.zeroize();
+        self.passphrase_confirm.clear();
+        self.input.clear();
+        self.my_sas.clear();
+        self.my_contact_link.clear();
+        self.clear_transcript_secure();
+        self.pending_delete_contact = None;
+        self.contacts_state = ListState::default();
+        self.selected_contact = None;
+        // Prefs kept in App for status until re-unlock overwrites from blob.
+        self.unlock_mode_create = !state_exists(Path::new(DATA_DIR));
+        self.unlock_step = UnlockStep::EnterPass;
+        self.screen = Screen::Unlock;
+        // OPSEC: no plaintext / onion / passphrase material in lock status.
+        self.status_msg = "Session locked. Enter passphrase to unlock.".into();
+    }
+
+    fn handle_lock_timeout(&mut self, args: &str) {
+        let args = args.trim();
+        if args.is_empty() || args == "status" || args == "show" {
+            let line = format!(
+                "lock-timeout={} (idle auto-lock; local UI defense — not remote wipe)",
+                format_lock_timeout(self.lock_timeout_secs)
+            );
+            self.status_msg = line.clone();
+            self.push_msg(line);
+            return;
+        }
+        match parse_lock_timeout_token(args) {
+            Ok(secs) => {
+                self.lock_timeout_secs = secs;
+                self.touch_input();
+                let saved = if self.session.is_some() {
+                    match self.persist_session() {
+                        Ok(()) => true,
+                        Err(_) => {
+                            self.push_msg(
+                                "Lock timeout updated in memory; durable save failed (unlock/passphrase?).",
+                            );
+                            false
+                        }
+                    }
+                } else {
+                    true
+                };
+                let line = if saved {
+                    format!(
+                        "Idle auto-lock set to {} (saved; local UI only)",
+                        format_lock_timeout(secs)
+                    )
+                } else {
+                    format!(
+                        "Idle auto-lock set to {} (memory only)",
+                        format_lock_timeout(secs)
+                    )
+                };
+                self.status_msg = line.clone();
+                self.push_msg(line);
+                self.push_msg(
+                    "Honesty: idle lock clears RAM secrets and returns to unlock; disk state.enc is untouched; not a remote wipe.",
+                );
+            }
+            Err(e) => {
+                self.status_msg = e.into();
+                self.push_msg(format!(
+                    "Usage: :lock-timeout [off|1m|5m|15m|30m|status] — {e}"
+                ));
+            }
+        }
+    }
+
+
     fn handle_disappear(&mut self, args: &str) {
         let args = args.trim();
         if args.is_empty() || args == "status" || args == "show" {
@@ -570,10 +699,13 @@ impl App {
                         Ok(()) => {
                             self.session = Some(state);
                             self.disappear_ttl_secs = 0;
+                            self.lock_timeout_secs = DEFAULT_LOCK_TIMEOUT_SECS;
                             self.apply_extreme_ttl_default();
+                            self.apply_extreme_lock_default();
                             let _ = self.persist_session();
                             self.refresh_identity_display();
                             self.screen = Screen::Main;
+                            self.touch_input();
                             self.status_msg =
                                 "Session created. Use :listen when Tor ControlPort is ready.".into();
                             self.apply_mlock_best_effort();
@@ -593,18 +725,22 @@ impl App {
                 Ok(state) => {
                     let n_contacts = state.contacts.len();
                     let n_pending = state.pending.len();
-                    // Loaded blob wins over cold-start env for net prefs + TTL.
+                    // Loaded blob wins over cold-start env for net prefs + TTL + lock.
                     self.net = state.net.clone();
                     self.disappear_ttl_secs = state.disappear_ttl_secs;
+                    self.lock_timeout_secs = state.lock_timeout_secs;
                     self.session = Some(state);
                     self.apply_extreme_ttl_default();
+                    self.apply_extreme_lock_default();
                     let _ = self.persist_session();
                     self.refresh_identity_display();
                     self.screen = Screen::Main;
+                    self.touch_input();
                     self.push_msg(format!(
-                        "Loaded {n_contacts} contact(s), {n_pending} pending. {} · disappear={}",
+                        "Loaded {n_contacts} contact(s), {n_pending} pending. {} · disappear={} · lock={}",
                         self.net.status_line(),
-                        format_ttl(self.disappear_ttl_secs)
+                        format_ttl(self.disappear_ttl_secs),
+                        format_lock_timeout(self.lock_timeout_secs)
                     ));
                     if n_contacts > 0 {
                         self.select_contact(0);
@@ -1303,6 +1439,7 @@ impl App {
                     );
                 }
                 self.apply_extreme_ttl_default();
+                self.apply_extreme_lock_default();
                 let saved = self.persist_net_after_mode_change();
                 let tag = if saved { "saved" } else { "not saved" };
                 self.status_msg = format!(
@@ -1664,6 +1801,7 @@ impl App {
                 self.clear_transcript_secure();
                 self.pending_delete_contact = None;
                 self.disappear_ttl_secs = 0;
+                self.lock_timeout_secs = DEFAULT_LOCK_TIMEOUT_SECS;
                 self.net = NetConfig::from_env();
                 self.contacts_state = ListState::default();
                 self.selected_contact = None;
@@ -1728,6 +1866,10 @@ impl App {
                     "disappear={} (local TTL; peer not enforced)",
                     format_ttl(self.disappear_ttl_secs)
                 ));
+                self.push_msg(format!(
+                    "lock-timeout={} (idle auto-lock; local UI — not remote wipe)",
+                    format_lock_timeout(self.lock_timeout_secs)
+                ));
                 if let Some(s) = self.session.as_ref() {
                     let unverified = s
                         .contacts
@@ -1767,6 +1909,12 @@ impl App {
                 );
                 self.push_msg(
                     "  :disappear [off|30s|…]  local TTL erase + ratchet skipped-key wipe",
+                );
+                self.push_msg(
+                    "  :lock                   lock UI now (clear RAM; disk untouched)",
+                );
+                self.push_msg(
+                    "  :lock-timeout [off|…]   idle auto-lock (default 5m; Extreme→1m)",
                 );
                 self.push_msg(
                     "  :block / :unblock [id]  refuse send + drop inbound (fail-closed)",
@@ -1868,6 +2016,17 @@ impl App {
                     other.strip_prefix(":delete-contact").unwrap_or("").trim()
                 };
                 self.handle_delete_contact_command(args);
+            }
+            ":lock" => {
+                if self.session.is_none() {
+                    self.status_msg = "Already locked (or no session).".into();
+                } else {
+                    self.lock_ui();
+                }
+            }
+            other if other == ":lock-timeout" || other.starts_with(":lock-timeout ") => {
+                let args = other.strip_prefix(":lock-timeout").unwrap_or("").trim();
+                self.handle_lock_timeout(args);
             }
             other if other == ":disappear"
                 || other.starts_with(":disappear ")
@@ -2042,6 +2201,11 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         Span::styled(" · ", Style::default().fg(DIM)),
         Span::styled(
             format!("ttl={}", format_ttl(app.disappear_ttl_secs)),
+            Style::default().fg(DIM),
+        ),
+        Span::styled(" · ", Style::default().fg(DIM)),
+        Span::styled(
+            format!("lock={}", format_lock_timeout(app.lock_timeout_secs)),
             Style::default().fg(DIM),
         ),
     ]))
@@ -2264,6 +2428,9 @@ fn run() -> io::Result<()> {
         app.check_tor(false);
         app.drain_incoming();
         app.expire_messages();
+        if app.idle_should_lock() {
+            app.lock_ui();
+        }
         terminal.draw(|f| ui(f, &mut app))?;
 
         if !event::poll(tick)? {
@@ -2278,6 +2445,14 @@ fn run() -> io::Result<()> {
 
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             break;
+        }
+
+        // Any key while unlocked resets the idle auto-lock timer.
+        if matches!(
+            app.screen,
+            Screen::Main | Screen::ConfirmWipe | Screen::ConfirmDeleteContact
+        ) {
+            app.touch_input();
         }
 
         match app.screen {

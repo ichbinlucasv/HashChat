@@ -165,6 +165,11 @@ pass "HS sync_channel (bounded inbound queue) present"
   || fail "hashchat_tui.rs does not call mlockall_current (best-effort anti-swap)"
 pass "TUI references mlockall_current"
 
+# Idle / manual lock: TUI must clear RAM secrets and return to unlock (local UI defense).
+"${SEARCH[@]}" 'fn lock_ui' src/bin/hashchat_tui.rs >/dev/null \
+  || fail "hashchat_tui.rs missing lock_ui (idle/:lock RAM clear)"
+pass "TUI references lock_ui"
+
 
 
 # ---------------------------------------------------------------------------

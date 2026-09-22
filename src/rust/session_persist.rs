@@ -32,15 +32,16 @@
 //! v4 = + disappearing TTL seconds (u32 BE; 0 = off). Local policy only — not on the wire.
 //! v5 = + blocked / muted contact-id string lists (deny list; Standard durable).
 //! v6 = + verified contact-id string list (SAS out-of-band trust gate; Standard durable).
-//! Load accepts v1–v6; save always writes v6. Older blobs load empty deny lists;
+//! v7 = + idle auto-lock timeout seconds (u32 BE; 0 = off; default 300 = 5m on missing).
+//! Load accepts v1–v7; save always writes v7. Older blobs load empty deny lists;
 //! pre-v6 contacts are treated as **verified** for continuity (new `:add-contact`
-//! entries start unverified).
+//! entries start unverified). Pre-v7 loads default idle lock to 5 minutes.
 //!
 //! ## Extreme disk policy (honest, fail-closed)
 //! When [`crate::net_mode::PostureProfile::Extreme`] is set on the session's
 //! [`NetConfig`], [`save_session`] persists **identity + onion + net prefs +
-//! disappear TTL only**. Contacts, ratchets, pending frames, blocked/muted, and
-//! verified lists are written as empty vectors (blob stays v6). Trade-off: smaller
+//! disappear TTL + idle lock timeout only**. Contacts, ratchets, pending frames, blocked/muted, and
+//! verified lists are written as empty vectors (blob stays v7). Trade-off: smaller
 //! at-rest footprint and no multi-session contact/deny/verify continuity — the user
 //! must re-add contacts (and re-block / re-verify if needed) after restart. Tor 1:1
 //! messaging for the **current** process session is unchanged (in-memory
@@ -55,8 +56,9 @@
 //! Missing prefs on v1/v2 load default to [`crate::net_mode::NetConfig::default`]
 //! (Tor + standard); missing TTL on v1–v3 loads as `0` (off); missing deny lists
 //! on v1–v4 load as empty; missing verified set on v1–v5 loads as all contact ids
-//! verified (continuity).
+//! verified (continuity); missing idle lock on v1–v6 loads as 300 seconds (5m).
 
+use crate::disappearing::DEFAULT_LOCK_TIMEOUT_SECS;
 use crate::envelope;
 use crate::longterm_identity::LongTermIdentity;
 use crate::net_mode::NetConfig;
@@ -75,6 +77,7 @@ const BLOB_VERSION_V3: u8 = 3;
 const BLOB_VERSION_V4: u8 = 4;
 const BLOB_VERSION_V5: u8 = 5;
 const BLOB_VERSION_V6: u8 = 6;
+const BLOB_VERSION_V7: u8 = 7;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PersistMode {
@@ -165,6 +168,10 @@ pub struct SessionState {
     /// This is a TOFU helper on top of Ed25519 link verify — not extra crypto binding.
     #[zeroize(skip)]
     pub verified_ids: Vec<String>,
+    /// Idle auto-lock timeout in seconds (`0` = off). v7+; local UI defense only.
+    /// Missing on pre-v7 load → [`DEFAULT_LOCK_TIMEOUT_SECS`] (5 minutes).
+    #[zeroize(skip)]
+    pub lock_timeout_secs: u32,
 }
 
 impl SessionState {
@@ -179,6 +186,7 @@ impl SessionState {
             blocked_ids: Vec::new(),
             muted_ids: Vec::new(),
             verified_ids: Vec::new(),
+            lock_timeout_secs: DEFAULT_LOCK_TIMEOUT_SECS,
         }
     }
 
@@ -194,6 +202,7 @@ impl SessionState {
             blocked_ids: Vec::new(),
             muted_ids: Vec::new(),
             verified_ids: Vec::new(),
+            lock_timeout_secs: DEFAULT_LOCK_TIMEOUT_SECS,
         }
     }
 
@@ -504,8 +513,8 @@ impl SessionState {
     ///
     /// Under **Extreme**, contacts / ratchets / pending / blocked / muted / verified
     /// are empty so they are not durable across restart. Identity, onion material,
-    /// net prefs, and disappear TTL are kept. Under **Standard**, returns a full
-    /// clone (H3 + deny lists + verified set).
+    /// net prefs, disappear TTL, and idle lock timeout are kept. Under **Standard**,
+    /// returns a full clone (H3 + deny lists + verified set).
     ///
     /// The live in-memory session is unchanged; callers keep working state for the
     /// current Tor session and only the durable blob is minimized.
@@ -527,6 +536,7 @@ impl SessionState {
             blocked_ids: Vec::new(),
             muted_ids: Vec::new(),
             verified_ids: Vec::new(),
+            lock_timeout_secs: self.lock_timeout_secs,
         }
     }
 
@@ -549,6 +559,7 @@ impl SessionState {
         self.identity.onion.clear();
         self.net = NetConfig::default();
         self.disappear_ttl_secs = 0;
+        self.lock_timeout_secs = 0;
     }
 }
 
@@ -620,7 +631,7 @@ fn read_string_list(buf: &[u8], pos: &mut usize) -> Result<Vec<String>, &'static
 
 fn serialize_blob(state: &SessionState) -> Vec<u8> {
     let mut plain = Vec::new();
-    plain.push(BLOB_VERSION_V6);
+    plain.push(BLOB_VERSION_V7);
     plain.extend_from_slice(&state.identity.seed);
     write_len_str(&mut plain, &state.identity.onion);
     write_len_bytes(&mut plain, &state.identity.onion_key);
@@ -663,6 +674,9 @@ fn serialize_blob(state: &SessionState) -> Vec<u8> {
     // verified set (v6+)
     write_string_list(&mut plain, &state.verified_ids);
 
+    // idle auto-lock timeout (v7+)
+    plain.extend_from_slice(&state.lock_timeout_secs.to_be_bytes());
+
     plain
 }
 
@@ -677,6 +691,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         && ver != BLOB_VERSION_V4
         && ver != BLOB_VERSION_V5
         && ver != BLOB_VERSION_V6
+        && ver != BLOB_VERSION_V7
     {
         return Err("bad state blob version");
     }
@@ -759,6 +774,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         || ver == BLOB_VERSION_V4
         || ver == BLOB_VERSION_V5
         || ver == BLOB_VERSION_V6
+        || ver == BLOB_VERSION_V7
     {
         let prefs = read_len_bytes(plain, &mut pos)?;
         NetConfig::from_persist_bytes(&prefs).map_err(|_| "bad net prefs")?
@@ -770,6 +786,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
     let disappear_ttl_secs = if ver == BLOB_VERSION_V4
         || ver == BLOB_VERSION_V5
         || ver == BLOB_VERSION_V6
+        || ver == BLOB_VERSION_V7
     {
         if pos + 4 > plain.len() {
             return Err("truncated disappear ttl");
@@ -781,7 +798,10 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         0
     };
 
-    let (blocked_ids, muted_ids) = if ver == BLOB_VERSION_V5 || ver == BLOB_VERSION_V6 {
+    let (blocked_ids, muted_ids) = if ver == BLOB_VERSION_V5
+        || ver == BLOB_VERSION_V6
+        || ver == BLOB_VERSION_V7
+    {
         let blocked = read_string_list(plain, &mut pos)?;
         let muted = read_string_list(plain, &mut pos)?;
         (blocked, muted)
@@ -789,12 +809,24 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         (Vec::new(), Vec::new())
     };
 
-    // v6: explicit verified set. Pre-v6: treat all loaded contacts as verified
+    // v6+: explicit verified set. Pre-v6: treat all loaded contacts as verified
     // so existing sessions are not suddenly blocked from sending.
-    let verified_ids = if ver == BLOB_VERSION_V6 {
+    let verified_ids = if ver == BLOB_VERSION_V6 || ver == BLOB_VERSION_V7 {
         read_string_list(plain, &mut pos)?
     } else {
         contacts.iter().map(|c| c.id.clone()).collect()
+    };
+
+    // v7: idle lock timeout. Pre-v7: default 5 minutes (enable auto-lock for upgrades).
+    let lock_timeout_secs = if ver == BLOB_VERSION_V7 {
+        if pos + 4 > plain.len() {
+            return Err("truncated lock timeout");
+        }
+        let secs = u32::from_be_bytes(plain[pos..pos + 4].try_into().unwrap());
+        pos += 4;
+        secs
+    } else {
+        DEFAULT_LOCK_TIMEOUT_SECS
     };
 
     if pos != plain.len() {
@@ -811,6 +843,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         blocked_ids,
         muted_ids,
         verified_ids,
+        lock_timeout_secs,
     })
 }
 
@@ -901,7 +934,8 @@ fn open_env(
 /// Save session state. Always writes v6.
 ///
 /// Under Extreme posture (`state.net.is_extreme()`), contacts / ratchets / pending /
-/// blocked / muted / verified are stripped via [`SessionState::for_disk`] before sealing.
+/// blocked / muted / verified are stripped via [`SessionState::for_disk`] before sealing
+/// (identity / onion / prefs / TTL / lock-timeout kept).
 /// Standard keeps full H3 + deny lists + verified set.
 pub fn save_session(
     data_dir: &Path,
@@ -1392,7 +1426,7 @@ mod tests {
         let loaded = load_session(&dir, PersistMode::Passphrase, b"v2-pass").unwrap();
         assert_eq!(loaded.identity.seed, identity.seed);
         assert_eq!(loaded.net, NetConfig::default());
-        // Re-save upgrades to v6.
+        // Re-save upgrades to v7.
         save_session(&dir, PersistMode::Passphrase, b"v2-pass", &loaded).unwrap();
         let again = load_session(&dir, PersistMode::Passphrase, b"v2-pass").unwrap();
         assert_eq!(again.net, NetConfig::default());
@@ -1437,7 +1471,7 @@ mod tests {
         let loaded = load_session(&dir, PersistMode::Passphrase, b"v3pass").unwrap();
         assert_eq!(loaded.disappear_ttl_secs, 0);
         assert_eq!(loaded.net, NetConfig::default());
-        // Re-save upgrades to v6; TTL stays off unless set.
+        // Re-save upgrades to v7; TTL stays off unless set.
         save_session(&dir, PersistMode::Passphrase, b"v3pass", &loaded).unwrap();
         let again = load_session(&dir, PersistMode::Passphrase, b"v3pass").unwrap();
         assert_eq!(again.disappear_ttl_secs, 0);
@@ -1770,7 +1804,7 @@ mod tests {
         assert_eq!(loaded.disappear_ttl_secs, 120);
         assert!(loaded.blocked_ids.is_empty());
         assert!(loaded.muted_ids.is_empty());
-        // Re-save upgrades to v6.
+        // Re-save upgrades to v7.
         save_session(&dir, PersistMode::Passphrase, b"v4pass", &loaded).unwrap();
         let again = load_session(&dir, PersistMode::Passphrase, b"v4pass").unwrap();
         assert_eq!(again.disappear_ttl_secs, 120);
@@ -1848,10 +1882,64 @@ mod tests {
         assert_eq!(loaded.contacts[0].id, "legacy");
         assert!(loaded.is_verified_id("legacy"));
         assert!(loaded.refuse_send_if_unverified("legacy").is_ok());
-        // Re-save upgrades to v6 and keeps verified set.
+        // Re-save upgrades to v7 and keeps verified set.
         save_session(&dir, PersistMode::Passphrase, b"v5cont", &loaded).unwrap();
         let again = load_session(&dir, PersistMode::Passphrase, b"v5cont").unwrap();
         assert!(again.is_verified_id("legacy"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+
+    #[test]
+    fn v7_lock_timeout_roundtrip() {
+        let dir = tmp_dir("v7_lock");
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &LongTermIdentity::generate().unwrap(),
+            "lock.onion",
+            vec![],
+        ));
+        assert_eq!(session.lock_timeout_secs, DEFAULT_LOCK_TIMEOUT_SECS);
+        session.lock_timeout_secs = 900; // 15m
+        save_session(&dir, PersistMode::Passphrase, b"lock-pass", &session).unwrap();
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"lock-pass").unwrap();
+        assert_eq!(loaded.lock_timeout_secs, 900);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pre_v7_loads_default_lock_timeout() {
+        // Craft a v6 blob (verified list, no lock field) — load defaults lock to 5m.
+        let dir = tmp_dir("v6_no_lock");
+        let id = LongTermIdentity::from_seed([0x76u8; 32]);
+        let identity =
+            IdentityOnionState::from_identity(&id, "oldv6.onion", b"k".to_vec());
+        let mut plain = Vec::new();
+        plain.push(BLOB_VERSION_V6);
+        plain.extend_from_slice(&identity.seed);
+        write_len_str(&mut plain, &identity.onion);
+        write_len_bytes(&mut plain, &identity.onion_key);
+        plain.extend_from_slice(&0u32.to_be_bytes()); // contacts
+        plain.extend_from_slice(&0u32.to_be_bytes()); // ratchets
+        plain.extend_from_slice(&0u32.to_be_bytes()); // pending
+        let prefs = NetConfig::default().to_persist_bytes();
+        write_len_bytes(&mut plain, &prefs);
+        plain.extend_from_slice(&0u32.to_be_bytes()); // ttl
+        write_string_list(&mut plain, &[]); // blocked
+        write_string_list(&mut plain, &[]); // muted
+        write_string_list(&mut plain, &[]); // verified
+        let env = envelope::seal(b"v6lock", &plain).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        write_private(&dir.join("state.enc"), &env).unwrap();
+
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"v6lock").unwrap();
+        assert_eq!(loaded.lock_timeout_secs, DEFAULT_LOCK_TIMEOUT_SECS);
+        // Extreme for_disk keeps lock timeout.
+        use crate::net_mode::PostureProfile;
+        let mut extreme = loaded;
+        extreme.net.set_posture(PostureProfile::Extreme);
+        extreme.lock_timeout_secs = 60;
+        let disk = extreme.for_disk();
+        assert_eq!(disk.lock_timeout_secs, 60);
         let _ = fs::remove_dir_all(&dir);
     }
 

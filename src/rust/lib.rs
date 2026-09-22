@@ -45,7 +45,11 @@ pub use wire::{frame_v2, unframe_v2};
 pub use net_mode::{
     DnsPreference, NetConfig, NetModeError, NetworkMode, PostureProfile,
 };
-pub use disappearing::{parse_ttl_token, format_ttl, extreme_default_ttl, EXTREME_DEFAULT_TTL_SECS};
+pub use disappearing::{
+    parse_ttl_token, format_ttl, extreme_default_ttl, EXTREME_DEFAULT_TTL_SECS,
+    parse_lock_timeout_token, format_lock_timeout, extreme_default_lock_timeout,
+    DEFAULT_LOCK_TIMEOUT_SECS, EXTREME_DEFAULT_LOCK_TIMEOUT_SECS,
+};
 
 // long-13: gated quantum module. Only compiled with `cargo build --features quantum`.
 // The module itself documents the strict constant-time / zeroize / side-channel
@@ -1426,6 +1430,7 @@ pub extern "C" fn rust_session_state_save(
             blocked_ids: Vec::new(),
             muted_ids: Vec::new(),
             verified_ids: Vec::new(),
+            lock_timeout_secs: crate::disappearing::DEFAULT_LOCK_TIMEOUT_SECS,
         };
         let mode = PersistMode::from_flags(insecure_dev != 0);
         save_session(Path::new(dir), mode, pass, &state).is_ok()
