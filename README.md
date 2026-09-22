@@ -51,6 +51,8 @@ Inspiration: SimpleX-class UX ideas, with paranoid defaults (Tor-first, no phone
 
 See [INSTALL.md](INSTALL.md) for Fedora / Ubuntu / Arch / Tails / Qubes walkthroughs, Flatpak, and packaging notes.
 
+**Two-peer Tor validation (maintainers):** follow [`docs/TWO_PEER_VALIDATION.md`](docs/TWO_PEER_VALIDATION.md). Capture OPSEC-safe posture with `:evidence` (alias `:audit-status`); see [`docs/VALIDATION_EVIDENCE.md`](docs/VALIDATION_EVIDENCE.md) for what prints vs what must never appear in tickets. Fill-in: `scripts/validation-evidence-template.txt`. Rust `hashchat-tui` only — Haskell desktop is not recommended for this exercise.
+
 **Transport default:** Tor (fail-closed). Explicit modes live in Rust `net_mode` (`Tor` / `I2P` / `Clearnet`, DNS preference separate). Only Tor send/listen is implemented; I2P and clearnet return a clear refusal and do **not** open messenger sockets. Extreme posture locks Tor-only. TUI: `:mode` / env `HASHCHAT_NET_MODE`, `HASHCHAT_DNS`, `HASHCHAT_POSTURE` (in-memory for now — not yet in the session blob).
 
 ---

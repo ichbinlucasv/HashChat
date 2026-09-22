@@ -1,8 +1,20 @@
 HashChat two-peer Tor validation — OPSEC-safe evidence fill-in
 ==============================================================
-Use with docs/TWO_PEER_VALIDATION.md. NEVER record: cookies, keys,
-onions, passphrases, SAS values, message bodies, frame bytes, or
-contact names/ids that might encode secrets. Prefer :evidence counts.
+Use with: docs/TWO_PEER_VALIDATION.md
+Also read: docs/VALIDATION_EVIDENCE.md  (what :evidence prints vs never in tickets)
+
+NEVER record / paste / commit / ticket:
+  - Tor control cookies or cookie file bytes
+  - Onion private keys / ED25519-V3 blobs
+  - Full onion addresses or hashchat:// contact links
+  - Passphrases or passphrase hints
+  - SAS values (short or long)
+  - Message bodies, frame bytes, or decrypt dumps
+  - Contact names/ids that might encode secrets
+
+Prefer :evidence / :audit-status counts and ok/fail tokens only.
+Client under test: Rust hashchat-tui (Haskell desktop is NOT recommended).
+Tor is required and fail-closed — no silent clearnet fallback.
 
 --- Environment ---
 Tester / role (Peer A | Peer B | observer): _______________
@@ -18,7 +30,7 @@ Build method (make tui | cargo | run-tui | other): _______________
 Start time (UTC offset, e.g. 2026-09-22 08:00 +0200): _______________
 End time (UTC offset): _______________
 
---- :evidence paste (non-sensitive lines only) ---
+--- :evidence / :audit-status paste (non-sensitive lines only) ---
 Peer A:
 <paste>
 
@@ -39,7 +51,7 @@ Peer B:
 (block / mute / delete)                PeerA: P/F ____  PeerB: P/F ____
 (Tor-down fail-closed)                 PeerA: P/F ____  PeerB: P/F ____
 
---- Observed failure modes (redacted) ---
+--- Observed failure modes (redacted; no secrets) ---
 -
 
 

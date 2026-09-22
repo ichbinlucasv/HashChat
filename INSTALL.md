@@ -50,7 +50,7 @@ cargo build --release --locked --bin hashchat-tui --features tui
    ./run-tui
    ```
 
-4. Inside the Rust TUI: unlock / create identity, `:listen`, exchange signed `hashchat://` contacts, chat over Tor. Panic wipe is available for local sensitive state.
+4. Inside the Rust TUI: unlock / create identity, `:listen`, exchange signed `hashchat://` contacts, chat over Tor. Panic wipe is available for local sensitive state. For maintainer two-peer Tor validation, see [`docs/TWO_PEER_VALIDATION.md`](docs/TWO_PEER_VALIDATION.md) and use `:evidence` / `:audit-status` (details: [`docs/VALIDATION_EVIDENCE.md`](docs/VALIDATION_EVIDENCE.md)).
 
 ---
 
@@ -497,6 +497,19 @@ Arch PKGBUILD sketch: build with the preferred command above, install `target/re
 ## Android
 
 Early development. Needs NDK, Rust / `cargo-ndk`, secure storage + JNI. See `./build-android.sh`.
+
+---
+
+## Two-peer Tor validation (maintainers)
+
+For maintainers validating HashChat on **two separate physical hosts** with real local Tor:
+
+1. Build and run the **Rust** TUI only (`./run-tui` / `make tui` / `cargo build --release --locked --bin hashchat-tui --features tui`). Haskell desktop is transitional / not recommended for this exercise.
+2. Follow the OPSEC-safe checklist: **[`docs/TWO_PEER_VALIDATION.md`](docs/TWO_PEER_VALIDATION.md)**.
+3. Capture posture with in-TUI **`:evidence`** (alias **`:audit-status`**) — metadata only; see **[`docs/VALIDATION_EVIDENCE.md`](docs/VALIDATION_EVIDENCE.md)** for what prints vs what must **never** appear in tickets.
+4. Fill **`scripts/validation-evidence-template.txt`** (versions, tip SHA, UTC-offset timestamps, pass/fail). Never record cookies, keys, onions, passphrases, SAS, or message bodies.
+
+Tor is required and **fail-closed** (no silent clearnet fallback). Use disposable identities and wipe afterward when appropriate (`./scripts/clean-security.sh --strict`).
 
 ---
 
