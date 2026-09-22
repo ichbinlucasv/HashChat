@@ -839,11 +839,24 @@ impl App {
         self.passphrase_confirm.clear();
     }
 
-    fn contact_sas_short(c: &PersistedContact) -> &str {
-        if c.display_name.is_empty() {
-            c.id.as_str()
+    /// Short SAS fingerprint from contact public keys (not display_name).
+    /// Custom `:rename` labels must never replace out-of-band SAS compare material.
+    fn contact_sas_short(c: &PersistedContact) -> String {
+        if c.ed25519 != [0u8; 32] && !c.onion.is_empty() {
+            sas_fingerprint(&c.ed25519, &c.x25519, &c.onion)
+        } else if !c.display_name.is_empty() {
+            c.display_name.clone()
         } else {
-            c.display_name.as_str()
+            c.id.clone()
+        }
+    }
+
+    /// Contact-list / UI label: display_name when set, else short SAS / id.
+    fn contact_list_label(c: &PersistedContact) -> String {
+        if !c.display_name.is_empty() {
+            c.display_name.clone()
+        } else {
+            Self::contact_sas_short(c)
         }
     }
 
@@ -858,7 +871,7 @@ impl App {
             .collect()
     }
 
-    /// Contact list labels: short SAS only (OPSEC — no plaintext bodies).
+    /// Contact list labels: display name (or SAS fallback). Never message bodies.
     fn contact_names(&self) -> Vec<String> {
         self.session
             .as_ref()
@@ -866,7 +879,7 @@ impl App {
                 s.contacts
                     .iter()
                     .map(|c| {
-                        let mut label = format!("SAS {}", Self::contact_sas_short(c));
+                        let mut label = Self::contact_list_label(c);
                         if s.is_blocked_id(&c.id) {
                             label.push_str(" [blocked]");
                         } else if s.is_muted_id(&c.id) {
@@ -1694,6 +1707,79 @@ impl App {
         }
     }
 
+    /// `:rename <name>` (selected) or `:rename <id|sas-prefix> <name>`.
+    /// Updates display_name only; status omits onions/SAS.
+    fn handle_rename_command(&mut self, args: &str) {
+        let args = args.trim();
+        if args.is_empty() {
+            self.status_msg =
+                "Usage: :rename <name> | :rename <id|sas-prefix> <name>".into();
+            self.push_msg(self.status_msg.clone());
+            return;
+        }
+        let Some(session) = self.session.as_ref() else {
+            self.status_msg = "Unlock first.".into();
+            return;
+        };
+
+        let (contact_id, name_raw) = {
+            let mut split = args.splitn(2, char::is_whitespace);
+            let first = split.next().unwrap_or("").trim();
+            let rest = split.next().map(str::trim).unwrap_or("");
+            if !rest.is_empty() {
+                if let Some(id) = session.resolve_deny_token(first) {
+                    (id, rest.to_string())
+                } else if let Some(c) = self.selected_contact_record() {
+                    // First token is not a contact — whole string is the new name.
+                    (c.id.clone(), args.to_string())
+                } else {
+                    self.status_msg =
+                        ":rename refused: unknown or ambiguous contact (id / SAS prefix)".into();
+                    self.push_msg(self.status_msg.clone());
+                    return;
+                }
+            } else {
+                match self.selected_contact_record() {
+                    Some(c) => (c.id.clone(), args.to_string()),
+                    None => {
+                        self.status_msg =
+                            "Usage: :rename <name> | :rename <id|sas-prefix> <name>".into();
+                        self.push_msg(self.status_msg.clone());
+                        return;
+                    }
+                }
+            }
+        };
+
+        let renamed = match self
+            .session
+            .as_mut()
+            .unwrap()
+            .rename_contact_display_name(&contact_id, &name_raw)
+        {
+            Ok(()) => self
+                .session
+                .as_ref()
+                .and_then(|s| s.contacts.iter().find(|c| c.id == contact_id))
+                .map(|c| c.display_name.clone())
+                .unwrap_or_default(),
+            Err(e) => {
+                self.status_msg = format!(":rename refused: {e}");
+                self.push_msg(self.status_msg.clone());
+                return;
+            }
+        };
+
+        match self.persist_session() {
+            Ok(()) => {
+                // Short success — echo the user-chosen label only (no onion / SAS dump).
+                self.status_msg = format!("Renamed contact to {renamed}");
+                self.push_msg(self.status_msg.clone());
+            }
+            Err(_) => self.status_msg = "Failed to persist rename.".into(),
+        }
+    }
+
     fn handle_unblock_command(&mut self, args: &str) {
         let args = args.trim();
         if args.is_empty() {
@@ -2061,6 +2147,9 @@ impl App {
                 self.push_msg("  :mute / :unmute [id]    suppress inbound UI (decrypt for sync)");
                 self.push_msg("  :blocked                list blocked + muted ids");
                 self.push_msg(
+                    "  :rename / :rename-contact  set display name (label only; not id/keys)",
+                );
+                self.push_msg(
                     "  :verify / :unverify [id] SAS trust gate (new contacts unverified)",
                 );
                 self.push_msg("  :send-unverified <msg>  Standard only — Extreme: no bypass");
@@ -2122,6 +2211,19 @@ impl App {
                 self.handle_unblock_command(args);
             }
             ":blocked" => self.handle_blocked_list(),
+            other
+                if other == ":rename"
+                    || other.starts_with(":rename ")
+                    || other == ":rename-contact"
+                    || other.starts_with(":rename-contact ") =>
+            {
+                let args = if other.starts_with(":rename-contact") {
+                    other.strip_prefix(":rename-contact").unwrap_or("").trim()
+                } else {
+                    other.strip_prefix(":rename").unwrap_or("").trim()
+                };
+                self.handle_rename_command(args);
+            }
             other if other == ":verify" || other.starts_with(":verify ") => {
                 let args = other.strip_prefix(":verify").unwrap_or("").trim();
                 self.handle_verify_command(args);

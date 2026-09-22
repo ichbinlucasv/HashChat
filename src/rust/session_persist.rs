@@ -98,6 +98,32 @@ impl PersistMode {
     }
 }
 
+/// Maximum Unicode scalar count for a contact display name (`:rename`).
+pub const MAX_DISPLAY_NAME_LEN: usize = 64;
+
+/// Validate a user-chosen contact display name.
+///
+/// Rules (fail-closed): non-empty after trim, at most [`MAX_DISPLAY_NAME_LEN`] chars,
+/// no ASCII control characters / newlines, and must not look like a `hashchat://` link.
+/// Returns the trimmed name on success.
+pub fn validate_display_name(name: &str) -> Result<String, &'static str> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("empty display name");
+    }
+    if trimmed.chars().count() > MAX_DISPLAY_NAME_LEN {
+        return Err("display name too long");
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err("display name has control characters");
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("hashchat://") || lower.starts_with("hashchat:") {
+        return Err("display name looks like a contact link");
+    }
+    Ok(trimmed.to_string())
+}
+
 /// Sensitive identity + onion material to persist.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct IdentityOnionState {
@@ -241,7 +267,8 @@ impl SessionState {
     }
 
 
-    /// Resolve `:block` / `:mute` token to a contact id (exact id, onion, or unique SAS/id prefix).
+    /// Resolve `:block` / `:mute` / `:rename` token to a contact id
+    /// (exact id, onion, unique display-name / SAS / id prefix).
     /// Returns `None` if empty, ambiguous, or unknown — caller must refuse without guessing.
     pub fn resolve_deny_token(&self, token: &str) -> Option<String> {
         let t = token.trim();
@@ -263,13 +290,26 @@ impl SessionState {
             .contacts
             .iter()
             .filter(|c| {
-                let sas = if c.display_name.is_empty() {
+                let label = if c.display_name.is_empty() {
                     c.id.as_str()
                 } else {
                     c.display_name.as_str()
                 };
-                sas.to_ascii_lowercase().starts_with(&tl)
+                let sas = if c.ed25519 != [0u8; 32] && !c.onion.is_empty() {
+                    Some(crate::contact_link::sas_fingerprint(
+                        &c.ed25519,
+                        &c.x25519,
+                        &c.onion,
+                    ))
+                } else {
+                    None
+                };
+                label.to_ascii_lowercase().starts_with(&tl)
                     || c.id.to_ascii_lowercase().starts_with(&tl)
+                    || sas
+                        .as_ref()
+                        .map(|s| s.to_ascii_lowercase().starts_with(&tl))
+                        .unwrap_or(false)
             })
             .collect();
         if matches.len() == 1 {
@@ -277,6 +317,28 @@ impl SessionState {
         } else {
             None
         }
+    }
+
+    /// Set `display_name` for a contact id after [`validate_display_name`].
+    /// Never modifies id / onion / keys. Extreme: in-RAM only until exit (`for_disk` strips).
+    pub fn rename_contact_display_name(
+        &mut self,
+        contact_id: &str,
+        new_name: &str,
+    ) -> Result<(), &'static str> {
+        let name = validate_display_name(new_name)?;
+        let id = contact_id.trim();
+        if id.is_empty() {
+            return Err("unknown contact");
+        }
+        let c = self
+            .contacts
+            .iter_mut()
+            .find(|c| c.id == id)
+            .ok_or("unknown contact")?;
+        // Identity material stays put — label only.
+        c.display_name = name;
+        Ok(())
     }
 
     /// True if `contact_id` is on the durable block list.
@@ -1964,6 +2026,134 @@ mod tests {
         let disk = session.for_disk();
         assert!(disk.verified_ids.is_empty());
         assert!(session.is_verified_id("x"));
+    }
+
+    #[test]
+    fn validate_display_name_rules() {
+        assert_eq!(validate_display_name("  Alice  ").unwrap(), "Alice");
+        let max_ok = "a".repeat(MAX_DISPLAY_NAME_LEN);
+        assert_eq!(
+            validate_display_name(&max_ok).unwrap().chars().count(),
+            MAX_DISPLAY_NAME_LEN
+        );
+        assert_eq!(
+            validate_display_name("").unwrap_err(),
+            "empty display name"
+        );
+        assert_eq!(
+            validate_display_name("   ").unwrap_err(),
+            "empty display name"
+        );
+        let too_long = "x".repeat(MAX_DISPLAY_NAME_LEN + 1);
+        assert_eq!(
+            validate_display_name(&too_long).unwrap_err(),
+            "display name too long"
+        );
+        assert_eq!(
+            validate_display_name("bad\nname").unwrap_err(),
+            "display name has control characters"
+        );
+        assert_eq!(
+            validate_display_name("nul\0byte").unwrap_err(),
+            "display name has control characters"
+        );
+        assert_eq!(
+            validate_display_name("hashchat://contact/v1/abc").unwrap_err(),
+            "display name looks like a contact link"
+        );
+        assert_eq!(
+            validate_display_name("HASHCHAT://x").unwrap_err(),
+            "display name looks like a contact link"
+        );
+        assert_eq!(
+            validate_display_name("hashchat:sneaky").unwrap_err(),
+            "display name looks like a contact link"
+        );
+        // Normal punctuation OK
+        assert!(validate_display_name("Bob (work)").is_ok());
+    }
+
+    #[test]
+    fn rename_contact_display_name_updates_label_only() {
+        let id = LongTermIdentity::from_seed([0xD5u8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "me.onion",
+            vec![],
+        ));
+        let onion = "aliceaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion";
+        session.contacts.push(PersistedContact {
+            id: "c1".into(),
+            display_name: "A1B2-C3D4".into(),
+            onion: onion.to_string(),
+            x25519: [9u8; 32],
+            ed25519: [8u8; 32],
+        });
+        let before = session.contacts[0].clone();
+        session
+            .rename_contact_display_name("c1", "  Alice  ")
+            .unwrap();
+        let after = &session.contacts[0];
+        assert_eq!(after.display_name, "Alice");
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.onion, before.onion);
+        assert_eq!(after.x25519, before.x25519);
+        assert_eq!(after.ed25519, before.ed25519);
+        // SAS prefix still resolves after rename (recomputed fingerprint).
+        let sas = crate::contact_link::sas_fingerprint(&before.ed25519, &before.x25519, onion);
+        let prefix: String = sas.chars().take(4).collect();
+        assert_eq!(session.resolve_deny_token(&prefix).as_deref(), Some("c1"));
+        assert_eq!(session.resolve_deny_token("Ali").as_deref(), Some("c1"));
+        assert_eq!(
+            session
+                .rename_contact_display_name("c1", "hashchat://nope")
+                .unwrap_err(),
+            "display name looks like a contact link"
+        );
+        assert_eq!(session.contacts[0].display_name, "Alice");
+        assert_eq!(
+            session
+                .rename_contact_display_name("missing", "X")
+                .unwrap_err(),
+            "unknown contact"
+        );
+    }
+
+    #[test]
+    fn rename_contact_standard_durable_extreme_ram_only() {
+        use crate::net_mode::PostureProfile;
+        let dir = tmp_dir("rename-persist");
+        let id = LongTermIdentity::from_seed([0xD6u8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "r.onion",
+            vec![],
+        ));
+        session.contacts.push(PersistedContact {
+            id: "c1".into(),
+            display_name: "OLD".into(),
+            onion: "peer.onion".into(),
+            x25519: [3u8; 32],
+            ed25519: [4u8; 32],
+        });
+        session.rename_contact_display_name("c1", "Durable").unwrap();
+        save_session(&dir, PersistMode::Passphrase, b"rn-pass", &session).unwrap();
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"rn-pass").unwrap();
+        assert_eq!(loaded.contacts[0].display_name, "Durable");
+        assert_eq!(loaded.contacts[0].id, "c1");
+        assert_eq!(loaded.contacts[0].onion, "peer.onion");
+
+        // Extreme: rename stays in RAM; for_disk / save strips contacts.
+        session.net.set_posture(PostureProfile::Extreme);
+        session.rename_contact_display_name("c1", "Ephemeral").unwrap();
+        assert_eq!(session.contacts[0].display_name, "Ephemeral");
+        let disk = session.for_disk();
+        assert!(disk.contacts.is_empty());
+        save_session(&dir, PersistMode::Passphrase, b"rn-pass", &session).unwrap();
+        assert_eq!(session.contacts[0].display_name, "Ephemeral");
+        let again = load_session(&dir, PersistMode::Passphrase, b"rn-pass").unwrap();
+        assert!(again.contacts.is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 
 }

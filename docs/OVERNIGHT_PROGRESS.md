@@ -6,7 +6,7 @@
 
 ## Executive summary
 
-HashChat now has a usable Rust two-peer TUI with fail-closed Tor transport, encrypted session blob v7, 104 passing library tests, and an offline CI security gate. Shipped controls include local disappearing TTL, Extreme minimal persistence, block/mute/delete with ratchet wipe, a SAS verification gate, idle/manual lock, unlock-attempt backoff, `:clear` transcript scrub, best-effort `mlock`, and panic/signal secret scrubbing. The Haskell desktop remains transitional and non-recommended; this is a hardened preview path, not a claim of production readiness.
+HashChat now has a usable Rust two-peer TUI with fail-closed Tor transport, encrypted session blob v7, 107 passing library tests, and an offline CI security gate. Shipped controls include local disappearing TTL, Extreme minimal persistence, block/mute/delete with ratchet wipe, a SAS verification gate, idle/manual lock, unlock-attempt backoff, `:clear` transcript scrub, best-effort `mlock`, panic/signal secret scrubbing, and contact display-name rename (`:rename`). The Haskell desktop remains transitional and non-recommended; this is a hardened preview path, not a claim of production readiness.
 
 ## Shipped since the previous checkpoint
 
@@ -34,6 +34,7 @@ HashChat now has a usable Rust two-peer TUI with fail-closed Tor transport, encr
 - **Panic/signal scrub — `0e4ae16`:** normal drop, quit, Ctrl-C, SIGINT/SIGTERM, and unwind paths best-effort scrub passphrase, ratchet/session state, transcript, draft, SAS, and displayed contact data while restoring the terminal. Hard abort/kill and allocator copies cannot be guaranteed.
 - **Unlock backoff + `:clear` — `3aa0659`:** after consecutive wrong passphrases (Standard **5** / Extreme **3**), unlock imposes exponential cooldown (2s, 4s, 8s… capped **60s** Standard / **120s** Extreme); success resets the counter; failure status stays opaque. `:clear` / `:cls` zeroize and drop the in-memory transcript only. THREATMODEL: local UI rate-limit — not remote auth; disk `state.enc` remains offline-attackable.
 - **OPSEC-safe `:evidence` — `7caf285`:** `:evidence` / `:audit-status` prints unlock state, net mode/DNS/posture **tokens**, TTL/lock-timeout labels, contact/blocked/muted/unverified **counts**, Tor socks/control ok/fail, and HS listening/drops — never onions, links, SAS, passphrases, or bodies. Checklist: `docs/TWO_PEER_VALIDATION.md`; fill-in: `scripts/validation-evidence-template.txt`. Metadata about posture, not a proof of E2EE.
+- **Contact display rename — (pending tip):** `:rename` / `:rename-contact` set `PersistedContact.display_name` only (never id/onion/keys). Validate: trim non-empty, max 64 chars, no control chars, reject `hashchat://` lookalikes. Resolve like `:block` (selected or id/SAS/display prefix). Standard durable `save_session`; Extreme in-RAM until exit (`for_disk` still strips). Contact list shows the new label; success status omits onions/SAS. `:sas`/resolve still use recomputed fingerprints so rename cannot clobber compare material. `:evidence` unchanged (counts only).
 
 ## How to run
 

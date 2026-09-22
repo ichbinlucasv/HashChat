@@ -48,8 +48,9 @@ pub use ratchet::{
     build_wire_aad, decrypt_with_key, encrypt_with_key, DoubleRatchet, WIRE_VERSION_V2,
 };
 pub use session_persist::{
-    commit_outgoing, load_disk, load_session, save_disk, save_session, state_exists, wipe_disk,
-    IdentityOnionState, InboundDenyPolicy, PersistMode, PersistedContact, SessionState,
+    commit_outgoing, load_disk, load_session, save_disk, save_session, state_exists,
+    validate_display_name, wipe_disk, IdentityOnionState, InboundDenyPolicy, PersistMode,
+    PersistedContact, SessionState, MAX_DISPLAY_NAME_LEN,
 };
 pub use unlock_backoff::{unlock_backoff_delay_secs, UnlockBackoffPolicy};
 pub use tor_socks::{
