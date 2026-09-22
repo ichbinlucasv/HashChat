@@ -29,12 +29,13 @@
 //!
 //! Blob version: v1 = identity+onion only (H2); v2 = + contacts/ratchets/pending (H3);
 //! v3 = + network prefs ([`crate::net_mode::NetConfig`]: mode / DNS / posture).
-//! Load accepts v1/v2/v3; save always writes v3.
+//! v4 = + disappearing TTL seconds (u32 BE; 0 = off). Local policy only — not on the wire.
+//! Load accepts v1/v2/v3/v4; save always writes v4.
 //!
 //! Prefs are non-secret policy but live inside the wrapped blob so they cannot be
 //! silently toggled by swapping a plaintext sibling file under `hashchat_data/`.
 //! Missing prefs on v1/v2 load default to [`crate::net_mode::NetConfig::default`]
-//! (Tor + standard).
+//! (Tor + standard); missing TTL on v1–v3 loads as `0` (off).
 
 use crate::envelope;
 use crate::longterm_identity::LongTermIdentity;
@@ -51,6 +52,7 @@ const STATE_AAD: &[u8] = b"HashChat-v1-identity-onion-state";
 const BLOB_VERSION_V1: u8 = 1;
 const BLOB_VERSION_V2: u8 = 2;
 const BLOB_VERSION_V3: u8 = 3;
+const BLOB_VERSION_V4: u8 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PersistMode {
@@ -126,6 +128,9 @@ pub struct SessionState {
     /// plaintext sibling cannot silently toggle them (v3+).
     #[zeroize(skip)]
     pub net: NetConfig,
+    /// Local disappearing-message TTL in seconds (`0` = off). v4+; not sent on wire.
+    #[zeroize(skip)]
+    pub disappear_ttl_secs: u32,
 }
 
 impl SessionState {
@@ -136,6 +141,7 @@ impl SessionState {
             ratchets: Vec::new(),
             pending: Vec::new(),
             net: NetConfig::default(),
+            disappear_ttl_secs: 0,
         }
     }
 
@@ -147,6 +153,7 @@ impl SessionState {
             ratchets: Vec::new(),
             pending: Vec::new(),
             net,
+            disappear_ttl_secs: 0,
         }
     }
 
@@ -215,6 +222,7 @@ impl SessionState {
         // onion address is public routing material but still session residue — drop it.
         self.identity.onion.clear();
         self.net = NetConfig::default();
+        self.disappear_ttl_secs = 0;
     }
 }
 
@@ -255,7 +263,7 @@ fn read_len_str(buf: &[u8], pos: &mut usize) -> Result<String, &'static str> {
 
 fn serialize_blob(state: &SessionState) -> Vec<u8> {
     let mut plain = Vec::new();
-    plain.push(BLOB_VERSION_V3);
+    plain.push(BLOB_VERSION_V4);
     plain.extend_from_slice(&state.identity.seed);
     write_len_str(&mut plain, &state.identity.onion);
     write_len_bytes(&mut plain, &state.identity.onion_key);
@@ -284,9 +292,12 @@ fn serialize_blob(state: &SessionState) -> Vec<u8> {
         write_len_bytes(&mut plain, frame);
     }
 
-    // network prefs (v3)
+    // network prefs (v3+)
     let prefs = state.net.to_persist_bytes();
     write_len_bytes(&mut plain, &prefs);
+
+    // disappearing TTL (v4)
+    plain.extend_from_slice(&state.disappear_ttl_secs.to_be_bytes());
 
     plain
 }
@@ -296,7 +307,11 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         return Err("empty state blob");
     }
     let ver = plain[0];
-    if ver != BLOB_VERSION_V1 && ver != BLOB_VERSION_V2 && ver != BLOB_VERSION_V3 {
+    if ver != BLOB_VERSION_V1
+        && ver != BLOB_VERSION_V2
+        && ver != BLOB_VERSION_V3
+        && ver != BLOB_VERSION_V4
+    {
         return Err("bad state blob version");
     }
     if plain.len() < 33 {
@@ -374,7 +389,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         pending.push((onion, frame));
     }
 
-    let net = if ver == BLOB_VERSION_V3 {
+    let net = if ver == BLOB_VERSION_V3 || ver == BLOB_VERSION_V4 {
         let prefs = read_len_bytes(plain, &mut pos)?;
         NetConfig::from_persist_bytes(&prefs).map_err(|_| "bad net prefs")?
     } else {
@@ -382,12 +397,28 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         NetConfig::default()
     };
 
+    let disappear_ttl_secs = if ver == BLOB_VERSION_V4 {
+        if pos + 4 > plain.len() {
+            return Err("truncated disappear ttl");
+        }
+        let ttl = u32::from_be_bytes(plain[pos..pos + 4].try_into().unwrap());
+        pos += 4;
+        ttl
+    } else {
+        0
+    };
+
+    if pos != plain.len() {
+        return Err("trailing junk in state blob");
+    }
+
     Ok(SessionState {
         identity,
         contacts,
         ratchets,
         pending,
         net,
+        disappear_ttl_secs,
     })
 }
 
@@ -475,7 +506,7 @@ fn open_env(
     }
 }
 
-/// Save full session state (identity + contacts + ratchets + pending + net prefs). Always writes v3.
+/// Save full session state (identity + contacts + ratchets + pending + net prefs + TTL). Always writes v4.
 pub fn save_session(
     data_dir: &Path,
     mode: PersistMode,
@@ -491,7 +522,7 @@ pub fn save_session(
     Ok(())
 }
 
-/// Load full session state. Accepts v1 (identity-only), v2, and v3 (with net prefs) blobs.
+/// Load full session state. Accepts v1 (identity-only), v2, v3 (net prefs), and v4 (+ TTL) blobs.
 pub fn load_session(
     data_dir: &Path,
     mode: PersistMode,
@@ -958,10 +989,61 @@ mod tests {
         let loaded = load_session(&dir, PersistMode::Passphrase, b"v2-pass").unwrap();
         assert_eq!(loaded.identity.seed, identity.seed);
         assert_eq!(loaded.net, NetConfig::default());
-        // Re-save upgrades to v3.
+        // Re-save upgrades to v4.
         save_session(&dir, PersistMode::Passphrase, b"v2-pass", &loaded).unwrap();
         let again = load_session(&dir, PersistMode::Passphrase, b"v2-pass").unwrap();
         assert_eq!(again.net, NetConfig::default());
         let _ = fs::remove_dir_all(&dir);
     }
+    #[test]
+    fn v4_disappear_ttl_roundtrip() {
+        let dir = tmp_dir("v4_ttl");
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &LongTermIdentity::generate().unwrap(),
+            "ttl.onion",
+            vec![],
+        ));
+        session.disappear_ttl_secs = 300;
+        save_session(&dir, PersistMode::Passphrase, b"ttl-pass", &session).unwrap();
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"ttl-pass").unwrap();
+        assert_eq!(loaded.disappear_ttl_secs, 300);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v3_blob_loads_with_ttl_off() {
+        // Craft a real v3 plaintext (net prefs, no TTL) and wrap — load defaults TTL=0.
+        let dir = tmp_dir("v3_no_ttl");
+        let id = LongTermIdentity::from_seed([0xBBu8; 32]);
+        let identity =
+            IdentityOnionState::from_identity(&id, "old.onion", b"k".to_vec());
+        let mut plain = Vec::new();
+        plain.push(BLOB_VERSION_V3);
+        plain.extend_from_slice(&identity.seed);
+        write_len_str(&mut plain, &identity.onion);
+        write_len_bytes(&mut plain, &identity.onion_key);
+        plain.extend_from_slice(&0u32.to_be_bytes()); // contacts
+        plain.extend_from_slice(&0u32.to_be_bytes()); // ratchets
+        plain.extend_from_slice(&0u32.to_be_bytes()); // pending
+        let prefs = NetConfig::default().to_persist_bytes();
+        write_len_bytes(&mut plain, &prefs);
+        let env = envelope::seal(b"v3pass", &plain).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        write_private(&dir.join("state.enc"), &env).unwrap();
+
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"v3pass").unwrap();
+        assert_eq!(loaded.disappear_ttl_secs, 0);
+        assert_eq!(loaded.net, NetConfig::default());
+        // Re-save upgrades to v4; TTL stays off unless set.
+        save_session(&dir, PersistMode::Passphrase, b"v3pass", &loaded).unwrap();
+        let again = load_session(&dir, PersistMode::Passphrase, b"v3pass").unwrap();
+        assert_eq!(again.disappear_ttl_secs, 0);
+
+        let mut wiped = loaded;
+        wiped.disappear_ttl_secs = 60;
+        wiped.wipe_memory_secure();
+        assert_eq!(wiped.disappear_ttl_secs, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
 }

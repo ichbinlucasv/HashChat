@@ -672,4 +672,27 @@ mod tests {
         let r2 = DoubleRatchet::from_bytes(&bytes).expect("v2");
         assert_eq!(r2.to_bytes(), bytes);
     }
+    #[test]
+    fn wipe_skipped_key_zeroizes_and_removes() {
+        let mut r = DoubleRatchet::new();
+        r.init_symmetric(&[0x55u8; 32]);
+        r.store_skipped_key(7, [0xABu8; RATCHET_KEY_LEN]);
+        r.wipe_skipped_key(7);
+        assert!(r.get_skipped_key(7).is_none());
+        // wiping a missing number is a no-op
+        r.wipe_skipped_key(99);
+    }
+
+    #[test]
+    fn wipe_skipped_key_leaves_other_entries() {
+        let mut r = DoubleRatchet::new();
+        r.init_symmetric(&[9u8; 32]);
+        r.store_skipped_key(3, [0x11u8; RATCHET_KEY_LEN]);
+        r.store_skipped_key(4, [0x22u8; RATCHET_KEY_LEN]);
+        r.wipe_skipped_key(3);
+        assert!(r.get_skipped_key(3).is_none());
+        let k = r.get_skipped_key(4).expect("key 4 remains");
+        assert_eq!(k[0], 0x22);
+    }
+
 }

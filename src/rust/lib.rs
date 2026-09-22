@@ -17,6 +17,7 @@ mod tor_socks;
 mod hidden_service;
 mod wire;
 mod net_mode;
+mod disappearing;
 
 pub use longterm_identity::LongTermIdentity;
 pub use longterm_identity::{export_encrypted as longterm_export_encrypted, import_encrypted as longterm_import_encrypted};
@@ -42,6 +43,7 @@ pub use wire::{frame_v2, unframe_v2};
 pub use net_mode::{
     DnsPreference, NetConfig, NetModeError, NetworkMode, PostureProfile,
 };
+pub use disappearing::{parse_ttl_token, format_ttl, extreme_default_ttl, EXTREME_DEFAULT_TTL_SECS};
 
 // long-13: gated quantum module. Only compiled with `cargo build --features quantum`.
 // The module itself documents the strict constant-time / zeroize / side-channel
@@ -1381,6 +1383,7 @@ pub extern "C" fn rust_session_state_save(
             ratchets,
             pending,
             net: NetConfig::default(),
+            disappear_ttl_secs: 0,
         };
         let mode = PersistMode::from_flags(insecure_dev != 0);
         save_session(Path::new(dir), mode, pass, &state).is_ok()

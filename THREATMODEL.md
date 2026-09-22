@@ -34,6 +34,7 @@
 - Desktop default at-rest path is **passphrase-wrapped** (`state.enc`). Raw `machine.key` exists only behind `HASHCHAT_INSECURE_DEV_PERSIST` (insecure-dev). Empty passphrase refused on the secure path.
 - Per-contact isolated ratchet state.
 - Skipped message key handling for out-of-order delivery.
+- **Disappearing messages (Rust TUI, honest):** Local TTL preference (`:disappear` / `:ttl`) persists in session blob v4 as seconds (0=off). On expiry the TUI drops/zeroizes in-memory plaintext and calls `wipe_skipped_key` when a ratchet message number is known. **Wire frames do not carry TTL** — this is sender/receiver local policy only; a peer is not forced to erase. Extreme defaults TTL to 1h when still off (aligns with reduced retention). Not a substitute for wipe or forward secrecy.
 
 ### 2. Metadata Resistance (Current State)
 - All communication is intended to go over Tor hidden services (v3).

@@ -2,7 +2,7 @@
 
 **Snapshot:** 22 September 2026 (Europe/Zurich)  
 **Branch:** `codeberg-primary`  
-**Tip:** `a07a06be18e5f05691e1e825a0785519c4f163b5`
+**Tip:** `PENDING_DISAPPEAR` (set at commit)
 
 ## Executive summary
 
@@ -25,6 +25,9 @@ The Rust desktop path moved from scaffold to a usable, Tor-first two-peer TUI. T
 
 - **CI security gate (fail-closed, offline) — `a07a06b`:** Forgejo required `build` job runs `scripts/ci-security-gate.sh` before Rust tests/TUI build (ripgrep + policy anchors: ClearnetRefused/I2pNotImplemented + TUI `require_messenger_transport`, `HASHCHAT_INSECURE_DEV_PERSIST` opt-in only, cookie-only Tor AUTHENTICATE). Extra `tor_socks` unit tests refuse non-onion IP/short onion without network. No clippy introduced; no push.
 
+- **Disappearing messages (Rust TUI) — `PENDING_DISAPPEAR`:** Local TTL via `:disappear` / `:ttl` (off|30s|5m|1h|…). Session blob **v4** stores `disappear_ttl_secs` (0=off); v1–v3 load TTL=0. In-memory chat lines carry `expires_at` + optional ratchet msg number; on tick, expired plaintext is zeroized/dropped and `DoubleRatchet::wipe_skipped_key` runs when msg_number is known. Extreme defaults TTL to 1h when still off. **Honesty:** TTL is not on the wire — peer erase is not enforced. Message bodies stay in-memory transcript only (no durable body log). Tor-first / fail-closed unchanged.
+
+
 ## How to run
 
 From a checkout of `codeberg-primary`, with a compatible Rust toolchain and a local Tor service configured for SOCKS plus cookie-authenticated ControlPort:
@@ -44,7 +47,7 @@ cargo build --release --locked --bin hashchat-tui --features tui
 
 Inside the TUI, unlock or create an identity, use `:listen`, then exchange signed `hashchat://` contacts with the other peer. The default transport is Tor and the application fails closed if the required Tor path is unavailable. Do not copy Tor cookies, onion private material, passphrases, or message bodies into logs, tickets, or chat.
 
-The tip commit records `cargo test --lib` passing with 64 tests and a successful `cargo build --bin hashchat-tui --features tui`, plus offline `./scripts/ci-security-gate.sh`.
+The tip commit records `cargo test --lib` passing with 72 tests and a successful `cargo build --bin hashchat-tui --features tui`, plus offline `./scripts/ci-security-gate.sh`.
 
 ## Remaining backlog
 
@@ -55,7 +58,7 @@ The tip commit records `cargo test --lib` passing with 64 tests and a successful
 
 ### Rust/TUI and posture
 
-- Extreme TUI metadata surfaces gated (contact export / groups / voice stubs / short SAS). Remaining: deeper Extreme persistence minimization and Android contact-QR parity — not claimed done here.
+- Extreme TUI metadata surfaces gated (contact export / groups / voice stubs / short SAS). Local disappearing TTL enabled (default 1h under Extreme when previously off). Remaining: deeper Extreme persistence minimization, wire-enforced TTL (not planned without format bump), and Android contact-QR / disappear parity — not claimed done here.
 - Haskell retirement: criteria 1+2+3 met; 4+5 open (INSTALL.md). Keep transitional / non-recommended opt-in hatch; do not delete.
 
 ### Android and cross-device parity

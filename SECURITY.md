@@ -46,8 +46,7 @@ We take reports seriously and will respond within 48 hours.
 
 **Default (secure path):** long-term identity seed, onion material, **contacts**,
 **per-contact Double Ratchet state**, and **pending outbound frames** are wrapped with
-**Argon2id(passphrase) → AES-256-GCM** into `hashchat_data/state.enc` (blob v2; v1
-identity-only blobs still load). Empty passphrase is refused. No raw `machine.key`
+**Argon2id(passphrase) → AES-256-GCM** into `hashchat_data/state.enc` (blob v4: identity + contacts/ratchets/pending + net prefs + disappear TTL; v1–v3 still load with defaults). Empty passphrase is refused. No raw `machine.key`
 is written on this path.
 
 **Insecure-dev only:** set `HASHCHAT_INSECURE_DEV_PERSIST=1` to use a raw
@@ -78,6 +77,8 @@ forward-secrecy continuity across restart.
 
 Message logs may still use separate Argon2id envelopes under profile dirs; the
 authoritative restart path for contacts/ratchets/pending is `state.enc`.
+
+**Disappearing messages (Rust TUI):** `:disappear` / `:ttl` sets a local TTL (persisted in `state.enc` blob v4). Expiry erases UI plaintext and attempts `wipe_skipped_key` on the contact ratchet when `msg_number` is known. **TTL is not on the wire** — peers are not forced to erase. Bodies are not durably logged beyond the in-memory transcript. Extreme defaults to 1h when TTL was off.
 
 ## Responsible Disclosure
 
