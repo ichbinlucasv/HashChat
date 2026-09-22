@@ -1839,6 +1839,78 @@ impl App {
         }
     }
 
+
+    /// OPSEC-safe posture dump for two-peer validation evidence.
+    /// Prints counts and tokens only — never onions, links, SAS, passphrases, or bodies.
+    /// Not a cryptographic proof of E2EE; see docs/TWO_PEER_VALIDATION.md.
+    fn handle_evidence(&mut self) {
+        self.check_tor(true);
+        let probe = tor_probe(SOCKS_HOST, self.socks_port, CONTROL_PORT);
+        let unlocked = self.session.is_some();
+        let unlock_state = if unlocked { "unlocked" } else { "locked" };
+
+        let version = env!("CARGO_PKG_VERSION");
+        let crate_name = env!("CARGO_PKG_NAME");
+        self.push_msg(format!(
+            "evidence: hashchat-tui · crate={crate_name} · version={version}"
+        ));
+        self.push_msg(format!("unlock={unlock_state}"));
+        // Tokens only — never echo custom DNS address (may be identifying).
+        self.push_msg(format!(
+            "net: mode={} · dns={} · posture={}",
+            self.net.mode.as_str(),
+            self.net.dns.as_str(),
+            self.net.posture.as_str()
+        ));
+        self.push_msg(format!(
+            "disappear={} · lock-timeout={}",
+            format_ttl(self.disappear_ttl_secs),
+            format_lock_timeout(self.lock_timeout_secs)
+        ));
+
+        let (contacts, blocked, muted, unverified) = match self.session.as_ref() {
+            Some(s) => {
+                let unverified = s
+                    .contacts
+                    .iter()
+                    .filter(|c| !s.is_verified_id(&c.id))
+                    .count();
+                (
+                    s.contacts.len(),
+                    s.blocked_ids.len(),
+                    s.muted_ids.len(),
+                    unverified,
+                )
+            }
+            None => (0, 0, 0, 0),
+        };
+        self.push_msg(format!(
+            "contacts={contacts} · blocked={blocked} · muted={muted} · unverified={unverified}"
+        ));
+
+        let socks = if probe.socks_ok { "ok" } else { "fail" };
+        let control = if probe.control_ok { "ok" } else { "fail" };
+        self.push_msg(format!("tor: socks={socks} · control={control}"));
+
+        let listening = self.hs.is_some();
+        let drops = self
+            .hs
+            .as_ref()
+            .map(|h| h.dropped_frame_count())
+            .unwrap_or(self.hs_drops_seen);
+        self.push_msg(format!(
+            "hs: listening={} · drops={drops}",
+            if listening { "yes" } else { "no" }
+        ));
+        self.push_msg(
+            "evidence: metadata only — not a proof of E2EE (see docs/TWO_PEER_VALIDATION.md)",
+        );
+        self.status_msg = format!(
+            "evidence · unlock={unlock_state} · socks={socks} · control={control} · hs={}",
+            if listening { "yes" } else { "no" }
+        );
+    }
+
     fn handle_command(&mut self, cmd: &str) {
         let c = cmd.trim();
         match c {
@@ -1852,6 +1924,7 @@ impl App {
                 debug_assert!(self.messages.is_empty());
                 self.status_msg = "Chat transcript cleared (session intact).".into();
             }
+            ":evidence" | ":audit-status" => self.handle_evidence(),
             ":wipe" => {
                 // Loud confirm: blank chat/status residue so the modal is not overlaid on plaintext.
                 self.clear_transcript_secure();
@@ -1993,6 +2066,9 @@ impl App {
                 self.push_msg("  :send-unverified <msg>  Standard only — Extreme: no bypass");
                 self.push_msg("  :delete-contact [id]    remove contact + wipe ratchet (confirm)");
                 self.push_msg("  :clear / :cls           zeroize in-memory chat transcript only");
+                self.push_msg(
+                    "  :evidence / :audit-status  OPSEC posture dump (counts/tokens only)",
+                );
                 self.push_msg("  :wipe                   nuclear local wipe (confirm)");
                 self.push_msg("  :quit                   exit");
                 self.push_msg(

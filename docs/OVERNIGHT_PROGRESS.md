@@ -33,6 +33,7 @@ HashChat now has a usable Rust two-peer TUI with fail-closed Tor transport, encr
 - **Idle auto-lock and `:lock` — `76cd1aa`:** default 5m idle/manual lock scrubs live secrets and stops Tor listening; blob v7 stores the timeout, and Extreme caps it at 1m. Disk state remains encrypted and untouched.
 - **Panic/signal scrub — `0e4ae16`:** normal drop, quit, Ctrl-C, SIGINT/SIGTERM, and unwind paths best-effort scrub passphrase, ratchet/session state, transcript, draft, SAS, and displayed contact data while restoring the terminal. Hard abort/kill and allocator copies cannot be guaranteed.
 - **Unlock backoff + `:clear` — `3aa0659`:** after consecutive wrong passphrases (Standard **5** / Extreme **3**), unlock imposes exponential cooldown (2s, 4s, 8s… capped **60s** Standard / **120s** Extreme); success resets the counter; failure status stays opaque. `:clear` / `:cls` zeroize and drop the in-memory transcript only. THREATMODEL: local UI rate-limit — not remote auth; disk `state.enc` remains offline-attackable.
+- **OPSEC-safe `:evidence` — (this tip):** `:evidence` / `:audit-status` prints unlock state, net mode/DNS/posture **tokens**, TTL/lock-timeout labels, contact/blocked/muted/unverified **counts**, Tor socks/control ok/fail, and HS listening/drops — never onions, links, SAS, passphrases, or bodies. Checklist: `docs/TWO_PEER_VALIDATION.md`; fill-in: `scripts/validation-evidence-template.txt`. Metadata about posture, not a proof of E2EE.
 
 ## How to run
 
@@ -50,14 +51,16 @@ cargo build --release --locked --bin hashchat-tui --features tui
 ./target/release/hashchat-tui
 ```
 
-Unlock or create an identity, run `:listen`, exchange signed `hashchat://` contacts, compare SAS out of band, then `:verify` before sending. Never copy Tor cookies, onion private material, passphrases, or message bodies into evidence.
+Unlock or create an identity, run `:listen`, exchange signed `hashchat://` contacts, compare SAS out of band, then `:verify` before sending. Use `:evidence` for posture metadata. Never copy Tor cookies, onion private material, passphrases, SAS values, or message bodies into evidence.
 
 Recorded validation at the fetched tip: `cargo test --lib` passed 104 tests, `cargo build --bin hashchat-tui --features tui` succeeded, and `./scripts/ci-security-gate.sh` passed offline.
 
 ## When Lucas wakes
 
-1. On two separate physical hosts using real local Tor services, check out `3aa0659`; create disposable identities, exchange signed contacts, compare SAS out of band, `:verify`, and test bidirectional send/receive, restart/retry, TTL expiry, lock/unlock, block/mute/delete, and fail-closed behavior with Tor unavailable.
-2. Record only non-sensitive evidence: tip SHA, host/OS/Tor versions, UTC-offset timestamps, commands and pass/fail results, redacted screenshots, and observed failure modes—never cookies, keys, onions, passphrases, SAS values, or message bodies.
+Follow **`docs/TWO_PEER_VALIDATION.md`** (fill-in: `scripts/validation-evidence-template.txt`; in-TUI `:evidence` / `:audit-status`).
+
+1. On two separate physical hosts using real local Tor services, check out the tip below; create disposable identities, exchange signed contacts, compare SAS out of band, `:verify`, and test bidirectional send/receive, restart/retry, TTL expiry, lock/unlock, block/mute/delete, and fail-closed behavior with Tor unavailable.
+2. Record only non-sensitive evidence: tip SHA, host/OS/Tor versions, UTC-offset timestamps, `:evidence` lines, commands and pass/fail results, redacted screenshots, and observed failure modes—never cookies, keys, onions, passphrases, SAS values, or message bodies.
 3. If that validation passes, prepare the v0.2 preview checklist, release notes, SBOM/diff artifacts, and signing plan; keep the release labeled preview until hardware findings are reviewed.
 
 ## Remaining backlog

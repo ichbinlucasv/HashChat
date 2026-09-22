@@ -1,0 +1,52 @@
+HashChat two-peer Tor validation — OPSEC-safe evidence fill-in
+==============================================================
+Use with docs/TWO_PEER_VALIDATION.md. NEVER record: cookies, keys,
+onions, passphrases, SAS values, message bodies, frame bytes, or
+contact names/ids that might encode secrets. Prefer :evidence counts.
+
+--- Environment ---
+Tester / role (Peer A | Peer B | observer): _______________
+Host label (no serials / no personal names required): _______________
+OS / distro / version: _______________
+Kernel (optional): _______________
+Tor version: _______________
+Tor SOCKS port (number only): _______________
+ControlPort present (yes/no; cookie auth yes/no — no paths/cookie bytes): _______________
+HashChat tip SHA (short): _______________
+HashChat tip SHA (full): _______________
+Build method (make tui | cargo | run-tui | other): _______________
+Start time (UTC offset, e.g. 2026-09-22 08:00 +0200): _______________
+End time (UTC offset): _______________
+
+--- :evidence paste (non-sensitive lines only) ---
+Peer A:
+<paste>
+
+Peer B:
+<paste>
+
+--- Checklist pass/fail ---
+(checkout tip)                         PeerA: P/F ____  PeerB: P/F ____
+(Tor SOCKS + cookie ControlPort)       PeerA: P/F ____  PeerB: P/F ____
+(create disposable identities)         PeerA: P/F ____  PeerB: P/F ____
+(exchange signed contacts)             PeerA: P/F ____  PeerB: P/F ____
+(SAS OOB compare — values NOT logged)  PeerA: P/F ____  PeerB: P/F ____
+(:verify)                              PeerA: P/F ____  PeerB: P/F ____
+(bidirectional send/recv)              PeerA: P/F ____  PeerB: P/F ____
+(restart / :retry)                     PeerA: P/F ____  PeerB: P/F ____
+(TTL / :disappear local)               PeerA: P/F ____  PeerB: P/F ____
+(lock / unlock)                        PeerA: P/F ____  PeerB: P/F ____
+(block / mute / delete)                PeerA: P/F ____  PeerB: P/F ____
+(Tor-down fail-closed)                 PeerA: P/F ____  PeerB: P/F ____
+
+--- Observed failure modes (redacted) ---
+-
+
+
+--- Notes (no secrets) ---
+-
+
+
+--- Sign-off ---
+Overall result (pass / fail / blocked): _______________
+Ready for v0.2 preview checklist consideration (yes/no): _______________
