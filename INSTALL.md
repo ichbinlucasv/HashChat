@@ -416,12 +416,17 @@ cargo build --release --locked --bin hashchat-tui --features tui
 
 ### 4. Reproducible Flatpak / Nix (optional)
 
+Default Nix package / `devShell` is **Rust-only** (`hashchat-tui`). Cabal/GHC are **not** on the default shell PATH.
+
 ```bash
-nix build .#hashchat-flatpak   # Pure Nix .flatpak
+nix build .#hashchat-tui       # default package = Rust TUI wrapper
+nix build .#hashchat-flatpak   # Pure Nix .flatpak (Rust prebuilts)
 flatpak install --user result/hashchat-tui.flatpak
 flatpak run org.hashchat.HashChat
 
-nix build .#hashchat-tui       # flake TUI wrapper (when available)
+nix develop                   # Rust + Tor + flatpak-builder (no Cabal)
+# Transitional Cabal parity only:
+nix develop .#haskellDev
 ```
 
 **Host Tor is still required** — see Flatpak section.
@@ -431,12 +436,10 @@ nix build .#hashchat-tui       # flake TUI wrapper (when available)
 Legacy Brick TUI over the Rust FFI — **transitional / not recommended**. Scripts and docs do not prefer this path. Kept in-tree so Cabal targets can still compile for parity checks until removal criteria are met.
 
 ```bash
-# Install GHC/Cabal only if you intentionally maintain the Brick TUI
-cabal update
-cabal build -f-tui hashchat-tui
-# Launcher opt-in (never automatic while cargo can build):
+# Opt-in only — not a user/release path (criterion 2 MET)
+nix develop .#haskellDev          # optional Cabal/GHC shell
+./build.sh --haskell              # or: ./build.sh tui --haskell
 HASHCHAT_ALLOW_HASKELL=1 ./run-tui
-# Or: ./build.sh tui --haskell
 ```
 
 ---
@@ -506,7 +509,7 @@ Early development. Needs NDK, Rust / `cargo-ndk`, secure storage + JNI. See `./b
 | Tor / `:listen` fails | Is `tor` active? Is TCP `9051` listening? Is `CookieAuthentication 1` set? Can your user **read** the cookie file (group membership)? Never log cookie bytes. |
 | Cookie “unreadable” | Add user to `debian-tor` (Debian/Ubuntu) or `tor` (Fedora/Arch as applicable); re-login; confirm with `test -r` on the cookie path — do not `cat` it. |
 | Tails / Whonix ControlPort denied | ControlPort may be filtered; HashChat needs cookie auth + `ADD_ONION`. Do not bypass via clearnet. |
-| Cabal dependency hell (legacy only) | `cabal clean` + `rm -rf dist-newstyle` + `cabal update` |
+| Cabal dependency hell (opt-in parity only) | See § Transitional Haskell; not needed for recommended installs |
 | Wrong branch | `git checkout codeberg-primary && git pull` |
 
 ---
@@ -525,12 +528,12 @@ Prefer Qubes disposables or Tails for high-risk builds.
 
 ## Haskell desktop removal criteria
 
-The Haskell tree (`hashchat.cabal`, `src/haskell/`, `app-desktop/`) is **not deleted** (still too risky as a drive-by). It remains compile-capable but **demoted**. Status below reflects the Rust TUI as of the overnight Extreme/TUI posture pass.
+The Haskell tree (`hashchat.cabal`, `src/haskell/`, `app-desktop/`) is **not deleted** (still too risky as a drive-by). It remains compile-capable but **demoted**. Status below reflects the Rust-only release surface (criterion 2 MET) plus Extreme/TUI posture.
 
 Remove the Haskell desktop path only when **all** of the following hold:
 
 1. **MET** — Rust `hashchat-tui --features tui` covers the documented two-peer Tor path (`:listen`, contacts, send/recv, pending retry) without relying on Brick/Cabal.
-2. **PARTIAL / still open** — Distro installers and `./run-tui` prefer Rust and never fall back to Cabal while `cargo` can build. Opt-in Haskell remains via `HASHCHAT_ALLOW_HASKELL=1` / `./build.sh --haskell`. Flatpak/Nix/SBOM scripts still mention Cabal in transitional notes — not yet a Cabal-free release surface.
+2. **MET** — Distro installers, `./run-tui`, `./build.sh`, Flatpak/Nix default package + `devShell`, and CI no longer present Cabal as a user or release path. Remaining opt-in escape hatch only: `HASHCHAT_ALLOW_HASKELL=1`, `./build.sh --haskell`, and `nix develop .#haskellDev` (parity / transitional; documented here, not on the happy path).
 3. **MET (current judgment)** — No open blocker that *requires* the Brick TUI for security review, release signing, or compatibility testing; Rust TUI is the review/demo path.
 4. **OPEN** — A dedicated PR on `codeberg-primary` that documents deletion, updates SBOM/scripts that still mention Haskell, and confirms `cargo test --lib` + release TUI build stay green has **not** been filed.
 5. **OPEN** — Maintainer has **not** explicitly approved tree removal.

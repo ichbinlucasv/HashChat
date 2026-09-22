@@ -1,12 +1,11 @@
 {
-  description = "HashChat - Maximum anonymity messenger (Haskell + Rust + Tor)";
+  description = "HashChat - Maximum anonymity messenger (Rust + Tor; Haskell opt-in / transitional)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    # For real reproducible Haskell + Rust in future:
+    # Optional overlays for future hardening (not required for default Rust path):
     # rust-overlay.url = "github:oxalica/rust-overlay";
-    # haskellNix.url = "github:input-output-hk/haskell.nix";
   };
 
   outputs = { self, nixpkgs, flake-utils }:
@@ -19,11 +18,12 @@
 
         # Reproducible pinned toolchains (edit these for exact builds)
         rustVersion = "1.82.0";
-        ghcVersion  = "ghc96";
 
       in
       {
-        packages = {
+        packages = rec {
+          default = hashchat-tui;
+
           # Real Rust FFI lib (the crypto heart)
           rust-lib = pkgs.rustPlatform.buildRustPackage {
             pname = "hashchat-rust";
@@ -41,12 +41,11 @@
             '';
           };
 
-          # The TUI (requires the Rust lib to be in rust-lib/ at build time)
+          # Default package: native Rust TUI only (hashchat-tui --features tui).
+          # No Cabal / GHC on the release path.
           hashchat-tui = pkgs.writeShellScriptBin "hashchat-tui" ''
             set -euo pipefail
-            echo "Building HashChat TUI via Nix (reproducible path)..."
-            # In a real flake we would use haskell.nix or cabal2nix + the rust-lib above
-            # For now we call the audited build.sh (still the recommended path)
+            echo "Building HashChat Rust TUI via Nix (release path)..."
             ${pkgs.bash}/bin/bash ./build.sh tui
             echo "Run with: ./run-tui"
           '';
@@ -115,27 +114,43 @@
           };
         };
 
+        # Default shell: Rust + Tor + Flatpak tooling only (no Cabal release path).
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             rustc cargo
-            ghc ghc96 cabal-install
             pkg-config openssl
-            # For Tor testing
             tor
-            # For end-to-end Flatpak builds (reproducible distribution)
             flatpak-builder
             flatpak
           ];
 
           shellHook = ''
-            echo "=== HashChat Nix dev shell (maximum reproducible OPSEC) ==="
-            echo "Rust + GHC + Cabal + flatpak-builder ready."
-            echo "To build the full installable Flatpak end-to-end with NO external scripts:"
-            echo "  nix build .#hashchat-flatpak"
-            echo "  # Produces result/hashchat-tui.flatpak (pure Nix, pinned tools)"
+            echo "=== HashChat Nix dev shell (Rust release path) ==="
+            echo "Rust + Tor + flatpak-builder ready. Cabal is NOT on the default PATH."
+            echo "Build TUI:  nix build .#hashchat-tui   # or: ./build.sh tui / make tui"
+            echo "Flatpak:    nix build .#hashchat-flatpak"
             echo "  flatpak install --user result/hashchat-tui.flatpak"
-            echo "Recommended: still use ./build.sh tui ONLY for quick dev inside Tails/Qubes disposable."
-            echo "This flake is the ONLY path for reproducible, auditable Flatpak distribution."
+            echo "Transitional Haskell parity (dev-only): nix develop .#haskellDev"
+            echo "  or: HASHCHAT_ALLOW_HASKELL=1 / ./build.sh --haskell  (see INSTALL.md)"
+          '';
+        };
+
+        # Opt-in transitional shell for Cabal parity checks only — not a release path.
+        # Documented in INSTALL.md; criterion 2 keeps this off the default surface.
+        devShells.haskellDev = pkgs.mkShell {
+          buildInputs = with pkgs; [
+            rustc cargo
+            ghc ghc96 cabal-install
+            pkg-config openssl
+            tor
+          ];
+
+          shellHook = ''
+            echo "=== HashChat haskellDev (TRANSITIONAL / NOT RECOMMENDED) ==="
+            echo "Cabal/GHC present for parity checks only. Desktop release path is Rust."
+            echo "  ./build.sh --haskell"
+            echo "  HASHCHAT_ALLOW_HASKELL=1 ./run-tui"
+            echo "See INSTALL.md § Transitional Haskell desktop."
           '';
         };
 

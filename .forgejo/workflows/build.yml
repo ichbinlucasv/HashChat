@@ -2,96 +2,59 @@ name: Build HashChat (Codeberg / Forgejo)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, codeberg-primary ]
   pull_request:
+  workflow_dispatch:
 
 jobs:
+  # Required release path: Rust library + hashchat-tui + tests + audit.
+  # Cabal/GHC are intentionally NOT installed or required here (INSTALL criterion 2).
   build:
-    # On Forgejo/Codeberg we don't have the exact same github.repository filter.
-    # We rely on repo settings + branch protection instead.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache ghcup and cargo toolchains (supply chain + speed)
+      - name: Cache cargo toolchain
         uses: actions/cache@v4
         with:
           path: |
-            ~/.ghcup
             ~/.cargo
-          key: ${{ runner.os }}-ghcup-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-ghcup-cargo-
+            ${{ runner.os }}-cargo-
 
-      - name: Install dependencies (pinned GHC 9.8.4 + Rust - improved supply chain hygiene)
+      - name: Install dependencies (Rust only — release path)
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl gcc make libgmp-dev zlib1g-dev libncurses-dev pkg-config
+          sudo apt-get install -y curl gcc make pkg-config libssl-dev
 
-          # Supply chain hardened direct ghcup download with SHA256 verification.
-          # This hash must be refreshed when we intentionally upgrade ghcup.
-          GHCUP_SHA256="480e05e414d2efa5abbda0006984a3343cd4973ead7b5c48d65a55a47b40ce59"
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain stable
+          # shellcheck source=/dev/null
+          source "$HOME/.cargo/env"
+          echo "Using Cargo: $(cargo --version)"
 
-          mkdir -p "$HOME/.ghcup/bin"
-          curl -sSL "https://downloads.haskell.org/~ghcup/$(uname -m)-linux-ghcup" -o /tmp/ghcup
+      - name: Build and test Rust release path
+        run: |
+          # shellcheck source=/dev/null
+          source "$HOME/.cargo/env"
+          export PATH="$HOME/.cargo/bin:$PATH"
 
-          echo "$GHCUP_SHA256  /tmp/ghcup" | sha256sum -c --status || {
-            echo "!!! ghcup binary checksum verification FAILED !!!"
-            echo "This is a supply chain integrity failure. Aborting."
+          echo "Cargo: $(cargo --version)"
+
+          cargo build --release --locked
+          mkdir -p rust-lib
+          cp target/release/libhashchat_rust.so rust-lib/ || {
+            echo "FATAL: libhashchat_rust.so missing after cargo build"
             exit 1
           }
 
-          install -m 755 /tmp/ghcup "$HOME/.ghcup/bin/ghcup"
-          export PATH="$HOME/.ghcup/bin:$PATH"
+          cargo build --release --locked --bin hashchat-tui --features tui
+          test -x target/release/hashchat-tui
 
-          ghcup install ghc 9.8.4 --set
-          ghcup install cabal 3.10.3.0 --set
-
-          # Rust - controlled user-local install (same as GitHub CI)
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none
-          source "$HOME/.cargo/env"
-
-          echo "Using GHC: $(ghc --version)"
-          echo "Using Cabal: $(cabal --version)"
-
-      - name: Build everything safely
-        run: |
-          # Make sure our direct ghcup binary and cargo are in PATH
-          export PATH="$HOME/.ghcup/bin:$HOME/.cargo/bin:$PATH"
-
-          echo "GHC: $(ghc --version 2>/dev/null || echo 'not found')"
-          echo "Cabal: $(cabal --version 2>/dev/null || echo 'not found')"
-          echo "Cargo: $(cargo --version 2>/dev/null || echo 'not found')"
-
-          # Rust core (always works, no system deps needed beyond what's in the runner)
-          cargo build --release
-
-          # Stage the Rust FFI library so Cabal finds it (extra-lib-dirs: rust-lib in the .cabal file).
-          # CI resilience improvement: fail hard if the core Rust lib is missing.
-          mkdir -p rust-lib
-          cp target/release/libhashchat_rust.so rust-lib/ || { echo "FATAL: libhashchat_rust.so missing after cargo build"; exit 1; }
-
-          # Haskell: update index first (critical)
-          cabal update
-
-          # Core library + CLI only (TUI has heavier deps)
-          cabal build -f-tui hashchat
-          cabal build -f-tui hashchat-cli
-
-          echo "TUI build skipped in CI (use -f+tui locally with proper system deps)."
-
-          # Note on pre-tag checks:
-          # The hard gates (TESTING_EVIDENCE log + local .pre-tag-check-local-ran-<sha> marker)
-          # live in scripts/pre-tag-check.sh and are enforced before any signed tag.
-          # We cannot easily fail the Forgejo build on missing local marker (different from GitHub).
-
-          # Note: We no longer use Python. All builds use pure Bash + Cargo + Cabal.
-
+          cargo test --lib
           cargo test --release
 
-          # Supply-chain (arch-3): Dependency audit (cargo-audit) - BLOCKING
-          # We use `--deny warnings` which fails the build on any known vulnerability.
-          # Use cargo-binstall (no version pin) so we always get a version that can parse the current advisory DB.
+          # Supply-chain: cargo-audit (blocking)
           set -e
           cargo install cargo-binstall --locked
           cargo binstall cargo-audit --locked -y
@@ -99,7 +62,6 @@ jobs:
             echo ""
             echo "!!! CRITICAL: cargo audit found security advisories !!!"
             echo "The build is failing because of this. Review the output above."
-            echo "For v0.2-preview we still allow some lower-severity noise if explicitly accepted in RELEASE_PROCESS.md."
             exit 1
           }
           echo "cargo audit passed (no advisories)"
@@ -107,6 +69,37 @@ jobs:
 
         env:
           CARGO_TERM_COLOR: always
+
+  # Optional / manual: transitional Cabal parity only. Never a required release check.
+  # Trigger via workflow_dispatch or label; do not gate merges on this job.
+  haskell-parity:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Transitional Cabal parity (opt-in only)
+        run: |
+          echo "This job is manual/opt-in. Prefer: ./build.sh --haskell locally"
+          echo "or: nix develop .#haskellDev"
+          echo "See INSTALL.md § Transitional Haskell desktop."
+          sudo apt-get update
+          sudo apt-get install -y curl gcc make libgmp-dev zlib1g-dev libncurses-dev pkg-config libssl-dev
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain stable
+          source "$HOME/.cargo/env"
+          cargo build --release --locked
+          mkdir -p rust-lib
+          cp target/release/libhashchat_rust.so rust-lib/
+          GHCUP_SHA256="480e05e414d2efa5abbda0006984a3343cd4973ead7b5c48d65a55a47b40ce59"
+          mkdir -p "$HOME/.ghcup/bin"
+          curl -sSL "https://downloads.haskell.org/~ghcup/$(uname -m)-linux-ghcup" -o /tmp/ghcup
+          echo "$GHCUP_SHA256  /tmp/ghcup" | sha256sum -c --status
+          install -m 755 /tmp/ghcup "$HOME/.ghcup/bin/ghcup"
+          export PATH="$HOME/.ghcup/bin:$HOME/.cargo/bin:$PATH"
+          ghcup install ghc 9.8.4 --set
+          ghcup install cabal 3.10.3.0 --set
+          cabal update
+          cabal build -f-tui hashchat
+          cabal build -f-tui hashchat-cli
 
   android-stub:
     runs-on: ubuntu-latest

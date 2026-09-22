@@ -1,6 +1,6 @@
-feat(extreme): first-class TUI metadata gates + retirement checklist
+chore(retire): meet Haskell removal criterion 2 (no Cabal release path)
 
-Centralize Extreme refusals on NetConfig (contact-link export, groups,
-voice) and wire the Rust TUI so :my-contact is refused, :sas stays short,
-:status/:help announce locks, and group/voice stubs fail closed. Docs
-reflect honest TUI gating and Haskell removal criteria progress. No push.
+Demote Cabal from user/release surfaces: Rust-only Nix default package and
+devShell (haskellDev opt-in), Forgejo CI without required Cabal, installers
+point at INSTALL transitional section only, SBOM/Flatpak notes demoted.
+Keep HASHCHAT_ALLOW_HASKELL=1 and build.sh --haskell. Criterion 2 MET. No push.

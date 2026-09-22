@@ -64,10 +64,9 @@ if [ -f target/release/libhashchat_rust.so ]; then
   cp -f target/release/libhashchat_rust.so rust-lib/
 fi
 
-echo "[6/6] Haskell desktop: transitional / not recommended (skipped; never preferred)."
-echo "      To build the legacy Brick TUI later: install ghc/cabal, then"
-echo "      cabal update && cabal build -f-tui hashchat-tui"
-echo "      ./run-tui never prefers cabal while cargo can build; opt-in: HASHCHAT_ALLOW_HASKELL=1"
+echo "[6/6] Done. Haskell desktop is transitional / not recommended (skipped)."
+echo "      Opt-in parity only: see INSTALL.md § Transitional Haskell desktop"
+echo "      (HASHCHAT_ALLOW_HASKELL=1 / ./build.sh --haskell). Not a release path."
 
 echo ""
 echo "=== How to run ==="

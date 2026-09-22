@@ -29,27 +29,22 @@ else
     cargo sbom > "$OUTPUT_DIR/rust-sbom.json" 2>/dev/null || echo "  -> cargo-sbom generation failed"
 fi
 
-# 2. Simple dependency summary for Haskell side (very basic)
-echo "[2/3] Creating basic Haskell dependency note..."
+# 2. Transitional Haskell note (opt-in only; NOT a release path — criterion 2)
+echo "[2/3] Creating transitional Haskell dependency note (non-release)..."
 cat > "$OUTPUT_DIR/haskell-deps.txt" << 'EOF'
-HashChat Haskell Dependencies (High-Level Summary)
+HashChat Haskell Dependencies — TRANSITIONAL / NOT A RELEASE PATH
 
-This project uses GHC + Cabal for the high-level protocol, TUI, and Tor framing logic.
-Direct dependencies are declared in hashchat.cabal.
+The recommended desktop client is the Rust binary hashchat-tui (--features tui).
+GHC/Cabal remain in-tree only for opt-in parity checks:
+  HASHCHAT_ALLOW_HASKELL=1 ./run-tui
+  ./build.sh --haskell
+  nix develop .#haskellDev
 
-Key security-relevant notes:
-- Uses cryptonite for some legacy crypto paths (being phased toward Rust).
-- Uses sqlite-simple for local encrypted persistence.
-- Network/Tor handling is custom (no heavy external HTTP libraries in critical paths).
+Direct Cabal deps (if you intentionally maintain the Brick TUI) live in hashchat.cabal.
+Do not treat this file as a release SBOM surface. Rust owns crypto + recommended TUI.
 
-For a full SBOM of the Haskell side, use tools such as:
-- cabal-plan
-- haskell-sbom (community tools)
-- or manual review of hashchat.cabal + cabal.project.freeze (if present)
-
-This file is intentionally lightweight because the Rust core owns the cryptographic boundary.
 EOF
-echo "  -> Haskell dependency note written to $OUTPUT_DIR/haskell-deps.txt"
+echo "  -> Transitional Haskell note written to $OUTPUT_DIR/haskell-deps.txt"
 
 # 3. Overall project summary
 echo "[3/3] Creating project SBOM summary..."
@@ -57,21 +52,21 @@ cat > "$OUTPUT_DIR/project-sbom-summary.txt" << EOF
 HashChat Project - Basic SBOM Summary
 Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-Primary Security Boundary: Rust (Double Ratchet, Argon2id, AES-GCM, Zeroize, framing)
-High-Level Logic: Haskell (TUI, protocol state machines, group logic, Tor v3 hidden services)
+Primary Security Boundary: Rust (Double Ratchet, Argon2id, AES-GCM, Zeroize, framing, recommended TUI)
+Recommended Desktop: Rust hashchat-tui (--features tui) — Cabal is NOT a release path
 Android UI/Glue: Kotlin (thin layer + Android Keystore + BiometricPrompt)
+Transitional Haskell: Brick TUI over Rust FFI (opt-in only; see haskell-deps.txt)
 
 Rust Direct Dependencies (security-critical):
 - See rust-sbom.json for full list (generated via cargo-sbom when available)
 - Key crates: ring, zeroize, argon2, ed25519-dalek, x25519-dalek, hkdf, sha2, subtle
 
-Haskell Direct Dependencies:
-- See haskell-deps.txt and hashchat.cabal
+Haskell (transitional / opt-in only):
+- See haskell-deps.txt and hashchat.cabal — not required for release
 
 Known Weak Areas (documented):
 - Android mlock is best-effort only
 - Some "demo-pass" strings remain in Android persistence (explicitly isolated + warned)
-- No full SBOM for Haskell side yet
 
 This summary should be reviewed before any signed release tag.
 EOF

@@ -2,7 +2,7 @@
 
 **Snapshot:** 22 September 2026 (Europe/Zurich)  
 **Branch:** `codeberg-primary`  
-**Tip:** `298a7719718ccb69b8b490ffd207c0012e13c1f4`
+**Tip:** `6b87dde101b0e0c1f9038a8adb3939404691bbdc`
 
 ## Executive summary
 
@@ -20,7 +20,8 @@ The Rust desktop path moved from scaffold to a usable, Tor-first two-peer TUI. T
 - **Mid-session DH forward secrecy — `893a85c`:** restored periodic send-side DH ratcheting after bootstrap without desynchronizing peers; persisted ratchet format v2 remains backward-loadable from v1, with the Android ratchet copy synchronized.
 - **TUI polish — `c542aff`:** added contact selection and short SAS presentation, selected-peer context, `:sas`, clearer `:help`, and Tor/SOCKS-gated `:retry` behavior without exposing plaintext bodies in status text.
 - **Durable NetConfig — `c36caa2`:** session blob v3 stores mode / DNS preference / posture inside the passphrase wrap; TUI `:mode` / `:mode extreme` changes survive restart. Env still seeds cold start / new identity; loaded blob wins after unlock. `:my-contact` / listen / send remain transport-gated (fail-closed).
-- **Extreme TUI metadata gates — `298a771`:** `NetConfig::extreme_blocks_contact_export` (plus groups/voice helpers) centralize Extreme refusals. Rust TUI refuses `:my-contact` under Extreme, keeps short `:sas`, shortens onion display in `:status`/listen status, announces locks in `:help`/`:status`, and refuses `:group`/`:voice` stubs. Docs: THREATMODEL + EXTREME_PROFILE honesty pass; INSTALL Haskell removal criteria marked MET/PARTIAL/OPEN; ROADMAP item 0 one-line status.
+- **Extreme TUI metadata gates — `5c932fb`:** `NetConfig::extreme_blocks_contact_export` (plus groups/voice helpers) centralize Extreme refusals. Rust TUI refuses `:my-contact` under Extreme, keeps short `:sas`, shortens onion display in `:status`/listen status, announces locks in `:help`/`:status`, and refuses `:group`/`:voice` stubs. Docs: THREATMODEL + EXTREME_PROFILE honesty pass; INSTALL Haskell removal criteria marked MET/MET/OPEN (criterion 2 closed this pass); ROADMAP item 0 one-line status.
+- **Haskell removal criterion 2 MET — `6b87dde101b0e0c1f9038a8adb3939404691bbdc`:** Distro installers no longer print Cabal recipes on the happy path; `flake.nix` default package/`devShell` are Rust-only with opt-in `haskellDev`; Forgejo CI builds Rust TUI without requiring Cabal (manual `haskell-parity` only); SBOM/Flatpak notes demote Cabal. INSTALL criterion 2 → MET; opt-in hatch kept (`HASHCHAT_ALLOW_HASKELL=1`, `./build.sh --haskell`).
 
 ## How to run
 
@@ -53,7 +54,7 @@ The tip commit records `cargo test --lib` passing with 62 tests and a successful
 ### Rust/TUI and posture
 
 - Extreme TUI metadata surfaces gated (contact export / groups / voice stubs / short SAS). Remaining: deeper Extreme persistence minimization and Android contact-QR parity — not claimed done here.
-- Haskell retirement: criteria 1+3 met, 2 partial, 4+5 open (INSTALL.md). Keep transitional / non-recommended; do not delete.
+- Haskell retirement: criteria 1+2+3 met; 4+5 open (INSTALL.md). Keep transitional / non-recommended opt-in hatch; do not delete.
 
 ### Android and cross-device parity
 
