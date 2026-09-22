@@ -2,7 +2,7 @@
 
 **Snapshot:** 22 September 2026 (Europe/Zurich)  
 **Branch:** `codeberg-primary`  
-**Tip:** `PENDING_DISAPPEAR` (set at commit)
+**Tip:** `43eeae6e7abcfba0eccef46b1a7faa7b4609efda`
 
 ## Executive summary
 
@@ -25,7 +25,7 @@ The Rust desktop path moved from scaffold to a usable, Tor-first two-peer TUI. T
 
 - **CI security gate (fail-closed, offline) — `a07a06b`:** Forgejo required `build` job runs `scripts/ci-security-gate.sh` before Rust tests/TUI build (ripgrep + policy anchors: ClearnetRefused/I2pNotImplemented + TUI `require_messenger_transport`, `HASHCHAT_INSECURE_DEV_PERSIST` opt-in only, cookie-only Tor AUTHENTICATE). Extra `tor_socks` unit tests refuse non-onion IP/short onion without network. No clippy introduced; no push.
 
-- **Disappearing messages (Rust TUI) — `PENDING_DISAPPEAR`:** Local TTL via `:disappear` / `:ttl` (off|30s|5m|1h|…). Session blob **v4** stores `disappear_ttl_secs` (0=off); v1–v3 load TTL=0. In-memory chat lines carry `expires_at` + optional ratchet msg number; on tick, expired plaintext is zeroized/dropped and `DoubleRatchet::wipe_skipped_key` runs when msg_number is known. Extreme defaults TTL to 1h when still off. **Honesty:** TTL is not on the wire — peer erase is not enforced. Message bodies stay in-memory transcript only (no durable body log). Tor-first / fail-closed unchanged.
+- **Disappearing messages (Rust TUI) — `43eeae6`:** Local TTL via `:disappear` / `:ttl` (off|30s|5m|1h|…). Session blob **v4** stores `disappear_ttl_secs` (0=off); v1–v3 load TTL=0. In-memory chat lines carry `expires_at` + optional ratchet msg number; on tick, expired plaintext is zeroized/dropped and `DoubleRatchet::wipe_skipped_key` runs when msg_number is known. Extreme defaults TTL to 1h when still off. **Honesty:** TTL is not on the wire — peer erase is not enforced. Message bodies stay in-memory transcript only (no durable body log). Tor-first / fail-closed unchanged.
 
 
 ## How to run

@@ -1,7 +1,4 @@
-feat(tui): disappearing messages with ratchet key wipe
+docs: point OVERNIGHT_PROGRESS tip at disappearing-messages commit
 
-Wire local TTL (:disappear/:ttl) into the Rust TUI: session blob v4 stores
-disappear_ttl_secs; in-memory chat lines expire with plaintext zeroize and
-DoubleRatchet::wipe_skipped_key when msg_number is known. Extreme defaults
-to 1h when TTL was off. Honest limit: TTL is not on the wire (peer erase not
-enforced). Tor-first/fail-closed unchanged. No push.
+Record tip SHA 43eeae6 for the Rust TUI local TTL + wipe_skipped_key handoff.
+No push.
