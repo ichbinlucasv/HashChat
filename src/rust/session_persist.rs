@@ -32,6 +32,19 @@
 //! v4 = + disappearing TTL seconds (u32 BE; 0 = off). Local policy only — not on the wire.
 //! Load accepts v1/v2/v3/v4; save always writes v4.
 //!
+//! ## Extreme disk policy (honest, fail-closed)
+//! When [`crate::net_mode::PostureProfile::Extreme`] is set on the session's
+//! [`NetConfig`], [`save_session`] persists **identity + onion + net prefs +
+//! disappear TTL only**. Contacts, ratchets, and pending frames are written as
+//! empty vectors (blob stays v4). Trade-off: smaller at-rest footprint and no
+//! multi-session contact continuity — the user must re-add contacts after
+//! restart. Tor 1:1 messaging for the **current** process session is unchanged
+//! (in-memory contacts/ratchets/queue still work until exit).
+//!
+//! **Load:** legacy Extreme blobs that still contain contacts are loaded into
+//! memory for the current session; the next Extreme save strips them. Standard
+//! posture keeps full H3 round-trip.
+//!
 //! Prefs are non-secret policy but live inside the wrapped blob so they cannot be
 //! silently toggled by swapping a plaintext sibling file under `hashchat_data/`.
 //! Missing prefs on v1/v2 load default to [`crate::net_mode::NetConfig::default`]
@@ -205,6 +218,32 @@ impl SessionState {
             bytes.zeroize();
         }
         self.ratchets.clear();
+    }
+
+    /// Build the on-disk view for the current posture.
+    ///
+    /// Under **Extreme**, contacts / ratchets / pending are empty so they are not
+    /// durable across restart. Identity, onion material, net prefs, and disappear
+    /// TTL are kept. Under **Standard**, returns a full clone (H3).
+    ///
+    /// The live in-memory session is unchanged; callers keep working state for the
+    /// current Tor session and only the durable blob is minimized.
+    pub fn for_disk(&self) -> SessionState {
+        if !self.net.is_extreme() {
+            return self.clone();
+        }
+        SessionState {
+            identity: IdentityOnionState {
+                seed: self.identity.seed,
+                onion: self.identity.onion.clone(),
+                onion_key: self.identity.onion_key.clone(),
+            },
+            contacts: Vec::new(),
+            ratchets: Vec::new(),
+            pending: Vec::new(),
+            net: self.net.clone(),
+            disappear_ttl_secs: self.disappear_ttl_secs,
+        }
     }
 
     /// Nuclear in-RAM wipe for a loaded session (pending frames, ratchets, onion_key, seed).
@@ -506,7 +545,10 @@ fn open_env(
     }
 }
 
-/// Save full session state (identity + contacts + ratchets + pending + net prefs + TTL). Always writes v4.
+/// Save session state. Always writes v4.
+///
+/// Under Extreme posture (`state.net.is_extreme()`), contacts / ratchets / pending
+/// are stripped via [`SessionState::for_disk`] before sealing. Standard keeps full H3.
 pub fn save_session(
     data_dir: &Path,
     mode: PersistMode,
@@ -515,14 +557,20 @@ pub fn save_session(
 ) -> Result<(), &'static str> {
     fs::create_dir_all(data_dir).map_err(|_| "mkdir")?;
     let (state_path, key_path) = data_paths(data_dir);
-    let mut plain = serialize_blob(state);
+    let disk = state.for_disk();
+    let mut plain = serialize_blob(&disk);
     let envelope = seal_plain(mode, passphrase, &key_path, &plain)?;
     plain.zeroize();
+    // `disk` ZeroizeOnDrop clears onion_key / ratchet / pending copies.
+    drop(disk);
     write_private(&state_path, &envelope)?;
     Ok(())
 }
 
 /// Load full session state. Accepts v1 (identity-only), v2, v3 (net prefs), and v4 (+ TTL) blobs.
+///
+/// Extreme policy: if a legacy blob still contains contacts/queue, they are loaded
+/// into memory for this session; the next Extreme [`save_session`] strips them.
 pub fn load_session(
     data_dir: &Path,
     mode: PersistMode,
@@ -1043,6 +1091,128 @@ mod tests {
         wiped.disappear_ttl_secs = 60;
         wiped.wipe_memory_secure();
         assert_eq!(wiped.disappear_ttl_secs, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extreme_save_strips_contacts_pending_on_reload() {
+        use crate::net_mode::PostureProfile;
+        let dir = tmp_dir("ext-min");
+        let id = LongTermIdentity::from_seed([0xEEu8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "extmin.onion",
+            b"ED25519-V3:ext".to_vec(),
+        ));
+        session.net.set_posture(PostureProfile::Extreme);
+        session.disappear_ttl_secs = 3600;
+        session.contacts.push(PersistedContact {
+            id: "alice".into(),
+            display_name: "Alice".into(),
+            onion: "alice.onion".into(),
+            x25519: [0xAAu8; 32],
+            ed25519: [0xBBu8; 32],
+        });
+        session.set_ratchet_bytes("alice", vec![0x11u8; 48]);
+        session.queue_pending("alice.onion", vec![0x22u8; 16]);
+
+        // In-memory for_disk preview is stripped; live session unchanged.
+        let preview = session.for_disk();
+        assert!(preview.contacts.is_empty());
+        assert!(preview.ratchets.is_empty());
+        assert!(preview.pending.is_empty());
+        assert_eq!(preview.identity.seed, session.identity.seed);
+        assert_eq!(preview.disappear_ttl_secs, 3600);
+        assert_eq!(session.contacts.len(), 1);
+        assert_eq!(session.pending.len(), 1);
+
+        save_session(&dir, PersistMode::Passphrase, b"ext-min-pass", &session).unwrap();
+        // Live RAM still has session material for current Tor messaging.
+        assert_eq!(session.contacts.len(), 1);
+        assert_eq!(session.pending.len(), 1);
+
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"ext-min-pass").unwrap();
+        assert_eq!(loaded.net.posture, PostureProfile::Extreme);
+        assert_eq!(loaded.identity.seed, session.identity.seed);
+        assert_eq!(loaded.identity.onion, "extmin.onion");
+        assert_eq!(loaded.identity.onion_key, b"ED25519-V3:ext");
+        assert_eq!(loaded.disappear_ttl_secs, 3600);
+        assert!(loaded.contacts.is_empty());
+        assert!(loaded.ratchets.is_empty());
+        assert!(loaded.pending.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn standard_save_keeps_contacts_after_extreme_policy() {
+        use crate::net_mode::PostureProfile;
+        let dir = tmp_dir("std-keep");
+        let id = LongTermIdentity::from_seed([0x53u8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "std.onion",
+            b"key".to_vec(),
+        ));
+        assert_eq!(session.net.posture, PostureProfile::Standard);
+        session.contacts.push(PersistedContact {
+            id: "bob".into(),
+            display_name: "Bob".into(),
+            onion: "bob.onion".into(),
+            x25519: [1u8; 32],
+            ed25519: [2u8; 32],
+        });
+        session.set_ratchet_bytes("bob", vec![3u8; 40]);
+        session.queue_pending("bob.onion", vec![4u8; 8]);
+        save_session(&dir, PersistMode::Passphrase, b"std-pass", &session).unwrap();
+
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"std-pass").unwrap();
+        assert_eq!(loaded.contacts.len(), 1);
+        assert_eq!(loaded.contacts[0].id, "bob");
+        assert_eq!(loaded.ratchets.len(), 1);
+        assert_eq!(loaded.pending.len(), 1);
+        assert_eq!(loaded.pending[0].1, vec![4u8; 8]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extreme_load_legacy_contacts_then_save_strips() {
+        use crate::net_mode::PostureProfile;
+        // Simulate a legacy Extreme blob that still had H3 extras (pre-minimization):
+        // serialize_blob writes fields as-is; only save_session/for_disk strips.
+        let dir = tmp_dir("ext-legacy");
+        let id = LongTermIdentity::from_seed([0xCCu8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "legacy-ext.onion",
+            vec![9],
+        ));
+        session.contacts.push(PersistedContact {
+            id: "legacy".into(),
+            display_name: "L".into(),
+            onion: "l.onion".into(),
+            x25519: [5u8; 32],
+            ed25519: [6u8; 32],
+        });
+        session.set_ratchet_bytes("legacy", vec![7u8; 20]);
+        session.queue_pending("l.onion", vec![8u8; 4]);
+        session.net.set_posture(PostureProfile::Extreme);
+        let plain = serialize_blob(&session);
+        let env = envelope::seal(b"leg-pass", &plain).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        write_private(&dir.join("state.enc"), &env).unwrap();
+
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"leg-pass").unwrap();
+        assert_eq!(loaded.net.posture, PostureProfile::Extreme);
+        assert_eq!(loaded.contacts.len(), 1);
+        assert_eq!(loaded.pending.len(), 1);
+        // Extreme save strips durable extras; RAM for this session stays until drop.
+        save_session(&dir, PersistMode::Passphrase, b"leg-pass", &loaded).unwrap();
+        assert_eq!(loaded.contacts.len(), 1);
+        let again = load_session(&dir, PersistMode::Passphrase, b"leg-pass").unwrap();
+        assert_eq!(again.net.posture, PostureProfile::Extreme);
+        assert!(again.contacts.is_empty());
+        assert!(again.ratchets.is_empty());
+        assert!(again.pending.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 

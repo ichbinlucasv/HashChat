@@ -317,6 +317,14 @@ impl App {
         }
     }
 
+    /// Zeroize and drop in-memory chat transcript (Extreme switch / wipe hygiene).
+    fn clear_transcript_secure(&mut self) {
+        for line in self.messages.iter_mut() {
+            line.text.zeroize();
+        }
+        self.messages.clear();
+    }
+
     fn apply_extreme_ttl_default(&mut self) {
         let next = extreme_default_ttl(self.net.is_extreme(), self.disappear_ttl_secs);
         if next != self.disappear_ttl_secs {
@@ -1057,7 +1065,15 @@ impl App {
                 }
             }
             "extreme" | "paranoid" => {
+                let switching_to = !self.net.is_extreme();
                 self.net.set_posture(PostureProfile::Extreme);
+                if switching_to {
+                    // Shrink RAM residue when entering Extreme; contacts stay for this session.
+                    self.clear_transcript_secure();
+                    self.push_msg(
+                        "Extreme: chat transcript cleared. Contacts/queue are not durable across restart — re-add contacts after unlock.",
+                    );
+                }
                 self.apply_extreme_ttl_default();
                 let saved = self.persist_net_after_mode_change();
                 let tag = if saved { "saved" } else { "not saved" };
@@ -1088,7 +1104,7 @@ impl App {
                     "Default Tor. I2P/clearnet refuse messenger sockets until implemented.",
                 );
                 self.push_msg(
-                    "Extreme: Tor-only; refuses :my-contact export, groups, voice; SAS ok (short).",
+                    "Extreme: Tor-only; refuses :my-contact/groups/voice; contacts/queue not durable; SAS ok (short). Not Android Extreme parity.",
                 );
                 if let Some(note) = self.net.extreme_lock_summary() {
                     self.push_msg(note);
@@ -1129,7 +1145,7 @@ impl App {
                 self.input.clear();
                 self.my_sas.clear();
                 self.my_contact_link.clear();
-                self.messages.clear();
+                self.clear_transcript_secure();
                 self.disappear_ttl_secs = 0;
                 self.net = NetConfig::from_env();
                 self.contacts_state = ListState::default();
