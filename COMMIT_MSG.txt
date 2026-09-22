@@ -1,8 +1,4 @@
-feat(extreme): minimize durable session footprint
+docs: point OVERNIGHT_PROGRESS tip at Extreme minimize commit
 
-Under Extreme posture, save_session persists identity + onion + net prefs +
-disappear TTL only; contacts/ratchets/pending are empty on disk (blob stays v4).
-Legacy Extreme blobs with contacts load into RAM for the session; next Extreme
-save strips them. TUI clears transcript when switching to Extreme; status/help
-note non-durable contacts (no Android Extreme parity claim). Standard H3
-unchanged. Tests + ci-security-gate green. No push.
+Record tip SHA e917681 for Extreme durable footprint minimization handoff.
+No push.
