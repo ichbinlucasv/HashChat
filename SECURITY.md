@@ -19,6 +19,31 @@ Instead, report privately by:
 
 We take reports seriously and will respond within 48 hours.
 
+## Maintainer validation & OPSEC reporting
+
+When validating Tor / two-peer behavior, or reviewing bug and security reports:
+
+- Checklist: [`docs/TWO_PEER_VALIDATION.md`](docs/TWO_PEER_VALIDATION.md)
+- What `:evidence` / `:audit-status` prints (safe metadata): [`docs/VALIDATION_EVIDENCE.md`](docs/VALIDATION_EVIDENCE.md)
+- What reports should include vs forbid: [`docs/OPSEC_REPORTING.md`](docs/OPSEC_REPORTING.md)
+- Fill-in template: `scripts/validation-evidence-template.txt`
+
+In the Rust TUI, `:evidence` (alias `:audit-status`) dumps **posture metadata only** — not a proof of E2EE. Prefer those lines in tickets over free-form dumps.
+
+### Never record / never ask reporters to paste
+
+Do **not** copy into logs, screenshots, tickets, advisories, chat, or git commits (and do **not** instruct reporters to paste):
+
+- Tor control **cookies** / cookie file bytes / secret-bearing cookie paths
+- Identity or onion **private keys** (`ED25519-V3:` blobs, etc.)
+- Full **onion addresses** or raw `hashchat://` contact links
+- Passphrases or passphrase hints
+- **SAS** values (short or long)
+- Message **bodies**, frame bytes, decrypt dumps, unredacted scrollback
+- Contact names/ids that might encode secrets — use **counts** from `:evidence`
+
+Ask for tip SHA, OS/Tor versions, reproduce steps without secrets, and `:evidence` output instead. See `docs/OPSEC_REPORTING.md`.
+
 ## Critical Rules for Contributors & Users
 
 1. **Never commit**:

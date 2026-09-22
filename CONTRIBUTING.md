@@ -24,6 +24,13 @@ Active tip branch: `codeberg-primary`. GitHub is a read-only mirror.
 
 Public issues for security problems will be closed without comment.
 
+**OPSEC for all reports** (bugs and security): follow [`docs/OPSEC_REPORTING.md`](docs/OPSEC_REPORTING.md).
+
+- Include: tip SHA (`codeberg-primary`), OS/Tor versions, build/run method, UTC-offset time, reproduce steps **without secrets**, expected vs actual, and `:evidence` / `:audit-status` posture lines when relevant.
+- Never paste: Tor cookies, onion/identity private keys, full onions or `hashchat://` links, passphrases, SAS values, message bodies, or unredacted dumps.
+- Two-peer Tor validation: [`docs/TWO_PEER_VALIDATION.md`](docs/TWO_PEER_VALIDATION.md) · evidence dump: [`docs/VALIDATION_EVIDENCE.md`](docs/VALIDATION_EVIDENCE.md) · fill-in: `scripts/validation-evidence-template.txt`.
+- Maintainers: do **not** ask reporters to paste secrets “for debugging.”
+
 ### 2. Development Setup (Rust recommended)
 
 ```bash
@@ -60,8 +67,10 @@ See [README.md](README.md) and [INSTALL.md](INSTALL.md).
 - Never commit anything from `tor/hidden_service/`
 - Never commit compiled artifacts (`rust-lib/`, `target/`, `dist-newstyle/`)
 - Never commit ControlPort cookies, onion keys, or local `hashchat_data/`
+- Never commit or paste into tickets: cookies, private keys, onions, passphrases, SAS, or message bodies (see [`docs/OPSEC_REPORTING.md`](docs/OPSEC_REPORTING.md))
 - All changes to the ratchet (`ratchet.rs`) must be discussed first
 - Prefer constant-time operations; use `zeroize` for sensitive data
+- Maintainer two-peer checks: [`docs/TWO_PEER_VALIDATION.md`](docs/TWO_PEER_VALIDATION.md); use `:evidence` / `:audit-status` for safe posture metadata ([`docs/VALIDATION_EVIDENCE.md`](docs/VALIDATION_EVIDENCE.md))
 
 Run `./scripts/clean-security.sh` before commits that touched local sensitive state.
 
