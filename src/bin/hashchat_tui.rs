@@ -25,9 +25,10 @@ use hashchat_rust::{
     mlockall_current, parse_lock_timeout_token, parse_signed_contact_link, parse_ttl_token,
     register_scrub_callback, sas_fingerprint, sas_for_signed, save_session, socks5_send,
     start_hidden_service_with_key, state_exists, take_terminate_signal, tor_probe, unframe_v2,
-    wipe_local_sensitive, DnsPreference, DoubleRatchet, HiddenService, IdentityOnionState,
-    InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode, PersistMode, PersistedContact,
-    PostureProfile, SessionState, DEFAULT_LOCK_TIMEOUT_SECS, WIRE_VERSION_V2,
+    unlock_backoff_delay_secs, wipe_local_sensitive, DnsPreference, DoubleRatchet, HiddenService,
+    IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode, PersistMode,
+    PersistedContact, PostureProfile, SessionState, UnlockBackoffPolicy, DEFAULT_LOCK_TIMEOUT_SECS,
+    WIRE_VERSION_V2,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -160,6 +161,10 @@ struct App {
     last_input_at: Instant,
     /// Pending contact id for `:delete-contact-confirm` (cleared on Esc / success).
     pending_delete_contact: Option<String>,
+    /// Consecutive wrong-passphrase unlock failures (reset on success).
+    unlock_fail_count: u32,
+    /// When set, refuse unlock attempts until this Instant (local UI backoff).
+    unlock_cooldown_until: Option<Instant>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -231,6 +236,8 @@ impl App {
             lock_timeout_secs: DEFAULT_LOCK_TIMEOUT_SECS,
             last_input_at: Instant::now(),
             pending_delete_contact: None,
+            unlock_fail_count: 0,
+            unlock_cooldown_until: None,
         }
     }
 
@@ -704,6 +711,22 @@ impl App {
             self.status_msg = "Passphrase required.".into();
             return;
         }
+
+        // Existing-session unlock only: local UI backoff (not remote auth).
+        if !self.unlock_mode_create {
+            if let Some(until) = self.unlock_cooldown_until {
+                let now = Instant::now();
+                if now < until {
+                    let rem = (until - now).as_secs().max(1);
+                    // Opaque: do not reveal whether the prior attempt was "close".
+                    self.status_msg = format!("Unlock cooldown: wait {rem}s.");
+                    self.passphrase.zeroize();
+                    self.passphrase.clear();
+                    return;
+                }
+            }
+        }
+
         if self.unlock_mode_create {
             if self.unlock_step == UnlockStep::EnterPass {
                 self.unlock_step = UnlockStep::ConfirmPass;
@@ -729,6 +752,8 @@ impl App {
                     let state = SessionState::from_identity_with_net(identity, self.net.clone());
                     match save_session(Path::new(DATA_DIR), PersistMode::Passphrase, pass, &state) {
                         Ok(()) => {
+                            self.unlock_fail_count = 0;
+                            self.unlock_cooldown_until = None;
                             self.session = Some(state);
                             self.disappear_ttl_secs = 0;
                             self.lock_timeout_secs = DEFAULT_LOCK_TIMEOUT_SECS;
@@ -756,6 +781,8 @@ impl App {
         } else {
             match load_session(Path::new(DATA_DIR), PersistMode::Passphrase, pass) {
                 Ok(state) => {
+                    self.unlock_fail_count = 0;
+                    self.unlock_cooldown_until = None;
                     let n_contacts = state.contacts.len();
                     let n_pending = state.pending.len();
                     // Loaded blob wins over cold-start env for net prefs + TTL + lock.
@@ -789,7 +816,20 @@ impl App {
                     self.apply_mlock_best_effort();
                 }
                 Err(_) => {
-                    self.status_msg = "Unlock failed (wrong passphrase or corrupt store).".into();
+                    self.unlock_fail_count = self.unlock_fail_count.saturating_add(1);
+                    let policy = UnlockBackoffPolicy::for_extreme(self.net.is_extreme());
+                    let delay = unlock_backoff_delay_secs(self.unlock_fail_count, &policy);
+                    if delay > 0 {
+                        self.unlock_cooldown_until =
+                            Some(Instant::now() + Duration::from_secs(delay));
+                        // Keep wrong-pass opacity; cooldown is local-UI friction only.
+                        self.status_msg = format!(
+                            "Unlock failed (wrong passphrase or corrupt store). Cooldown {delay}s."
+                        );
+                    } else {
+                        self.status_msg =
+                            "Unlock failed (wrong passphrase or corrupt store).".into();
+                    }
                     self.passphrase.zeroize();
                     self.passphrase.clear();
                 }
@@ -1806,9 +1846,15 @@ impl App {
                 self.emergency_scrub_fields();
                 self.status_msg = "__QUIT__".into();
             }
+            ":clear" | ":cls" => {
+                // In-memory transcript only — not session wipe, not disk erase.
+                self.clear_transcript_secure();
+                debug_assert!(self.messages.is_empty());
+                self.status_msg = "Chat transcript cleared (session intact).".into();
+            }
             ":wipe" => {
                 // Loud confirm: blank chat/status residue so the modal is not overlaid on plaintext.
-                self.messages.clear();
+                self.clear_transcript_secure();
                 self.input.clear();
                 self.screen = Screen::ConfirmWipe;
                 self.status_msg =
@@ -1838,6 +1884,8 @@ impl App {
                 self.selected_contact = None;
                 self.unlock_mode_create = true;
                 self.unlock_step = UnlockStep::EnterPass;
+                self.unlock_fail_count = 0;
+                self.unlock_cooldown_until = None;
                 self.screen = Screen::Unlock;
                 // OPSEC: status must not echo prior chat/passphrase material.
                 self.status_msg =
@@ -1944,6 +1992,7 @@ impl App {
                 );
                 self.push_msg("  :send-unverified <msg>  Standard only — Extreme: no bypass");
                 self.push_msg("  :delete-contact [id]    remove contact + wipe ratchet (confirm)");
+                self.push_msg("  :clear / :cls           zeroize in-memory chat transcript only");
                 self.push_msg("  :wipe                   nuclear local wipe (confirm)");
                 self.push_msg("  :quit                   exit");
                 self.push_msg(

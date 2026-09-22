@@ -18,6 +18,7 @@ mod net_mode;
 mod ratchet;
 mod session_persist;
 mod tor_socks;
+mod unlock_backoff;
 mod wire;
 
 pub use contact_link::{
@@ -50,6 +51,7 @@ pub use session_persist::{
     commit_outgoing, load_disk, load_session, save_disk, save_session, state_exists, wipe_disk,
     IdentityOnionState, InboundDenyPolicy, PersistMode, PersistedContact, SessionState,
 };
+pub use unlock_backoff::{unlock_backoff_delay_secs, UnlockBackoffPolicy};
 pub use tor_socks::{
     is_loopback_host, is_onion_destination, probe as tor_probe, read_framed_u16,
     read_framed_u16_max, socks5_send, write_framed_u16, TorProbe, MAX_SOCKS_FRAME,
