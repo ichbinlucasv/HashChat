@@ -1,4 +1,3 @@
-docs: point OVERNIGHT_PROGRESS tip at Extreme minimize commit
+docs: shorten Extreme minimize SHA in OVERNIGHT shipped bullet
 
-Record tip SHA e917681 for Extreme durable footprint minimization handoff.
-No push.
+Match prior short-SHA formatting. Tip header keeps full hash. No push.
