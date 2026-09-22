@@ -2,7 +2,7 @@
 
 **Snapshot:** 22 September 2026 (Europe/Zurich)  
 **Branch:** `codeberg-primary`  
-**Tip:** `1cd057db5961eb87658e0a09d91484a2d27153b7`
+**Tip:** `50a10e5031fb45e8eea3bb443cba30a2d991978d`
 
 ## Executive summary
 
@@ -32,8 +32,7 @@ The Rust desktop path moved from scaffold to a usable, Tor-first two-peer TUI. T
 
 - **Contact block / mute (Rust TUI) — `1cd057d`:** `:block` / `:unblock` / `:blocked` plus optional `:mute` / `:unmute`. Session blob **v5** stores blocked/muted contact-id lists under Standard (v1–v4 load empty lists). Block = refuse send + drop inbound without decrypt/display (fail-closed; no plaintext in status). Mute = decrypt for ratchet sync, suppress UI. Extreme `for_disk` strips deny lists with contacts/queue. Tests: v5 round-trip, v4→empty deny lists, SAS-prefix resolve + refuse helpers, Extreme strip. THREATMODEL + EXTREME_PROFILE honesty. No push.
 
-- **Contact delete + ratchet wipe (Rust TUI):** `:delete-contact` / `:rm-contact` with two-step `:delete-contact-confirm` (wipe-style OPSEC). Resolves like `:block` (id / onion / unique SAS or id prefix / selected). On confirm: zeroize ratchet bytes + pending frames for that dest, drop mute/block entries, remove contact, durable `save_session`, zeroize related chat lines, clear selection if needed. Status: "Contact removed and ratchet wiped" (no onion/plaintext). Extreme: same in-RAM wipe; save still strips lists. Tests for `SessionState::delete_contact_secure`. THREATMODEL note: local delete ≠ remote wipe. No push.
- `:block` / `:unblock` / `:blocked` plus optional `:mute` / `:unmute`. Session blob **v5** stores blocked/muted contact-id lists under Standard (v1–v4 load empty lists). Block = refuse send + drop inbound without decrypt/display (fail-closed; no plaintext in status). Mute = decrypt for ratchet sync, suppress UI. Extreme `for_disk` strips deny lists with contacts/queue. Tests: v5 round-trip, v4→empty deny lists, SAS-prefix resolve + refuse helpers, Extreme strip. THREATMODEL + EXTREME_PROFILE honesty. No push.
+- **Contact delete + ratchet wipe (Rust TUI) — `50a10e5`:** `:delete-contact` / `:rm-contact` with two-step `:delete-contact-confirm` (wipe-style OPSEC). Resolves like `:block` (id / onion / unique SAS or id prefix / selected). On confirm: zeroize ratchet bytes + pending frames for that dest, drop mute/block entries, remove contact, durable `save_session`, zeroize related chat lines, clear selection if needed. Status: "Contact removed and ratchet wiped" (no onion/plaintext). Extreme: same in-RAM wipe; save still strips lists. Tests for `SessionState::delete_contact_secure`. THREATMODEL note: local delete ≠ remote wipe. No push.
 
 
 ## How to run
