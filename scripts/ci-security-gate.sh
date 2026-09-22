@@ -146,6 +146,20 @@ if "${SEARCH[@]}" '"AUTHENTICATE[[:space:]]*"' src/rust 2>/dev/null | grep -q .;
 fi
 pass "no bare AUTHENTICATE command literals under src/rust"
 
+# HS accept path must keep bounded queue + strict inbound frame max (DoS backpressure).
+"${SEARCH[@]}" 'MAX_HS_INBOUND_FRAME' src/rust/hidden_service.rs >/dev/null \
+  || fail "MAX_HS_INBOUND_FRAME missing from hidden_service.rs"
+pass "MAX_HS_INBOUND_FRAME present"
+
+"${SEARCH[@]}" 'HS_INBOUND_QUEUE_CAP' src/rust/hidden_service.rs >/dev/null \
+  || fail "HS_INBOUND_QUEUE_CAP missing from hidden_service.rs"
+pass "HS_INBOUND_QUEUE_CAP present"
+
+"${SEARCH[@]}" 'sync_channel' src/rust/hidden_service.rs >/dev/null \
+  || fail "bounded sync_channel missing from hidden_service.rs"
+pass "HS sync_channel (bounded inbound queue) present"
+
+
 # ---------------------------------------------------------------------------
 # 4) Workflow wires this script (self-check when present).
 # ---------------------------------------------------------------------------

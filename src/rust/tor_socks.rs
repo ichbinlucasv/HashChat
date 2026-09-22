@@ -175,14 +175,19 @@ pub fn write_framed_u16(stream: &mut TcpStream, payload: &[u8]) -> Result<(), St
         .map_err(|_| "frame flush failed".to_string())
 }
 
-/// Read a 2-byte BE length-prefixed frame.
-pub fn read_framed_u16(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
+/// Read a 2-byte BE length-prefixed frame with an explicit max body length.
+///
+/// On oversize / zero length: returns `Err` **without** reading the body
+/// (caller should close the stream). `max_len` should be ≤ `MAX_SOCKS_FRAME`.
+pub fn read_framed_u16_max(stream: &mut TcpStream, max_len: usize) -> Result<Vec<u8>, String> {
+    let cap = max_len.min(MAX_SOCKS_FRAME);
     let mut ln = [0u8; 2];
     stream
         .read_exact(&mut ln)
         .map_err(|_| "frame length read failed".to_string())?;
     let n = u16::from_be_bytes(ln) as usize;
-    if n == 0 || n > MAX_SOCKS_FRAME {
+    if n == 0 || n > cap {
+        // Do not allocate or drain the claimed body — close the connection.
         return Err("bad frame length".into());
     }
     let mut buf = vec![0u8; n];
@@ -190,6 +195,11 @@ pub fn read_framed_u16(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
         .read_exact(&mut buf)
         .map_err(|_| "frame body read failed".to_string())?;
     Ok(buf)
+}
+
+/// Read a 2-byte BE length-prefixed frame (cap = `MAX_SOCKS_FRAME`).
+pub fn read_framed_u16(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
+    read_framed_u16_max(stream, MAX_SOCKS_FRAME)
 }
 
 /// CONNECT via SOCKS then send one length-prefixed ciphertext blob.
@@ -281,5 +291,43 @@ mod tests {
         let mut s = TcpStream::connect(addr).unwrap();
         write_framed_u16(&mut s, &payload).unwrap();
         assert_eq!(handle.join().unwrap(), payload);
+    }
+
+    #[test]
+    fn framed_u16_max_rejects_oversize_without_body_alloc() {
+        use std::net::TcpListener;
+        use std::thread;
+        // Cap far below u16::MAX so we can advertise an oversize length.
+        const CAP: usize = 64;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut client, _) = listener.accept().unwrap();
+            read_framed_u16_max(&mut client, CAP)
+        });
+        let mut s = TcpStream::connect(addr).unwrap();
+        // Length = CAP+1; no body bytes written — reader must reject before read_exact body.
+        let over = ((CAP as u16) + 1).to_be_bytes();
+        s.write_all(&over).unwrap();
+        s.flush().unwrap();
+        let err = handle.join().unwrap().unwrap_err();
+        assert!(err.contains("bad frame length"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn framed_u16_max_rejects_zero_length() {
+        use std::net::TcpListener;
+        use std::thread;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut client, _) = listener.accept().unwrap();
+            read_framed_u16_max(&mut client, 1024)
+        });
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.write_all(&0u16.to_be_bytes()).unwrap();
+        s.flush().unwrap();
+        let err = handle.join().unwrap().unwrap_err();
+        assert!(err.contains("bad frame length"), "unexpected: {err}");
     }
 }

@@ -110,6 +110,8 @@ struct App {
     last_tor_check: Instant,
     socks_port: u16,
     hs: Option<HiddenService>,
+    /// Last observed HS inbound drop counter (backpressure; no contents).
+    hs_drops_seen: u64,
     /// Network prefs: env at cold start / new identity; after unlock, loaded blob wins.
     net: NetConfig,
     /// Local disappearing TTL seconds (0 = off). Synced into session blob v4+.
@@ -180,6 +182,7 @@ impl App {
             last_tor_check: Instant::now() - Duration::from_secs(60),
             socks_port: 9050,
             hs: None,
+            hs_drops_seen: 0,
             net: NetConfig::from_env(),
             disappear_ttl_secs: 0,
             pending_delete_contact: None,
@@ -777,6 +780,7 @@ impl App {
                             );
                         }
                         self.hs = Some(hs);
+                        self.hs_drops_seen = 0;
                         self.refresh_identity_display();
                         self.retry_pending(false);
                     }
@@ -845,7 +849,7 @@ impl App {
     }
 
     fn drain_incoming(&mut self) {
-        let frames: Vec<Vec<u8>> = {
+        let (frames, drop_count): (Vec<Vec<u8>>, u64) = {
             let Some(hs) = self.hs.as_ref() else {
                 return;
             };
@@ -853,8 +857,16 @@ impl App {
             while let Some(f) = hs.try_recv() {
                 out.push(f);
             }
-            out
+            // Count only — never log frame contents.
+            (out, hs.dropped_frame_count())
         };
+        if drop_count > self.hs_drops_seen {
+            let delta = drop_count - self.hs_drops_seen;
+            self.hs_drops_seen = drop_count;
+            // OPSEC: numeric backpressure signal only (no frame bytes).
+            self.status_msg = format!("HS inbound backpressure: dropped {delta} frame(s)");
+            self.push_msg(self.status_msg.clone());
+        }
         for frame in frames {
             let n = frame.len();
             match self.try_decrypt_incoming(&frame) {
@@ -1477,6 +1489,7 @@ impl App {
             }
             ":wipe-confirm" => {
                 self.hs = None;
+                self.hs_drops_seen = 0;
                 wipe_local_sensitive();
                 if let Some(mut s) = self.session.take() {
                     s.wipe_memory_secure();

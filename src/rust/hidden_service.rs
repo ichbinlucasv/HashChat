@@ -7,19 +7,40 @@
 //! When `ADD_ONION` returns `PrivateKey=`, callers must persist it only inside the
 //! passphrase-wrapped session blob (H2 `onion_key`).
 
-use crate::tor_socks::{is_loopback_host, read_framed_u16};
+use crate::tor_socks::{is_loopback_host, read_framed_u16_max, MAX_SOCKS_FRAME};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 const MAX_ACCEPT_IDLE_SECS: u64 = 30;
 
+/// Strict max inbound HS transport frame body (bytes), **≤** [`MAX_SOCKS_FRAME`].
+///
+/// Wire-v2 chat frames are far smaller; 16 KiB caps per-read allocation under
+/// a malicious length prefix while staying above realistic ciphertext sizes.
+/// Oversize → close that stream; body is not read and not queued.
+pub const MAX_HS_INBOUND_FRAME: usize = 16 * 1024;
+
+/// Bounded inbound mpsc capacity. When full, new frames are dropped (counted)
+/// — the queue never grows unbounded.
+pub const HS_INBOUND_QUEUE_CAP: usize = 64;
+
+/// Soft per-connection frame budget within the accept idle window. Excess
+/// closes that stream only (simple local DoS brake; not a Tor-level defense).
+const MAX_FRAMES_PER_CONN: u32 = 64;
+
+const _: () = assert!(MAX_HS_INBOUND_FRAME <= MAX_SOCKS_FRAME);
+
 pub struct HiddenService {
     pub onion: String,
     pub local_port: u16,
     rx: Receiver<Vec<u8>>,
+    /// Frames dropped because the inbound queue was full (no contents logged).
+    drops: Arc<AtomicU64>,
     /// Must stay open or Tor forgets a non-persisted onion.
     _control: TcpStream,
 }
@@ -27,6 +48,11 @@ pub struct HiddenService {
 impl HiddenService {
     pub fn try_recv(&self) -> Option<Vec<u8>> {
         self.rx.try_recv().ok()
+    }
+
+    /// Count of inbound frames dropped under backpressure (never includes bytes).
+    pub fn dropped_frame_count(&self) -> u64 {
+        self.drops.load(Ordering::Relaxed)
     }
 }
 
@@ -56,10 +82,12 @@ pub fn start_hidden_service_with_key(
     let existing_str = existing_key.and_then(|b| std::str::from_utf8(b).ok());
     let (onion, privkey) = add_onion(&mut control, local_port, existing_str)?;
 
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(HS_INBOUND_QUEUE_CAP);
+    let drops = Arc::new(AtomicU64::new(0));
+    let drops_thread = Arc::clone(&drops);
     thread::Builder::new()
         .name("hashchat-hs".into())
-        .spawn(move || accept_loop(listener, tx))
+        .spawn(move || accept_loop(listener, tx, drops_thread))
         .map_err(|_| "listener thread failed".to_string())?;
 
     Ok((
@@ -67,26 +95,38 @@ pub fn start_hidden_service_with_key(
             onion,
             local_port,
             rx,
+            drops,
             _control: control,
         },
         privkey,
     ))
 }
 
-fn accept_loop(listener: TcpListener, tx: mpsc::Sender<Vec<u8>>) {
+fn accept_loop(listener: TcpListener, tx: SyncSender<Vec<u8>>, drops: Arc<AtomicU64>) {
     for incoming in listener.incoming() {
         let Ok(mut stream) = incoming else {
             continue;
         };
         let _ = stream.set_read_timeout(Some(Duration::from_secs(MAX_ACCEPT_IDLE_SECS)));
+        let mut frames_this_conn: u32 = 0;
         loop {
-            match read_framed_u16(&mut stream) {
+            if frames_this_conn >= MAX_FRAMES_PER_CONN {
+                // Soft per-connection budget exhausted — close stream.
+                break;
+            }
+            match read_framed_u16_max(&mut stream, MAX_HS_INBOUND_FRAME) {
                 Ok(frame) => {
-                    if tx.send(frame).is_err() {
-                        return;
+                    frames_this_conn = frames_this_conn.saturating_add(1);
+                    match tx.try_send(frame) {
+                        Ok(()) => {}
+                        Err(TrySendError::Full(_dropped)) => {
+                            // Backpressure: drop frame, never grow queue; no contents logged.
+                            drops.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(TrySendError::Disconnected(_dropped)) => return,
                     }
                 }
-                Err(_) => break,
+                Err(_) => break, // includes oversize / idle timeout / EOF → close stream
             }
         }
     }
@@ -206,6 +246,9 @@ fn control_cmd(s: &mut TcpStream, cmd: &str) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tor_socks::{read_framed_u16_max, write_framed_u16};
+    use std::io::Write;
+    use std::time::Duration;
 
     #[test]
     fn parses_cookiefile_quoted() {
@@ -238,5 +281,96 @@ mod tests {
             Ok(_) => panic!("expected err"),
         };
         assert!(err.contains("loopback"));
+    }
+
+    #[test]
+    fn max_hs_inbound_frame_at_or_below_socks_cap() {
+        assert!(MAX_HS_INBOUND_FRAME > 0);
+        assert!(MAX_HS_INBOUND_FRAME <= MAX_SOCKS_FRAME);
+        assert!(HS_INBOUND_QUEUE_CAP >= 32 && HS_INBOUND_QUEUE_CAP <= 64);
+    }
+
+    #[test]
+    fn hs_oversize_length_rejected_closes_without_queue() {
+        // Local TCP only — no Tor. Advertise length > MAX_HS_INBOUND_FRAME.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(HS_INBOUND_QUEUE_CAP);
+        let drops = Arc::new(AtomicU64::new(0));
+        let drops_t = Arc::clone(&drops);
+        thread::spawn(move || accept_loop(listener, tx, drops_t));
+
+        let mut s = TcpStream::connect(addr).unwrap();
+        let over = ((MAX_HS_INBOUND_FRAME as u16).saturating_add(1)).to_be_bytes();
+        // If MAX_HS were u16::MAX this would wrap; assert we stay strictly below.
+        assert!(MAX_HS_INBOUND_FRAME < u16::MAX as usize);
+        s.write_all(&over).unwrap();
+        s.flush().unwrap();
+        // Give accept thread a moment; oversize must not enqueue.
+        thread::sleep(Duration::from_millis(80));
+        assert!(rx.try_recv().is_err(), "oversize frame must not be queued");
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn hs_inbound_queue_full_drops_not_unbounded() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Tiny cap so we can fill without many frames.
+        let cap = 2usize;
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(cap);
+        let drops = Arc::new(AtomicU64::new(0));
+        let drops_t = Arc::clone(&drops);
+        // Inline mini accept-loop with same backpressure semantics as production.
+        thread::spawn(move || {
+            for incoming in listener.incoming() {
+                let Ok(mut stream) = incoming else { continue };
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                loop {
+                    match read_framed_u16_max(&mut stream, MAX_HS_INBOUND_FRAME) {
+                        Ok(frame) => match tx.try_send(frame) {
+                            Ok(()) => {}
+                            Err(TrySendError::Full(_)) => {
+                                drops_t.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Err(TrySendError::Disconnected(_)) => return,
+                        },
+                        Err(_) => break,
+                    }
+                }
+            }
+        });
+
+        let mut s = TcpStream::connect(addr).unwrap();
+        for i in 0u8..8 {
+            write_framed_u16(&mut s, &[i, i, i, i]).unwrap();
+        }
+        thread::sleep(Duration::from_millis(120));
+
+        let mut queued = 0usize;
+        while rx.try_recv().is_ok() {
+            queued += 1;
+        }
+        assert!(queued <= cap, "queued={queued} cap={cap}");
+        assert!(
+            drops.load(Ordering::Relaxed) >= 1,
+            "expected drops under backpressure"
+        );
+    }
+
+    #[test]
+    fn read_framed_respects_hs_max_constant() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut client, _) = listener.accept().unwrap();
+            read_framed_u16_max(&mut client, MAX_HS_INBOUND_FRAME)
+        });
+        let mut s = TcpStream::connect(addr).unwrap();
+        let over = ((MAX_HS_INBOUND_FRAME as u16) + 1).to_be_bytes();
+        s.write_all(&over).unwrap();
+        s.flush().unwrap();
+        let err = handle.join().unwrap().unwrap_err();
+        assert!(err.contains("bad frame length"), "unexpected: {err}");
     }
 }

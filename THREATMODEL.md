@@ -46,7 +46,7 @@
 - Group design aims for sender keys (server cannot easily tell who sent what).
 
 **Current Gaps (Honest Assessment After Latest Pass):**
-- Full bidirectional Tor v3 hidden service + framing is wired on desktop and partially on Android (receiver thread + JNI feed).
+- Full bidirectional Tor v3 hidden service + framing is wired on desktop and partially on Android (receiver thread + JNI feed). Desktop HS accept path now has app-side frame/queue bounds (see DDoS section); still Tor-dependent for real availability.
 - Real Double Ratchet with skipped keys, zeroization, and full binary serialization is now present on **both** desktop and Android (high-4 completed for core). Periodic send-side DH (`DH_SEND_EVERY`) restores mid-session DH FS without breaking two-peer bootstrap; see Cryptographic Protections above for residual limits.
 - Android ratchet export now uses **real Argon2id + AES-256-GCM** envelope (v2) instead of demo XOR. This is a major OPSEC improvement for groups and cross-device.
 - Voice chunking with per-chunk ratchet forward secrecy + real SeekBar + wipe on both sides.
@@ -183,6 +183,7 @@ Full ritual + force-with-lease + CI checks on every batch. See todo "ALL-Recs-Wa
 
 **DDoS / Availability (part of kill chain):**
 - Tor v3 hidden services + no central infrastructure is the correct architectural choice. Changing language does almost nothing here — the transport model matters far more.
+- **App-side HS accept backpressure (honest):** Local framed listener now enforces `MAX_HS_INBOUND_FRAME` (16 KiB, ≤ `MAX_SOCKS_FRAME`), a bounded inbound mpsc (`HS_INBOUND_QUEUE_CAP` = 64; drops counted, never unbounded), and a soft per-connection frame budget. Oversize length closes that stream without reading/queuing the body. **This is not Tor-level DoS protection** — availability still depends on the local Tor daemon and the onion circuit; we only bound HashChat process memory/queue pressure on the accept path.
 - Rust's async + Tokio (if we expand the receiver) would give better DoS resilience in the future than many alternatives.
 
 **SQL Injection / Injection attacks (MITRE ATT&CK T1190, T1055, etc.):**

@@ -2,7 +2,7 @@
 
 **Snapshot:** 22 September 2026 (Europe/Zurich)  
 **Branch:** `codeberg-primary`  
-**Tip:** `50a10e5031fb45e8eea3bb443cba30a2d991978d`
+**Tip:** `7ace1d923afbcfec2505d497028078fb106474b1`
 
 ## Executive summary
 
@@ -34,6 +34,10 @@ The Rust desktop path moved from scaffold to a usable, Tor-first two-peer TUI. T
 
 - **Contact delete + ratchet wipe (Rust TUI) — `50a10e5`:** `:delete-contact` / `:rm-contact` with two-step `:delete-contact-confirm` (wipe-style OPSEC). Resolves like `:block` (id / onion / unique SAS or id prefix / selected). On confirm: zeroize ratchet bytes + pending frames for that dest, drop mute/block entries, remove contact, durable `save_session`, zeroize related chat lines, clear selection if needed. Status: "Contact removed and ratchet wiped" (no onion/plaintext). Extreme: same in-RAM wipe; save still strips lists. Tests for `SessionState::delete_contact_secure`. THREATMODEL note: local delete ≠ remote wipe. No push.
 
+- **HS accept backpressure — `7ace1d9`:** App-side bounds on Tor HS local accept path: `MAX_HS_INBOUND_FRAME` = 16 KiB (≤ `MAX_SOCKS_FRAME`), bounded inbound `sync_channel` (`HS_INBOUND_QUEUE_CAP` = 64; full → drop + count, never unbounded), soft per-connection frame budget (64). Oversize length closes stream without reading/queuing body. Drop counter exposed (no frame contents in status/logs). Unit tests for oversize rejection + queue-full drops (local TCP, no Tor). **Honesty:** local HS still depends on Tor for real availability; this is process memory/queue backpressure only. THREATMODEL DDoS note updated. No push.
+
+
+
 
 ## How to run
 
@@ -54,7 +58,7 @@ cargo build --release --locked --bin hashchat-tui --features tui
 
 Inside the TUI, unlock or create an identity, use `:listen`, then exchange signed `hashchat://` contacts with the other peer. The default transport is Tor and the application fails closed if the required Tor path is unavailable. Do not copy Tor cookies, onion private material, passphrases, or message bodies into logs, tickets, or chat.
 
-The tip commit records `cargo test --lib` passing with 80 tests and a successful `cargo build --bin hashchat-tui --features tui`, plus offline `./scripts/ci-security-gate.sh`.
+The tip commit records `cargo test --lib` passing (includes HS oversize/queue-full + framed max tests) and a successful `cargo build --bin hashchat-tui --features tui`, plus offline `./scripts/ci-security-gate.sh`.
 
 ## Remaining backlog
 
@@ -74,7 +78,7 @@ The tip commit records `cargo test --lib` passing with 80 tests and a successful
 
 ### Transport and product scope
 
-- Implement an actual I2P start path and per-profile proxy configuration; bridge/pluggable transports remain primarily local-Tor configuration today. Non-Tor modes must continue to fail closed until their paths are implemented and tested.
+- Implement an actual I2P start path and per-profile proxy configuration; bridge/pluggable transports remain primarily local-Tor configuration today. Non-Tor modes must continue to fail closed until their paths are implemented and tested. HS accept path now has app-side frame/queue bounds; Tor-level DoS / circuit availability remains out of app scope.
 - Longer-term: secure streaming file transfer, further UX polish, and the remaining threat-model/release-documentation updates.
 
 ## Handoff status

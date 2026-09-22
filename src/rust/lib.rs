@@ -35,9 +35,11 @@ pub use ratchet::{
 };
 pub use tor_socks::{
     is_loopback_host, is_onion_destination, probe as tor_probe, socks5_send, TorProbe,
+    MAX_SOCKS_FRAME, read_framed_u16, read_framed_u16_max, write_framed_u16,
 };
 pub use hidden_service::{
     start_hidden_service_with_key, cookie_path_from_protocolinfo, HiddenService,
+    MAX_HS_INBOUND_FRAME, HS_INBOUND_QUEUE_CAP,
 };
 pub use wire::{frame_v2, unframe_v2};
 pub use net_mode::{
