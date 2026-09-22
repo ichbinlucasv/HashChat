@@ -367,6 +367,60 @@ impl SessionState {
         self.muted_ids.len() < before
     }
 
+    /// Remove one contact and securely wipe its ratchet, pending frames, and deny entries.
+    ///
+    /// Zeroizes ratchet bytes and pending ciphertext bodies for this contact before drop.
+    /// Also removes matching blocked/muted ids and clears contact public-key fields.
+    /// Does not touch identity or other contacts. Returns true if the contact id was found.
+    ///
+    /// Extreme: same in-RAM behavior; the next [`save_session`] still strips lists via
+    /// [`Self::for_disk`] (no durable contact continuity under Extreme).
+    pub fn delete_contact_secure(&mut self, contact_id: &str) -> bool {
+        let id = contact_id.trim();
+        if id.is_empty() {
+            return false;
+        }
+        let Some(pos) = self.contacts.iter().position(|c| c.id == id) else {
+            return false;
+        };
+        let onion = self.contacts[pos].onion.clone();
+        {
+            let c = &mut self.contacts[pos];
+            c.x25519.zeroize();
+            c.ed25519.zeroize();
+            c.onion.clear();
+            c.display_name.clear();
+            c.id.clear();
+        }
+        self.contacts.remove(pos);
+
+        let mut kept_ratchets: Vec<(String, Vec<u8>)> = Vec::with_capacity(self.ratchets.len());
+        for (rid, mut bytes) in self.ratchets.drain(..) {
+            if rid == id {
+                bytes.zeroize();
+            } else {
+                kept_ratchets.push((rid, bytes));
+            }
+        }
+        self.ratchets = kept_ratchets;
+
+        if !onion.is_empty() {
+            let mut kept_pending: Vec<(String, Vec<u8>)> = Vec::with_capacity(self.pending.len());
+            for (dest, mut frame) in self.pending.drain(..) {
+                if dest == onion || dest.eq_ignore_ascii_case(&onion) {
+                    frame.zeroize();
+                } else {
+                    kept_pending.push((dest, frame));
+                }
+            }
+            self.pending = kept_pending;
+        }
+
+        self.blocked_ids.retain(|b| b != id);
+        self.muted_ids.retain(|m| m != id);
+        true
+    }
+
     /// Securely clear pending frame bodies then drop the queue.
     pub fn clear_pending_secure(&mut self) {
         for (_o, frame) in self.pending.iter_mut() {
@@ -1509,6 +1563,93 @@ mod tests {
         assert_eq!(session.refuse_send_if_blocked("alice").unwrap_err(), "blocked contact");
         assert!(session.unblock_contact_id("SASXYZ"));
         assert!(session.refuse_send_if_blocked("alice").is_ok());
+    }
+
+    #[test]
+    fn delete_contact_secure_wipes_ratchet_pending_and_deny() {
+        let id = LongTermIdentity::from_seed([0xD4u8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "me.onion",
+            vec![],
+        ));
+        session.contacts.push(PersistedContact {
+            id: "bob".into(),
+            display_name: "SASBOB".into(),
+            onion: "bobonionaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion".into(),
+            x25519: [0x11u8; 32],
+            ed25519: [0x22u8; 32],
+        });
+        session.contacts.push(PersistedContact {
+            id: "carol".into(),
+            display_name: "SASCAROL".into(),
+            onion: "carolonionaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion".into(),
+            x25519: [0x33u8; 32],
+            ed25519: [0x44u8; 32],
+        });
+        session.set_ratchet_bytes("bob", vec![0xBBu8; 48]);
+        session.set_ratchet_bytes("carol", vec![0xCCu8; 48]);
+        session.queue_pending(
+            "bobonionaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion",
+            vec![0xDDu8; 16],
+        );
+        session.queue_pending(
+            "carolonionaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion",
+            vec![0xEEu8; 16],
+        );
+        assert!(session.block_contact_id("bob"));
+        assert_eq!(session.mute_contact_id("carol").unwrap(), true);
+
+        assert!(session.delete_contact_secure("bob"));
+        assert_eq!(session.contacts.len(), 1);
+        assert_eq!(session.contacts[0].id, "carol");
+        assert!(session.ratchets.iter().all(|(k, _)| k != "bob"));
+        assert_eq!(session.ratchets.len(), 1);
+        assert_eq!(session.ratchets[0].0, "carol");
+        assert!(session
+            .pending
+            .iter()
+            .all(|(o, _)| !o.starts_with("bobonion")));
+        assert_eq!(session.pending.len(), 1);
+        assert!(!session.is_blocked_id("bob"));
+        assert!(session.is_muted_id("carol"));
+        assert!(!session.delete_contact_secure("bob"));
+        // Other contact material intact.
+        assert_eq!(session.ratchets[0].1, vec![0xCCu8; 48]);
+    }
+
+    #[test]
+    fn delete_contact_secure_extreme_ram_then_for_disk_empty() {
+        use crate::net_mode::PostureProfile;
+        let id = LongTermIdentity::from_seed([0xD5u8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "ext.onion",
+            vec![],
+        ));
+        session.net.set_posture(PostureProfile::Extreme);
+        session.contacts.push(PersistedContact {
+            id: "x".into(),
+            display_name: "SASX".into(),
+            onion: "xonionaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion".into(),
+            x25519: [1u8; 32],
+            ed25519: [2u8; 32],
+        });
+        session.set_ratchet_bytes("x", vec![0xAAu8; 32]);
+        session.queue_pending(
+            "xonionaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion",
+            vec![1, 2, 3],
+        );
+        assert!(session.delete_contact_secure("x"));
+        assert!(session.contacts.is_empty());
+        assert!(session.ratchets.is_empty());
+        assert!(session.pending.is_empty());
+        let disk = session.for_disk();
+        assert!(disk.contacts.is_empty());
+        assert!(disk.ratchets.is_empty());
+        assert!(disk.pending.is_empty());
+        assert!(disk.blocked_ids.is_empty());
+        assert!(disk.muted_ids.is_empty());
     }
 
     #[test]

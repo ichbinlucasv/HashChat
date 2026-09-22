@@ -50,6 +50,8 @@ enum Screen {
     Unlock,
     Main,
     ConfirmWipe,
+    /// Two-step `:delete-contact` confirm (OPSEC; not a remote wipe).
+    ConfirmDeleteContact,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -112,6 +114,8 @@ struct App {
     net: NetConfig,
     /// Local disappearing TTL seconds (0 = off). Synced into session blob v4+.
     disappear_ttl_secs: u32,
+    /// Pending contact id for `:delete-contact-confirm` (cleared on Esc / success).
+    pending_delete_contact: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -178,6 +182,7 @@ impl App {
             hs: None,
             net: NetConfig::from_env(),
             disappear_ttl_secs: 0,
+            pending_delete_contact: None,
         }
     }
 
@@ -323,6 +328,112 @@ impl App {
             line.text.zeroize();
         }
         self.messages.clear();
+    }
+
+    /// Zeroize plaintext chat lines tagged with `contact_id` (via wipe_key).
+    fn clear_contact_chat_lines(&mut self, contact_id: &str) {
+        let mut kept: Vec<ChatLine> = Vec::with_capacity(self.messages.len());
+        for mut line in self.messages.drain(..) {
+            let match_cid = line
+                .wipe_key
+                .as_ref()
+                .map(|(cid, _)| cid == contact_id)
+                .unwrap_or(false);
+            if match_cid {
+                line.text.zeroize();
+                if let Some((mut cid, _)) = line.wipe_key.take() {
+                    cid.zeroize();
+                }
+            } else {
+                kept.push(line);
+            }
+        }
+        self.messages = kept;
+    }
+
+    /// Adjust selection after removing contact at `removed_idx`.
+    fn fix_selection_after_contact_removal(&mut self, removed_idx: usize) {
+        let len = self
+            .session
+            .as_ref()
+            .map(|s| s.contacts.len())
+            .unwrap_or(0);
+        match self.selected_contact {
+            Some(sel) if sel == removed_idx => {
+                self.selected_contact = None;
+                self.contacts_state.select(None);
+            }
+            Some(sel) if sel > removed_idx => {
+                let ni = sel - 1;
+                if ni < len {
+                    self.selected_contact = Some(ni);
+                    self.contacts_state.select(Some(ni));
+                } else {
+                    self.selected_contact = None;
+                    self.contacts_state.select(None);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_delete_contact_command(&mut self, args: &str) {
+        let id = match self.deny_token_or_selected(args) {
+            Ok(id) => id,
+            Err(e) => {
+                self.status_msg = format!(":delete-contact refused: {e}");
+                self.push_msg(self.status_msg.clone());
+                return;
+            }
+        };
+        self.pending_delete_contact = Some(id);
+        self.input.clear();
+        self.screen = Screen::ConfirmDeleteContact;
+        self.status_msg =
+            "DELETE CONTACT: type :delete-contact-confirm to wipe ratchet, or Esc to cancel."
+                .into();
+    }
+
+    fn handle_delete_contact_confirm(&mut self) {
+        let Some(id) = self.pending_delete_contact.take() else {
+            self.screen = Screen::Main;
+            self.status_msg = "No pending contact delete (use :delete-contact first).".into();
+            self.push_msg(self.status_msg.clone());
+            return;
+        };
+        let removed_idx = self
+            .session
+            .as_ref()
+            .and_then(|s| s.contacts.iter().position(|c| c.id == id));
+        let ok = self
+            .session
+            .as_mut()
+            .map(|s| s.delete_contact_secure(&id))
+            .unwrap_or(false);
+        if !ok {
+            self.screen = Screen::Main;
+            self.status_msg = "Contact delete failed (unknown id).".into();
+            self.push_msg(self.status_msg.clone());
+            return;
+        }
+        self.clear_contact_chat_lines(&id);
+        if let Some(idx) = removed_idx {
+            self.fix_selection_after_contact_removal(idx);
+        }
+        match self.persist_session() {
+            Ok(()) => {
+                self.screen = Screen::Main;
+                // OPSEC: no onion / plaintext dumps.
+                self.status_msg = "Contact removed and ratchet wiped".into();
+                self.push_msg(self.status_msg.clone());
+            }
+            Err(_) => {
+                self.screen = Screen::Main;
+                self.status_msg =
+                    "Contact wiped in memory; durable save failed (unlock/passphrase?).".into();
+                self.push_msg(self.status_msg.clone());
+            }
+        }
     }
 
     fn apply_extreme_ttl_default(&mut self) {
@@ -1378,6 +1489,7 @@ impl App {
                 self.my_sas.clear();
                 self.my_contact_link.clear();
                 self.clear_transcript_secure();
+                self.pending_delete_contact = None;
                 self.disappear_ttl_secs = 0;
                 self.net = NetConfig::from_env();
                 self.contacts_state = ListState::default();
@@ -1388,6 +1500,9 @@ impl App {
                 // OPSEC: status must not echo prior chat/passphrase material.
                 self.status_msg =
                     "Local sensitive data erased. Unlock with a new passphrase to continue.".into();
+            }
+            ":delete-contact-confirm" => {
+                self.handle_delete_contact_confirm();
             }
             ":my-contact" => {
                 if self.net.extreme_blocks_contact_export() {
@@ -1481,6 +1596,9 @@ impl App {
                     "  :mute / :unmute [id]    suppress inbound UI (decrypt for sync)",
                 );
                 self.push_msg("  :blocked                list blocked + muted ids");
+                self.push_msg(
+                    "  :delete-contact [id]    remove contact + wipe ratchet (confirm)",
+                );
                 self.push_msg("  :wipe                   nuclear local wipe (confirm)");
                 self.push_msg("  :quit                   exit");
                 self.push_msg(
@@ -1542,6 +1660,18 @@ impl App {
                 let args = other.strip_prefix(":unmute").unwrap_or("").trim();
                 self.handle_unmute_command(args);
             }
+            other if other == ":delete-contact"
+                || other.starts_with(":delete-contact ")
+                || other == ":rm-contact"
+                || other.starts_with(":rm-contact ") =>
+            {
+                let args = if other.starts_with(":rm-contact") {
+                    other.strip_prefix(":rm-contact").unwrap_or("").trim()
+                } else {
+                    other.strip_prefix(":delete-contact").unwrap_or("").trim()
+                };
+                self.handle_delete_contact_command(args);
+            }
             other if other == ":disappear"
                 || other.starts_with(":disappear ")
                 || other == ":ttl"
@@ -1599,6 +1729,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
         Screen::Main => draw_main(f, app, area),
         // Full-screen confirm: never render chat/contacts under the wipe prompt.
         Screen::ConfirmWipe => draw_wipe_modal(f, app, area),
+        Screen::ConfirmDeleteContact => draw_delete_contact_modal(f, app, area),
     }
 }
 
@@ -1872,6 +2003,55 @@ fn draw_wipe_modal(f: &mut ratatui::Frame, app: &App, area: Rect) {
     f.render_widget(body, rect);
 }
 
+fn draw_delete_contact_modal(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    f.render_widget(Clear, area);
+    f.render_widget(Block::default().style(Style::default().bg(BG)), area);
+
+    let w = area.width.min(72).max(48);
+    let h = 11u16.min(area.height.saturating_sub(2)).max(9);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let rect = Rect::new(x, y, w, h);
+    f.render_widget(Clear, rect);
+    let body = Paragraph::new(vec![
+        Line::from(Span::styled(
+            "DELETE CONTACT",
+            Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Removes the contact and zeroizes local ratchet bytes,",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(Span::styled(
+            "pending frames for that dest, and mute/block entries.",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Type :delete-contact-confirm then Enter.  Esc cancels.",
+            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Local only — not a remote wipe (THREATMODEL).",
+            Style::default().fg(DIM),
+        )),
+        Line::from(Span::styled(&app.status_msg, Style::default().fg(DIM))),
+    ])
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(
+                " DANGER · delete-contact ",
+                Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
+            ))
+            .border_style(Style::default().fg(DANGER))
+            .style(Style::default().bg(PANEL)),
+    );
+    f.render_widget(body, rect);
+}
+
 fn run() -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = stdout();
@@ -1960,6 +2140,43 @@ fn run() -> io::Result<()> {
                         app.screen = Screen::Main;
                         app.status_msg =
                             "Wipe cancelled (expected :wipe-confirm).".into();
+                        app.focus = Focus::Input;
+                    }
+                }
+                _ => {}
+            },
+            Screen::ConfirmDeleteContact => match key.code {
+                KeyCode::Esc => {
+                    app.pending_delete_contact = None;
+                    app.screen = Screen::Main;
+                    app.input.clear();
+                    app.status_msg = "Contact delete cancelled.".into();
+                    app.focus = Focus::Input;
+                }
+                KeyCode::Char(ch) => {
+                    app.focus = Focus::Input;
+                    app.input.push(ch);
+                    app.status_msg = format!("Confirm input: {}", app.input);
+                }
+                KeyCode::Backspace => {
+                    app.input.pop();
+                    app.status_msg = if app.input.is_empty() {
+                        "DELETE CONTACT: type :delete-contact-confirm to wipe ratchet, or Esc to cancel."
+                            .into()
+                    } else {
+                        format!("Confirm input: {}", app.input)
+                    };
+                }
+                KeyCode::Enter => {
+                    let cmd = app.input.trim().to_string();
+                    app.input.clear();
+                    if cmd == ":delete-contact-confirm" {
+                        app.handle_command(&cmd);
+                    } else {
+                        app.pending_delete_contact = None;
+                        app.screen = Screen::Main;
+                        app.status_msg =
+                            "Contact delete cancelled (expected :delete-contact-confirm).".into();
                         app.focus = Focus::Input;
                     }
                 }
