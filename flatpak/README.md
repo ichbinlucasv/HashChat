@@ -39,8 +39,9 @@ Desktop file and metainfo use `Icon=org.hashchat.HashChat`. See [ICONS.md](./ICO
 
 ## Brand / metainfo
 
-- Black + gold Rust TUI; logo 2 chat-bubble / hash mark
-- Metainfo documents the host-Tor requirement
+- Product surface: Rust TUI (`hashchat-tui`); black + gold; logo 2 chat-bubble / hash mark
+- Metainfo documents host Tor + fail-closed non-Tor (no silent clearnet fallback)
+- Preview packaging only — not a production-readiness claim
 - Screenshots remain placeholders until captured per `docs/SCREENSHOTS.md`
 
 ## Checklist
@@ -49,6 +50,7 @@ Desktop file and metainfo use `Icon=org.hashchat.HashChat`. See [ICONS.md](./ICO
 - [x] Command / binary: `hashchat-tui` (Rust)
 - [x] Logo 2 icons installed from hicolor
 - [x] Tor requirement documented (README + metainfo + INSTALL.md)
+- [x] Fail-closed / no silent clearnet fallback documented
 - [ ] Real screenshots for Flathub
 - [ ] Signed public release polish
 

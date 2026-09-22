@@ -4,28 +4,30 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <name>HashChat</name>
-  <summary>Tor-only anonymous messenger (Rust TUI) — Double Ratchet, black + gold, strong OPSEC</summary>
+  <summary>Tor-only anonymous messenger (Rust TUI) — Double Ratchet, black + gold; host Tor required</summary>
 
   <description>
     <p>
-      HashChat is a privacy-first, metadata-resistant messenger designed for people who need
-      serious protection against advanced adversaries.
+      HashChat is a privacy-first, metadata-resistant messenger. This Flatpak ships the native
+      Rust TUI desktop client (binary hashchat-tui), themed black and gold (logo: chat bubble
+      with hash mark). It is preview packaging — verify claims yourself; see the project threat
+      model and release notes before high-risk use.
     </p>
     <p>
-      The desktop client is the native Rust TUI (binary hashchat-tui), themed black and gold
-      (logo: chat bubble with hash mark). A host Tor daemon with SOCKS and ControlPort cookie
-      authentication is required; the Flatpak does not bundle Tor. The ControlPort cookie
-      must be readable by the user (typical path /run/tor/control.authcookie); never share
-      cookie contents or onion private keys.
+      A host Tor daemon with loopback SOCKS and ControlPort cookie authentication is required;
+      the Flatpak does not bundle Tor. The ControlPort cookie must be readable by the user
+      (typical path /run/tor/control.authcookie). Never share cookie contents or onion private
+      keys. Transport is fail-closed: missing or unreadable cookie auth, or non-Tor modes, do
+      not silently fall back to clearnet.
     </p>
     <p>
-      It uses real Double Ratchet cryptography with forward secrecy, Tor v3 hidden services by
-      default, burner profiles with aggressive isolation, and an extremely fast panic wipe that
-      destroys all cryptographic material.
+      Core design goals include Double Ratchet cryptography with forward secrecy, Tor v3
+      hidden services by default, burner profiles with aggressive isolation, and a panic wipe
+      that destroys local cryptographic material. Limitations are documented honestly in-tree.
     </p>
     <p>
-      The project follows a maximum paranoid philosophy: minimal attack surface, reproducible
-      builds, and honest documentation of limitations.
+      Philosophy: minimal attack surface, reproducible builds where documented, and OPSEC-safe
+      wording without overclaiming production readiness.
     </p>
   </description>
 

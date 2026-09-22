@@ -464,7 +464,7 @@ HASHCHAT_ALLOW_HASKELL=1 ./run-tui
 
 ## Flatpak
 
-Icons (logo 2, black + gold) live under `flatpak/icons/hicolor/` (scalable SVG + 64/128/256/512 PNG). Desktop/metainfo reference `org.hashchat.HashChat`.
+Sandboxed packaging for the **Rust TUI** product surface (`hashchat-tui`, Flatpak `command:` / desktop `Exec=hashchat-tui`). Icons (logo 2, black + gold) live under `flatpak/icons/hicolor/` (scalable SVG + 64/128/256/512 PNG). Desktop/metainfo use `org.hashchat.HashChat`.
 
 ```bash
 nix build .#hashchat-flatpak
@@ -472,7 +472,9 @@ flatpak install --user result/hashchat-tui.flatpak
 flatpak run org.hashchat.HashChat
 ```
 
-**Host Tor is still required** — the Flatpak sandbox does not replace a system Tor daemon with ControlPort + cookie auth. See `flatpak/README.md`.
+**Host Tor is required.** The Flatpak does **not** bundle Tor and does not replace a system Tor daemon with loopback SOCKS + ControlPort cookie auth. Cookie path comes from Tor `PROTOCOLINFO` (typical: `/run/tor/control.authcookie`); your user must be able to read it — never paste cookie bytes or onion private keys into tickets.
+
+Transport is **fail-closed**: missing/unreadable ControlPort cookie or non-Tor modes do **not** silently fall back to clearnet. Preview packaging only — not a production-readiness claim. Details: `flatpak/README.md` and `flatpak/org.hashchat.HashChat.metainfo.xml`.
 
 ---
 
