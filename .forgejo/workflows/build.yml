@@ -26,12 +26,17 @@ jobs:
       - name: Install dependencies (Rust only — release path)
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl gcc make pkg-config libssl-dev
+          sudo apt-get install -y curl gcc make pkg-config libssl-dev ripgrep
 
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain stable
           # shellcheck source=/dev/null
           source "$HOME/.cargo/env"
           echo "Using Cargo: $(cargo --version)"
+
+      - name: CI security gate (fail-closed, offline)
+        run: |
+          chmod +x scripts/ci-security-gate.sh
+          ./scripts/ci-security-gate.sh
 
       - name: Build and test Rust release path
         run: |

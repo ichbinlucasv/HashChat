@@ -56,6 +56,11 @@ Onion / identity private material must not appear as sibling plaintext files und
 `hashchat_data/` (Tor may still keep HS keys under `tor/hidden_service/` when Tor
 itself persists them; prefer `DiscardPK` / passphrase-wrapped copies in app state).
 
+**CI posture:** Forgejo `build` on push/PR runs `scripts/ci-security-gate.sh` (offline,
+fail-closed) before Rust tests/TUI build — asserts Clearnet/I2P refusals + TUI
+`require_messenger_transport`, insecure-dev persist opt-in only, and cookie-only Tor
+ControlPort AUTHENTICATE (no bare AUTHENTICATE). No Tor daemon or network required.
+
 Nuclear wipe (`wipe_local_sensitive` / TUI `:wipe` → `:wipe-confirm`) deletes
 `state.enc` (and thus contacts/ratchets/pending) along with other local data under
 `hashchat_data/` and Tor HS material under `tor/hidden_service/`. The TUI confirm

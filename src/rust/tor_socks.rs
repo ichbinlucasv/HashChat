@@ -251,6 +251,23 @@ mod tests {
     }
 
     #[test]
+    fn socks_connect_refuses_non_onion_ip_without_connect() {
+        // Must fail closed on clearnet IP before any SOCKS handshake / network use.
+        let err = socks5_connect("127.0.0.1", 9050, "8.8.8.8", 443).unwrap_err();
+        assert!(err.contains(".onion"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn onion_destination_refuses_clearnet_and_short_onion() {
+        assert!(!is_onion_destination("1.2.3.4"));
+        assert!(!is_onion_destination("1.2.3.4:443"));
+        assert!(!is_onion_destination("example.org:443"));
+        // Too short to be v3 even with .onion suffix.
+        assert!(!is_onion_destination("abcd.onion"));
+        assert!(!is_onion_destination("abcd.onion:80"));
+    }
+
+    #[test]
     fn framed_u16_tcp_roundtrip() {
         use std::net::TcpListener;
         use std::thread;

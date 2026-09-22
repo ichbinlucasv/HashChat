@@ -2,7 +2,7 @@
 
 **Snapshot:** 22 September 2026 (Europe/Zurich)  
 **Branch:** `codeberg-primary`  
-**Tip:** `56326daf2f4f012024609f07a2b61245cb1d9ac0`
+**Tip:** `PENDING`
 
 ## Executive summary
 
@@ -23,6 +23,8 @@ The Rust desktop path moved from scaffold to a usable, Tor-first two-peer TUI. T
 - **Extreme TUI metadata gates — `5c932fb`:** `NetConfig::extreme_blocks_contact_export` (plus groups/voice helpers) centralize Extreme refusals. Rust TUI refuses `:my-contact` under Extreme, keeps short `:sas`, shortens onion display in `:status`/listen status, announces locks in `:help`/`:status`, and refuses `:group`/`:voice` stubs. Docs: THREATMODEL + EXTREME_PROFILE honesty pass; INSTALL Haskell removal criteria marked MET/MET/OPEN (criterion 2 closed this pass); ROADMAP item 0 one-line status.
 - **Haskell removal criterion 2 MET — `56326daf2f4f012024609f07a2b61245cb1d9ac0`:** Distro installers no longer print Cabal recipes on the happy path; `flake.nix` default package/`devShell` are Rust-only with opt-in `haskellDev`; Forgejo CI builds Rust TUI without requiring Cabal (manual `haskell-parity` only); SBOM/Flatpak notes demote Cabal. INSTALL criterion 2 → MET; opt-in hatch kept (`HASHCHAT_ALLOW_HASKELL=1`, `./build.sh --haskell`).
 
+- **CI security gate (fail-closed, offline):** Forgejo required `build` job runs `scripts/ci-security-gate.sh` before Rust tests/TUI build (ripgrep + policy anchors: ClearnetRefused/I2pNotImplemented + TUI `require_messenger_transport`, `HASHCHAT_INSECURE_DEV_PERSIST` opt-in only, cookie-only Tor AUTHENTICATE). Extra `tor_socks` unit tests refuse non-onion IP/short onion without network. No clippy introduced; no push.
+
 ## How to run
 
 From a checkout of `codeberg-primary`, with a compatible Rust toolchain and a local Tor service configured for SOCKS plus cookie-authenticated ControlPort:
@@ -42,14 +44,14 @@ cargo build --release --locked --bin hashchat-tui --features tui
 
 Inside the TUI, unlock or create an identity, use `:listen`, then exchange signed `hashchat://` contacts with the other peer. The default transport is Tor and the application fails closed if the required Tor path is unavailable. Do not copy Tor cookies, onion private material, passphrases, or message bodies into logs, tickets, or chat.
 
-The tip commit records `cargo test --lib` passing with 62 tests and a successful `cargo build --bin hashchat-tui --features tui`.
+The tip commit records `cargo test --lib` passing with 64 tests and a successful `cargo build --bin hashchat-tui --features tui`, plus offline `./scripts/ci-security-gate.sh`.
 
 ## Remaining backlog
 
 ### Release and validation
 
 - Complete real-hardware two-peer/Tor validation, capture non-sensitive evidence and screenshots, and prepare the signed v0.2/preview release.
-- Keep CI/pre-tag security gates strict; finish reproducible Android `.so` output and SBOM/diff automation.
+- Offline `ci-security-gate.sh` now required in Forgejo `build`; keep pre-tag gates strict; finish reproducible Android `.so` output and SBOM/diff automation.
 
 ### Rust/TUI and posture
 
