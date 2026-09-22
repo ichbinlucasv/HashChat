@@ -2,7 +2,7 @@
 
 **Snapshot:** 22 September 2026 (Europe/Zurich)  
 **Branch:** `codeberg-primary`  
-**Tip:** `fc46840b66117f838422c2a7b760961f3e247760`
+**Tip:** `d84e1df64c19368423bd5d03d25b5aff3b9eb571`
 
 ## Executive summary
 
@@ -36,7 +36,7 @@ The Rust desktop path moved from scaffold to a usable, Tor-first two-peer TUI. T
 
 - **HS accept backpressure — `fc46840`:** App-side bounds on Tor HS local accept path: `MAX_HS_INBOUND_FRAME` = 16 KiB (≤ `MAX_SOCKS_FRAME`), bounded inbound `sync_channel` (`HS_INBOUND_QUEUE_CAP` = 64; full → drop + count, never unbounded), soft per-connection frame budget (64). Oversize length closes stream without reading/queuing body. Drop counter exposed (no frame contents in status/logs). Unit tests for oversize rejection + queue-full drops (local TCP, no Tor). **Honesty:** local HS still depends on Tor for real availability; this is process memory/queue backpressure only. THREATMODEL DDoS note updated. No push.
 
-- **Best-effort TUI mlock — `PENDING_SHA`:** After successful unlock/create, Rust TUI calls `mlockall(MCL_CURRENT|MCL_FUTURE)` + `mlock` on the live passphrase `String` bytes (safe wrappers `mlockall_current` / `mlock_bytes` in lib; FFI unchanged for Android stubs). Failure never aborts; status notes once “mlock unavailable (best-effort)”. Unit smoke: wrappers return bool without panicking (no CAP_IPC_LOCK). **Honesty:** mlock is best-effort; String reallocation makes per-buffer lock imperfect; Tails/Qubes stronger; Android still weaker. CI gate optional anchor that TUI references `mlockall_current`. No push.
+- **Best-effort TUI mlock — `d84e1df`:** After successful unlock/create, Rust TUI calls `mlockall(MCL_CURRENT|MCL_FUTURE)` + `mlock` on the live passphrase `String` bytes (safe wrappers `mlockall_current` / `mlock_bytes` in lib; FFI unchanged for Android stubs). Failure never aborts; status notes once “mlock unavailable (best-effort)”. Unit smoke: wrappers return bool without panicking (no CAP_IPC_LOCK). **Honesty:** mlock is best-effort; String reallocation makes per-buffer lock imperfect; Tails/Qubes stronger; Android still weaker. CI gate optional anchor that TUI references `mlockall_current`. No push.
 
 
 
@@ -61,7 +61,7 @@ cargo build --release --locked --bin hashchat-tui --features tui
 
 Inside the TUI, unlock or create an identity, use `:listen`, then exchange signed `hashchat://` contacts with the other peer. The default transport is Tor and the application fails closed if the required Tor path is unavailable. Do not copy Tor cookies, onion private material, passphrases, or message bodies into logs, tickets, or chat.
 
-The tip commit records `cargo test --lib` passing (includes HS oversize/queue-full + framed max tests) and a successful `cargo build --bin hashchat-tui --features tui`, plus offline `./scripts/ci-security-gate.sh`.
+The tip commit records `cargo test --lib` passing (includes mlock wrapper smoke + HS oversize/queue-full + framed max tests) and a successful `cargo build --bin hashchat-tui --features tui`, plus offline `./scripts/ci-security-gate.sh` (TUI mlockall_current anchor).
 
 ## Remaining backlog
 
