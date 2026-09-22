@@ -2,7 +2,7 @@
 
 **Snapshot:** 22 September 2026 (Europe/Zurich)  
 **Branch:** `codeberg-primary`  
-**Tip:** `4b7bd573dbbaffc015ea23e8edd1ce7d5a195696`
+**Tip:** `76cd1aaa1761e5301dc3fa703ca1e9fd8ce9368d`
 
 ## Executive summary
 
@@ -44,7 +44,7 @@ The Rust desktop path moved from scaffold to a usable, Tor-first two-peer TUI. T
 
 
 
-- **Idle auto-lock + `:lock` (Rust TUI):** After N minutes without input (default **5m**; `:lock-timeout off|1m|5m|15m|30m|…`) or on manual `:lock`, the TUI zeroizes passphrase + chat lines + contact-link display strings, drops `SessionState` from RAM (`wipe_memory_secure`), and stops the HS accept / Tor listen path. Disk `state.enc` untouched; re-unlock via existing `load_session` (onion key stays inside the passphrase wrap only). Session blob **v7** stores `lock_timeout_secs` (pre-v7 loads default 300). Extreme shortens to **1m** when timeout is off or longer. `:status`/`:help`/header document; no plaintext in lock messages. Tests: timeout parse + prefs round-trip + pre-v7 default; TUI build; `ci-security-gate` `lock_ui` anchor. **Honesty:** local UI defense only — not remote wipe. THREATMODEL + EXTREME_PROFILE. No push.
+- **Idle auto-lock + `:lock` (Rust TUI) — `76cd1aa`:** After N minutes without input (default **5m**; `:lock-timeout off|1m|5m|15m|30m|…`) or on manual `:lock`, the TUI zeroizes passphrase + chat lines + contact-link display strings, drops `SessionState` from RAM (`wipe_memory_secure`), and stops the HS accept / Tor listen path. Disk `state.enc` untouched; re-unlock via existing `load_session` (onion key stays inside the passphrase wrap only). Session blob **v7** stores `lock_timeout_secs` (pre-v7 loads default 300). Extreme shortens to **1m** when timeout is off or longer. `:status`/`:help`/header document; no plaintext in lock messages. Tests: timeout parse + prefs round-trip + pre-v7 default; TUI build; `ci-security-gate` `lock_ui` anchor. **Honesty:** local UI defense only — not remote wipe. THREATMODEL + EXTREME_PROFILE. No push.
 
 
 ## How to run
