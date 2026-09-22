@@ -27,7 +27,7 @@ pub use contact_link::{
     sas_for_signed, canonical_payload,
 };
 pub use session_persist::{
-    IdentityOnionState, PersistedContact, SessionState, PersistMode,
+    IdentityOnionState, PersistedContact, SessionState, PersistMode, InboundDenyPolicy,
     save_disk, load_disk, save_session, load_session, commit_outgoing, wipe_disk, state_exists,
 };
 pub use ratchet::{
@@ -1384,6 +1384,8 @@ pub extern "C" fn rust_session_state_save(
             pending,
             net: NetConfig::default(),
             disappear_ttl_secs: 0,
+            blocked_ids: Vec::new(),
+            muted_ids: Vec::new(),
         };
         let mode = PersistMode::from_flags(insecure_dev != 0);
         save_session(Path::new(dir), mode, pass, &state).is_ok()

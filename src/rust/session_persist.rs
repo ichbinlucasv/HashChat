@@ -30,25 +30,28 @@
 //! Blob version: v1 = identity+onion only (H2); v2 = + contacts/ratchets/pending (H3);
 //! v3 = + network prefs ([`crate::net_mode::NetConfig`]: mode / DNS / posture).
 //! v4 = + disappearing TTL seconds (u32 BE; 0 = off). Local policy only — not on the wire.
-//! Load accepts v1/v2/v3/v4; save always writes v4.
+//! v5 = + blocked / muted contact-id string lists (deny list; Standard durable).
+//! Load accepts v1–v5; save always writes v5. Older blobs load empty deny lists.
 //!
 //! ## Extreme disk policy (honest, fail-closed)
 //! When [`crate::net_mode::PostureProfile::Extreme`] is set on the session's
 //! [`NetConfig`], [`save_session`] persists **identity + onion + net prefs +
-//! disappear TTL only**. Contacts, ratchets, and pending frames are written as
-//! empty vectors (blob stays v4). Trade-off: smaller at-rest footprint and no
-//! multi-session contact continuity — the user must re-add contacts after
-//! restart. Tor 1:1 messaging for the **current** process session is unchanged
-//! (in-memory contacts/ratchets/queue still work until exit).
+//! disappear TTL only**. Contacts, ratchets, pending frames, and blocked/muted
+//! lists are written as empty vectors (blob stays v5). Trade-off: smaller at-rest
+//! footprint and no multi-session contact/deny-list continuity — the user must
+//! re-add contacts (and re-block if needed) after restart. Tor 1:1 messaging for
+//! the **current** process session is unchanged (in-memory contacts/ratchets/queue
+//! /deny lists still work until exit).
 //!
-//! **Load:** legacy Extreme blobs that still contain contacts are loaded into
-//! memory for the current session; the next Extreme save strips them. Standard
-//! posture keeps full H3 round-trip.
+//! **Load:** legacy Extreme blobs that still contain contacts/deny lists are
+//! loaded into memory for the current session; the next Extreme save strips them.
+//! Standard posture keeps full H3 + deny-list round-trip.
 //!
 //! Prefs are non-secret policy but live inside the wrapped blob so they cannot be
 //! silently toggled by swapping a plaintext sibling file under `hashchat_data/`.
 //! Missing prefs on v1/v2 load default to [`crate::net_mode::NetConfig::default`]
-//! (Tor + standard); missing TTL on v1–v3 loads as `0` (off).
+//! (Tor + standard); missing TTL on v1–v3 loads as `0` (off); missing deny lists
+//! on v1–v4 load as empty.
 
 use crate::envelope;
 use crate::longterm_identity::LongTermIdentity;
@@ -66,6 +69,7 @@ const BLOB_VERSION_V1: u8 = 1;
 const BLOB_VERSION_V2: u8 = 2;
 const BLOB_VERSION_V3: u8 = 3;
 const BLOB_VERSION_V4: u8 = 4;
+const BLOB_VERSION_V5: u8 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PersistMode {
@@ -144,6 +148,13 @@ pub struct SessionState {
     /// Local disappearing-message TTL in seconds (`0` = off). v4+; not sent on wire.
     #[zeroize(skip)]
     pub disappear_ttl_secs: u32,
+    /// Contact ids refused for send + inbound decrypt/display (v5+; Standard durable).
+    #[zeroize(skip)]
+    pub blocked_ids: Vec<String>,
+    /// Contact ids whose inbound plaintext is suppressed in UI after decrypt (v5+).
+    /// Mute still advances the ratchet for sync; block does not decrypt.
+    #[zeroize(skip)]
+    pub muted_ids: Vec<String>,
 }
 
 impl SessionState {
@@ -155,6 +166,8 @@ impl SessionState {
             pending: Vec::new(),
             net: NetConfig::default(),
             disappear_ttl_secs: 0,
+            blocked_ids: Vec::new(),
+            muted_ids: Vec::new(),
         }
     }
 
@@ -167,6 +180,8 @@ impl SessionState {
             pending: Vec::new(),
             net,
             disappear_ttl_secs: 0,
+            blocked_ids: Vec::new(),
+            muted_ids: Vec::new(),
         }
     }
 
@@ -204,6 +219,154 @@ impl SessionState {
         }
     }
 
+
+    /// Resolve `:block` / `:mute` token to a contact id (exact id, onion, or unique SAS/id prefix).
+    /// Returns `None` if empty, ambiguous, or unknown — caller must refuse without guessing.
+    pub fn resolve_deny_token(&self, token: &str) -> Option<String> {
+        let t = token.trim();
+        if t.is_empty() {
+            return None;
+        }
+        if let Some(c) = self.contacts.iter().find(|c| c.id == t) {
+            return Some(c.id.clone());
+        }
+        if let Some(c) = self
+            .contacts
+            .iter()
+            .find(|c| c.onion == t || c.onion.eq_ignore_ascii_case(t))
+        {
+            return Some(c.id.clone());
+        }
+        let tl = t.to_ascii_lowercase();
+        let matches: Vec<&PersistedContact> = self
+            .contacts
+            .iter()
+            .filter(|c| {
+                let sas = if c.display_name.is_empty() {
+                    c.id.as_str()
+                } else {
+                    c.display_name.as_str()
+                };
+                sas.to_ascii_lowercase().starts_with(&tl)
+                    || c.id.to_ascii_lowercase().starts_with(&tl)
+            })
+            .collect();
+        if matches.len() == 1 {
+            Some(matches[0].id.clone())
+        } else {
+            None
+        }
+    }
+
+    /// True if `contact_id` is on the durable block list.
+    pub fn is_blocked_id(&self, contact_id: &str) -> bool {
+        self.blocked_ids.iter().any(|id| id == contact_id)
+    }
+
+    /// True if `contact_id` is muted (UI suppress; decrypt still allowed).
+    pub fn is_muted_id(&self, contact_id: &str) -> bool {
+        self.muted_ids.iter().any(|id| id == contact_id)
+    }
+
+    /// Fail-closed send gate: Err when contact is blocked. No plaintext logging.
+    pub fn refuse_send_if_blocked(&self, contact_id: &str) -> Result<(), &'static str> {
+        if self.is_blocked_id(contact_id) {
+            Err("blocked contact")
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Inbound policy for a known contact id (after wire hint / ratchet match).
+    pub fn inbound_deny_policy(&self, contact_id: &str) -> InboundDenyPolicy {
+        if self.is_blocked_id(contact_id) {
+            InboundDenyPolicy::DropNoDecrypt
+        } else if self.is_muted_id(contact_id) {
+            InboundDenyPolicy::DecryptNoDisplay
+        } else {
+            InboundDenyPolicy::Accept
+        }
+    }
+
+    /// Add contact id to block list (idempotent). Removes mute for same id (block wins).
+    /// Returns true if newly blocked.
+    pub fn block_contact_id(&mut self, contact_id: impl Into<String>) -> bool {
+        let id = contact_id.into();
+        self.muted_ids.retain(|m| m != &id);
+        if self.blocked_ids.iter().any(|b| b == &id) {
+            return false;
+        }
+        self.blocked_ids.push(id);
+        true
+    }
+
+    /// Remove id from block list. Also accepts exact token match against stored ids
+    /// when the contact was already removed. Returns true if something was removed.
+    pub fn unblock_contact_id(&mut self, token: &str) -> bool {
+        let t = token.trim();
+        if t.is_empty() {
+            return false;
+        }
+        let before = self.blocked_ids.len();
+        if let Some(id) = self.resolve_deny_token(t) {
+            self.blocked_ids.retain(|b| b != &id);
+        }
+        // Orphan / Extreme-stripped ids: exact or unique prefix against the list itself.
+        let tl = t.to_ascii_lowercase();
+        let list_matches: Vec<String> = self
+            .blocked_ids
+            .iter()
+            .filter(|b| b == &t || b.to_ascii_lowercase().starts_with(&tl))
+            .cloned()
+            .collect();
+        if list_matches.len() == 1 {
+            let id = &list_matches[0];
+            self.blocked_ids.retain(|b| b != id);
+        } else if list_matches.iter().any(|b| b == t) {
+            self.blocked_ids.retain(|b| b != t);
+        }
+        self.blocked_ids.len() < before
+    }
+
+    /// Mute contact id (idempotent). No-op if already blocked (block supersedes).
+    pub fn mute_contact_id(&mut self, contact_id: impl Into<String>) -> Result<bool, &'static str> {
+        let id = contact_id.into();
+        if self.is_blocked_id(&id) {
+            return Err("contact is blocked (unblock first)");
+        }
+        if self.muted_ids.iter().any(|m| m == &id) {
+            return Ok(false);
+        }
+        self.muted_ids.push(id);
+        Ok(true)
+    }
+
+    /// Remove id from mute list (contact resolve or orphan token).
+    pub fn unmute_contact_id(&mut self, token: &str) -> bool {
+        let t = token.trim();
+        if t.is_empty() {
+            return false;
+        }
+        let before = self.muted_ids.len();
+        if let Some(id) = self.resolve_deny_token(t) {
+            self.muted_ids.retain(|m| m != &id);
+        }
+        let tl = t.to_ascii_lowercase();
+        let list_matches: Vec<String> = self
+            .muted_ids
+            .iter()
+            .filter(|m| m == &t || m.to_ascii_lowercase().starts_with(&tl))
+            .cloned()
+            .collect();
+        if list_matches.len() == 1 {
+            let id = &list_matches[0];
+            self.muted_ids.retain(|m| m != id);
+        } else if list_matches.iter().any(|m| m == t) {
+            self.muted_ids.retain(|m| m != t);
+        }
+        self.muted_ids.len() < before
+    }
+
     /// Securely clear pending frame bodies then drop the queue.
     pub fn clear_pending_secure(&mut self) {
         for (_o, frame) in self.pending.iter_mut() {
@@ -222,9 +385,10 @@ impl SessionState {
 
     /// Build the on-disk view for the current posture.
     ///
-    /// Under **Extreme**, contacts / ratchets / pending are empty so they are not
-    /// durable across restart. Identity, onion material, net prefs, and disappear
-    /// TTL are kept. Under **Standard**, returns a full clone (H3).
+    /// Under **Extreme**, contacts / ratchets / pending / blocked / muted are empty
+    /// so they are not durable across restart. Identity, onion material, net prefs,
+    /// and disappear TTL are kept. Under **Standard**, returns a full clone (H3 +
+    /// deny lists).
     ///
     /// The live in-memory session is unchanged; callers keep working state for the
     /// current Tor session and only the durable blob is minimized.
@@ -243,6 +407,8 @@ impl SessionState {
             pending: Vec::new(),
             net: self.net.clone(),
             disappear_ttl_secs: self.disappear_ttl_secs,
+            blocked_ids: Vec::new(),
+            muted_ids: Vec::new(),
         }
     }
 
@@ -255,6 +421,8 @@ impl SessionState {
         self.clear_pending_secure();
         self.clear_ratchets_secure();
         self.contacts.clear();
+        self.blocked_ids.clear();
+        self.muted_ids.clear();
         self.identity.seed.zeroize();
         self.identity.onion_key.zeroize();
         self.identity.onion_key.clear();
@@ -263,6 +431,17 @@ impl SessionState {
         self.net = NetConfig::default();
         self.disappear_ttl_secs = 0;
     }
+}
+
+/// Inbound handling for deny lists (fail-closed for block).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InboundDenyPolicy {
+    /// Not denied — decrypt and display.
+    Accept,
+    /// Muted — decrypt (ratchet sync) but do not show plaintext in the UI.
+    DecryptNoDisplay,
+    /// Blocked — do not decrypt or display (refuse send separately).
+    DropNoDecrypt,
 }
 
 fn data_paths(data_dir: &Path) -> (PathBuf, PathBuf) {
@@ -300,9 +479,29 @@ fn read_len_str(buf: &[u8], pos: &mut usize) -> Result<String, &'static str> {
     String::from_utf8(b).map_err(|_| "utf8")
 }
 
+fn write_string_list(out: &mut Vec<u8>, items: &[String]) {
+    out.extend_from_slice(&(items.len() as u32).to_be_bytes());
+    for s in items {
+        write_len_str(out, s);
+    }
+}
+
+fn read_string_list(buf: &[u8], pos: &mut usize) -> Result<Vec<String>, &'static str> {
+    if *pos + 4 > buf.len() {
+        return Err("truncated string list count");
+    }
+    let n = u32::from_be_bytes(buf[*pos..*pos + 4].try_into().unwrap()) as usize;
+    *pos += 4;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        out.push(read_len_str(buf, pos)?);
+    }
+    Ok(out)
+}
+
 fn serialize_blob(state: &SessionState) -> Vec<u8> {
     let mut plain = Vec::new();
-    plain.push(BLOB_VERSION_V4);
+    plain.push(BLOB_VERSION_V5);
     plain.extend_from_slice(&state.identity.seed);
     write_len_str(&mut plain, &state.identity.onion);
     write_len_bytes(&mut plain, &state.identity.onion_key);
@@ -335,8 +534,12 @@ fn serialize_blob(state: &SessionState) -> Vec<u8> {
     let prefs = state.net.to_persist_bytes();
     write_len_bytes(&mut plain, &prefs);
 
-    // disappearing TTL (v4)
+    // disappearing TTL (v4+)
     plain.extend_from_slice(&state.disappear_ttl_secs.to_be_bytes());
+
+    // deny lists (v5+)
+    write_string_list(&mut plain, &state.blocked_ids);
+    write_string_list(&mut plain, &state.muted_ids);
 
     plain
 }
@@ -350,6 +553,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         && ver != BLOB_VERSION_V2
         && ver != BLOB_VERSION_V3
         && ver != BLOB_VERSION_V4
+        && ver != BLOB_VERSION_V5
     {
         return Err("bad state blob version");
     }
@@ -428,7 +632,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         pending.push((onion, frame));
     }
 
-    let net = if ver == BLOB_VERSION_V3 || ver == BLOB_VERSION_V4 {
+    let net = if ver == BLOB_VERSION_V3 || ver == BLOB_VERSION_V4 || ver == BLOB_VERSION_V5 {
         let prefs = read_len_bytes(plain, &mut pos)?;
         NetConfig::from_persist_bytes(&prefs).map_err(|_| "bad net prefs")?
     } else {
@@ -436,7 +640,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         NetConfig::default()
     };
 
-    let disappear_ttl_secs = if ver == BLOB_VERSION_V4 {
+    let disappear_ttl_secs = if ver == BLOB_VERSION_V4 || ver == BLOB_VERSION_V5 {
         if pos + 4 > plain.len() {
             return Err("truncated disappear ttl");
         }
@@ -445,6 +649,14 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         ttl
     } else {
         0
+    };
+
+    let (blocked_ids, muted_ids) = if ver == BLOB_VERSION_V5 {
+        let blocked = read_string_list(plain, &mut pos)?;
+        let muted = read_string_list(plain, &mut pos)?;
+        (blocked, muted)
+    } else {
+        (Vec::new(), Vec::new())
     };
 
     if pos != plain.len() {
@@ -458,6 +670,8 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         pending,
         net,
         disappear_ttl_secs,
+        blocked_ids,
+        muted_ids,
     })
 }
 
@@ -545,10 +759,11 @@ fn open_env(
     }
 }
 
-/// Save session state. Always writes v4.
+/// Save session state. Always writes v5.
 ///
-/// Under Extreme posture (`state.net.is_extreme()`), contacts / ratchets / pending
-/// are stripped via [`SessionState::for_disk`] before sealing. Standard keeps full H3.
+/// Under Extreme posture (`state.net.is_extreme()`), contacts / ratchets / pending /
+/// blocked / muted are stripped via [`SessionState::for_disk`] before sealing.
+/// Standard keeps full H3 + deny lists.
 pub fn save_session(
     data_dir: &Path,
     mode: PersistMode,
@@ -567,10 +782,10 @@ pub fn save_session(
     Ok(())
 }
 
-/// Load full session state. Accepts v1 (identity-only), v2, v3 (net prefs), and v4 (+ TTL) blobs.
+/// Load full session state. Accepts v1–v5 blobs (deny lists empty before v5).
 ///
-/// Extreme policy: if a legacy blob still contains contacts/queue, they are loaded
-/// into memory for this session; the next Extreme [`save_session`] strips them.
+/// Extreme policy: if a legacy blob still contains contacts/queue/deny lists, they
+/// are loaded into memory for this session; the next Extreme [`save_session`] strips them.
 pub fn load_session(
     data_dir: &Path,
     mode: PersistMode,
@@ -1037,7 +1252,7 @@ mod tests {
         let loaded = load_session(&dir, PersistMode::Passphrase, b"v2-pass").unwrap();
         assert_eq!(loaded.identity.seed, identity.seed);
         assert_eq!(loaded.net, NetConfig::default());
-        // Re-save upgrades to v4.
+        // Re-save upgrades to v5.
         save_session(&dir, PersistMode::Passphrase, b"v2-pass", &loaded).unwrap();
         let again = load_session(&dir, PersistMode::Passphrase, b"v2-pass").unwrap();
         assert_eq!(again.net, NetConfig::default());
@@ -1082,7 +1297,7 @@ mod tests {
         let loaded = load_session(&dir, PersistMode::Passphrase, b"v3pass").unwrap();
         assert_eq!(loaded.disappear_ttl_secs, 0);
         assert_eq!(loaded.net, NetConfig::default());
-        // Re-save upgrades to v4; TTL stays off unless set.
+        // Re-save upgrades to v5; TTL stays off unless set.
         save_session(&dir, PersistMode::Passphrase, b"v3pass", &loaded).unwrap();
         let again = load_session(&dir, PersistMode::Passphrase, b"v3pass").unwrap();
         assert_eq!(again.disappear_ttl_secs, 0);
@@ -1115,21 +1330,27 @@ mod tests {
         });
         session.set_ratchet_bytes("alice", vec![0x11u8; 48]);
         session.queue_pending("alice.onion", vec![0x22u8; 16]);
+        session.block_contact_id("alice");
+        session.muted_ids.push("other".into()); // orphan mute id
 
         // In-memory for_disk preview is stripped; live session unchanged.
         let preview = session.for_disk();
         assert!(preview.contacts.is_empty());
         assert!(preview.ratchets.is_empty());
         assert!(preview.pending.is_empty());
+        assert!(preview.blocked_ids.is_empty());
+        assert!(preview.muted_ids.is_empty());
         assert_eq!(preview.identity.seed, session.identity.seed);
         assert_eq!(preview.disappear_ttl_secs, 3600);
         assert_eq!(session.contacts.len(), 1);
         assert_eq!(session.pending.len(), 1);
+        assert_eq!(session.blocked_ids.len(), 1);
 
         save_session(&dir, PersistMode::Passphrase, b"ext-min-pass", &session).unwrap();
         // Live RAM still has session material for current Tor messaging.
         assert_eq!(session.contacts.len(), 1);
         assert_eq!(session.pending.len(), 1);
+        assert_eq!(session.blocked_ids.len(), 1);
 
         let loaded = load_session(&dir, PersistMode::Passphrase, b"ext-min-pass").unwrap();
         assert_eq!(loaded.net.posture, PostureProfile::Extreme);
@@ -1140,6 +1361,8 @@ mod tests {
         assert!(loaded.contacts.is_empty());
         assert!(loaded.ratchets.is_empty());
         assert!(loaded.pending.is_empty());
+        assert!(loaded.blocked_ids.is_empty());
+        assert!(loaded.muted_ids.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1215,5 +1438,112 @@ mod tests {
         assert!(again.pending.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn v5_blocked_muted_roundtrip_standard() {
+        let dir = tmp_dir("v5-deny");
+        let id = LongTermIdentity::from_seed([0xD1u8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "deny.onion",
+            vec![],
+        ));
+        session.contacts.push(PersistedContact {
+            id: "c1".into(),
+            display_name: "SASABCD".into(),
+            onion: "peer.onion".into(),
+            x25519: [9u8; 32],
+            ed25519: [8u8; 32],
+        });
+        assert!(session.block_contact_id("c1"));
+        assert_eq!(session.mute_contact_id("c1").unwrap_err(), "contact is blocked (unblock first)");
+        session.contacts.push(PersistedContact {
+            id: "c2".into(),
+            display_name: "SASMUTE".into(),
+            onion: "mute.onion".into(),
+            x25519: [7u8; 32],
+            ed25519: [6u8; 32],
+        });
+        assert_eq!(session.mute_contact_id("c2").unwrap(), true);
+        save_session(&dir, PersistMode::Passphrase, b"deny-pass", &session).unwrap();
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"deny-pass").unwrap();
+        assert_eq!(loaded.blocked_ids, vec!["c1".to_string()]);
+        assert_eq!(loaded.muted_ids, vec!["c2".to_string()]);
+        assert!(loaded.is_blocked_id("c1"));
+        assert!(loaded.is_muted_id("c2"));
+        assert_eq!(loaded.refuse_send_if_blocked("c1").unwrap_err(), "blocked contact");
+        assert!(loaded.refuse_send_if_blocked("c2").is_ok());
+        assert_eq!(
+            loaded.inbound_deny_policy("c1"),
+            InboundDenyPolicy::DropNoDecrypt
+        );
+        assert_eq!(
+            loaded.inbound_deny_policy("c2"),
+            InboundDenyPolicy::DecryptNoDisplay
+        );
+        assert_eq!(loaded.inbound_deny_policy("c3"), InboundDenyPolicy::Accept);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn block_refuse_helpers_resolve_sas_prefix() {
+        let id = LongTermIdentity::from_seed([0xD2u8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "me.onion",
+            vec![],
+        ));
+        session.contacts.push(PersistedContact {
+            id: "alice".into(),
+            display_name: "SASXYZ12".into(),
+            onion: "aliceaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion".into(),
+            x25519: [1u8; 32],
+            ed25519: [2u8; 32],
+        });
+        assert_eq!(session.resolve_deny_token("SASXYZ").as_deref(), Some("alice"));
+        assert_eq!(session.resolve_deny_token("alice").as_deref(), Some("alice"));
+        // Unique SAS prefix is accepted (fail closed only when ambiguous/unknown).
+        assert_eq!(session.resolve_deny_token("SAS").as_deref(), Some("alice"));
+        assert!(session.resolve_deny_token("nope").is_none());
+        assert!(session.block_contact_id(session.resolve_deny_token("SASXYZ").unwrap()));
+        assert_eq!(session.refuse_send_if_blocked("alice").unwrap_err(), "blocked contact");
+        assert!(session.unblock_contact_id("SASXYZ"));
+        assert!(session.refuse_send_if_blocked("alice").is_ok());
+    }
+
+    #[test]
+    fn v4_blob_loads_with_empty_deny_lists() {
+        // Craft a real v4 plaintext (TTL, no deny lists) and wrap — load defaults empty lists.
+        let dir = tmp_dir("v4_no_deny");
+        let id = LongTermIdentity::from_seed([0xD3u8; 32]);
+        let identity =
+            IdentityOnionState::from_identity(&id, "oldv4.onion", b"k".to_vec());
+        let mut plain = Vec::new();
+        plain.push(BLOB_VERSION_V4);
+        plain.extend_from_slice(&identity.seed);
+        write_len_str(&mut plain, &identity.onion);
+        write_len_bytes(&mut plain, &identity.onion_key);
+        plain.extend_from_slice(&0u32.to_be_bytes()); // contacts
+        plain.extend_from_slice(&0u32.to_be_bytes()); // ratchets
+        plain.extend_from_slice(&0u32.to_be_bytes()); // pending
+        let prefs = NetConfig::default().to_persist_bytes();
+        write_len_bytes(&mut plain, &prefs);
+        plain.extend_from_slice(&120u32.to_be_bytes()); // ttl
+        let env = envelope::seal(b"v4pass", &plain).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        write_private(&dir.join("state.enc"), &env).unwrap();
+
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"v4pass").unwrap();
+        assert_eq!(loaded.disappear_ttl_secs, 120);
+        assert!(loaded.blocked_ids.is_empty());
+        assert!(loaded.muted_ids.is_empty());
+        // Re-save upgrades to v5.
+        save_session(&dir, PersistMode::Passphrase, b"v4pass", &loaded).unwrap();
+        let again = load_session(&dir, PersistMode::Passphrase, b"v4pass").unwrap();
+        assert_eq!(again.disappear_ttl_secs, 120);
+        assert!(again.blocked_ids.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
 
 }

@@ -21,8 +21,8 @@ use hashchat_rust::{
     load_session, parse_signed_contact_link, parse_ttl_token, sas_fingerprint, sas_for_signed,
     save_session, socks5_send, start_hidden_service_with_key, state_exists, tor_probe, unframe_v2,
     wipe_local_sensitive, DnsPreference, DoubleRatchet, HiddenService, IdentityOnionState,
-    LongTermIdentity, NetConfig, NetworkMode, PersistMode, PersistedContact, PostureProfile,
-    SessionState, WIRE_VERSION_V2,
+    InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode, PersistMode, PersistedContact,
+    PostureProfile, SessionState, WIRE_VERSION_V2,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -512,7 +512,15 @@ impl App {
             .map(|s| {
                 s.contacts
                     .iter()
-                    .map(|c| format!("SAS {}", Self::contact_sas_short(c)))
+                    .map(|c| {
+                        let mut label = format!("SAS {}", Self::contact_sas_short(c));
+                        if s.is_blocked_id(&c.id) {
+                            label.push_str(" [blocked]");
+                        } else if s.is_muted_id(&c.id) {
+                            label.push_str(" [muted]");
+                        }
+                        label
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -739,10 +747,21 @@ impl App {
         for frame in frames {
             let n = frame.len();
             match self.try_decrypt_incoming(&frame) {
-                Ok((peer, text, contact_id, msg_number)) => {
-                    // UI inbox may show plaintext; status/logs must not.
-                    self.push_chat(format!("[{peer}] {text}"), &contact_id, msg_number);
-                    self.status_msg = format!("Received {n} B · {peer}");
+                Ok((peer, text, contact_id, msg_number, display)) => {
+                    if display {
+                        // UI inbox may show plaintext; status/logs must not.
+                        self.push_chat(format!("[{peer}] {text}"), &contact_id, msg_number);
+                        self.status_msg = format!("Received {n} B · {peer}");
+                    } else {
+                        // Mute: decrypt advanced ratchet; suppress UI plaintext.
+                        let _ = text;
+                        self.status_msg = format!("Muted inbound suppressed ({n} B)");
+                    }
+                }
+                Err(e) if e == "blocked" => {
+                    // OPSEC: no frame bytes / plaintext in status.
+                    self.push_msg("Incoming frame dropped (blocked contact)");
+                    self.status_msg = format!("Dropped inbound (blocked, {n} B)");
                 }
                 Err(_e) => {
                     // OPSEC: no frame bytes / decrypt detail in status.
@@ -753,7 +772,12 @@ impl App {
         }
     }
 
-    fn try_decrypt_incoming(&mut self, transport_frame: &[u8]) -> Result<(String, String, String, u32), String> {
+    /// Returns `(peer_label, plaintext, contact_id, msg_number, display_in_ui)`.
+    /// `display_in_ui` is false for muted contacts (ratchet still advanced).
+    fn try_decrypt_incoming(
+        &mut self,
+        transport_frame: &[u8],
+    ) -> Result<(String, String, String, u32, bool), String> {
         let (hint, step, sender_dh, ct) =
             unframe_v2(transport_frame).map_err(|_| "malformed wire frame".to_string())?;
         let pass = self.passphrase.as_bytes().to_vec();
@@ -768,6 +792,16 @@ impl App {
         }
         for idx in order {
             let c = &contacts[idx];
+            // Fail-closed block: do not decrypt or display for blocked contacts.
+            match session.inbound_deny_policy(&c.id) {
+                InboundDenyPolicy::DropNoDecrypt => {
+                    if hint.len() == 32 && c.x25519.as_slice() == hint.as_slice() {
+                        return Err("blocked".into());
+                    }
+                    continue;
+                }
+                InboundDenyPolicy::DecryptNoDisplay | InboundDenyPolicy::Accept => {}
+            }
             let ratchet_bytes = session
                 .ratchets
                 .iter()
@@ -790,13 +824,14 @@ impl App {
                     } else {
                         c.display_name.clone()
                     };
+                    let display = !session.is_muted_id(&contact_id);
                     let _ = save_session(
                         Path::new(DATA_DIR),
                         PersistMode::Passphrase,
                         &pass,
                         session,
                     );
-                    return Ok((label, text, contact_id, step));
+                    return Ok((label, text, contact_id, step, display));
                 }
                 Err(_) => continue,
             }
@@ -891,6 +926,13 @@ impl App {
                 return;
             }
         };
+        if let Some(session) = self.session.as_ref() {
+            if let Err(_) = session.refuse_send_if_blocked(&contact.id) {
+                self.status_msg = "Send refused: contact is blocked.".into();
+                self.push_msg(self.status_msg.clone());
+                return;
+            }
+        }
         if !is_onion_destination(&contact.onion) {
             self.push_msg("Send refused: contact has no valid v3 .onion.");
             return;
@@ -1104,7 +1146,7 @@ impl App {
                     "Default Tor. I2P/clearnet refuse messenger sockets until implemented.",
                 );
                 self.push_msg(
-                    "Extreme: Tor-only; refuses :my-contact/groups/voice; contacts/queue not durable; SAS ok (short). Not Android Extreme parity.",
+                    "Extreme: Tor-only; refuses :my-contact/groups/voice; contacts/queue/deny-lists not durable; SAS ok (short). Not Android Extreme parity.",
                 );
                 if let Some(note) = self.net.extreme_lock_summary() {
                     self.push_msg(note);
@@ -1114,6 +1156,196 @@ impl App {
                 self.status_msg = format!("Unknown :mode argument: {other} (:mode help)");
                 self.push_msg(self.status_msg.clone());
             }
+        }
+    }
+
+
+    fn deny_token_or_selected(&self, args: &str) -> Result<String, &'static str> {
+        let args = args.trim();
+        let session = self.session.as_ref().ok_or("Unlock first.")?;
+        if !args.is_empty() {
+            return session
+                .resolve_deny_token(args)
+                .ok_or("unknown or ambiguous contact (id / SAS prefix)");
+        }
+        let c = self
+            .selected_contact_record()
+            .ok_or("Select a contact or pass id/SAS prefix")?;
+        Ok(c.id.clone())
+    }
+
+    fn handle_block_command(&mut self, args: &str) {
+        let id = match self.deny_token_or_selected(args) {
+            Ok(id) => id,
+            Err(e) => {
+                self.status_msg = format!(":block refused: {e}");
+                self.push_msg(self.status_msg.clone());
+                return;
+            }
+        };
+        let label = self
+            .session
+            .as_ref()
+            .and_then(|s| s.contacts.iter().find(|c| c.id == id))
+            .map(|c| Self::contact_sas_short(c).to_string())
+            .unwrap_or_else(|| id.clone());
+        let newly = self
+            .session
+            .as_mut()
+            .map(|s| s.block_contact_id(id))
+            .unwrap_or(false);
+        match self.persist_session() {
+            Ok(()) => {
+                let verb = if newly { "Blocked" } else { "Already blocked" };
+                self.status_msg = format!("{verb} SAS {label} (send+inbound refused)");
+                self.push_msg(self.status_msg.clone());
+            }
+            Err(_) => self.status_msg = "Failed to persist block list.".into(),
+        }
+    }
+
+    fn handle_unblock_command(&mut self, args: &str) {
+        let args = args.trim();
+        if args.is_empty() {
+            // Prefer selected contact id when present.
+            let token = match self.selected_contact_record() {
+                Some(c) => c.id.clone(),
+                None => {
+                    self.status_msg = "Usage: :unblock <contact|sas-prefix|id>".into();
+                    self.push_msg(self.status_msg.clone());
+                    return;
+                }
+            };
+            return self.handle_unblock_command(&token);
+        }
+        let Some(session) = self.session.as_mut() else {
+            self.status_msg = "Unlock first.".into();
+            return;
+        };
+        let removed = session.unblock_contact_id(args);
+        if !removed {
+            self.status_msg = ":unblock: not on block list (or ambiguous)".into();
+            self.push_msg(self.status_msg.clone());
+            return;
+        }
+        match self.persist_session() {
+            Ok(()) => {
+                self.status_msg = "Unblocked contact.".into();
+                self.push_msg(self.status_msg.clone());
+            }
+            Err(_) => self.status_msg = "Failed to persist unblock.".into(),
+        }
+    }
+
+    fn handle_blocked_list(&mut self) {
+        let Some(session) = self.session.as_ref() else {
+            self.status_msg = "Unlock first.".into();
+            return;
+        };
+        let n_blocked = session.blocked_ids.len();
+        let n_muted = session.muted_ids.len();
+        if n_blocked == 0 && n_muted == 0 {
+            self.push_msg("No blocked or muted contacts.");
+            self.status_msg = "Deny list empty.".into();
+            return;
+        }
+        let mut lines: Vec<String> = Vec::new();
+        if n_blocked > 0 {
+            lines.push("Blocked:".into());
+            for id in &session.blocked_ids {
+                let sas = session
+                    .contacts
+                    .iter()
+                    .find(|c| &c.id == id)
+                    .map(|c| Self::contact_sas_short(c).to_string())
+                    .unwrap_or_else(|| id.clone());
+                lines.push(format!("  {id} · SAS {sas}"));
+            }
+        }
+        if n_muted > 0 {
+            lines.push("Muted:".into());
+            for id in &session.muted_ids {
+                let sas = session
+                    .contacts
+                    .iter()
+                    .find(|c| &c.id == id)
+                    .map(|c| Self::contact_sas_short(c).to_string())
+                    .unwrap_or_else(|| id.clone());
+                lines.push(format!("  {id} · SAS {sas}"));
+            }
+        }
+        for line in lines {
+            self.push_msg(line);
+        }
+        self.status_msg = format!("{n_blocked} blocked · {n_muted} muted");
+    }
+
+    fn handle_mute_command(&mut self, args: &str) {
+        let id = match self.deny_token_or_selected(args) {
+            Ok(id) => id,
+            Err(e) => {
+                self.status_msg = format!(":mute refused: {e}");
+                self.push_msg(self.status_msg.clone());
+                return;
+            }
+        };
+        let label = self
+            .session
+            .as_ref()
+            .and_then(|s| s.contacts.iter().find(|c| c.id == id))
+            .map(|c| Self::contact_sas_short(c).to_string())
+            .unwrap_or_else(|| id.clone());
+        let result = self
+            .session
+            .as_mut()
+            .map(|s| s.mute_contact_id(id))
+            .unwrap_or(Err("no session"));
+        match result {
+            Ok(newly) => match self.persist_session() {
+                Ok(()) => {
+                    let verb = if newly { "Muted" } else { "Already muted" };
+                    self.status_msg =
+                        format!("{verb} SAS {label} (inbound UI suppressed; decrypt ok)");
+                    self.push_msg(self.status_msg.clone());
+                }
+                Err(_) => self.status_msg = "Failed to persist mute list.".into(),
+            },
+            Err(e) => {
+                self.status_msg = format!(":mute refused: {e}");
+                self.push_msg(self.status_msg.clone());
+            }
+        }
+    }
+
+    fn handle_unmute_command(&mut self, args: &str) {
+        let args = args.trim();
+        if args.is_empty() {
+            let token = match self.selected_contact_record() {
+                Some(c) => c.id.clone(),
+                None => {
+                    self.status_msg = "Usage: :unmute <contact|sas-prefix|id>".into();
+                    self.push_msg(self.status_msg.clone());
+                    return;
+                }
+            };
+            return self.handle_unmute_command(&token);
+        }
+        let Some(session) = self.session.as_mut() else {
+            self.status_msg = "Unlock first.".into();
+            return;
+        };
+        let removed = session.unmute_contact_id(args);
+        if !removed {
+            self.status_msg = ":unmute: not on mute list (or ambiguous)".into();
+            self.push_msg(self.status_msg.clone());
+            return;
+        }
+        match self.persist_session() {
+            Ok(()) => {
+                self.status_msg = "Unmuted contact.".into();
+                self.push_msg(self.status_msg.clone());
+            }
+            Err(_) => self.status_msg = "Failed to persist unmute.".into(),
         }
     }
 
@@ -1208,6 +1440,18 @@ impl App {
                     "disappear={} (local TTL; peer not enforced)",
                     format_ttl(self.disappear_ttl_secs)
                 ));
+                if let Some(s) = self.session.as_ref() {
+                    self.push_msg(format!(
+                        "deny: {} blocked · {} muted{}",
+                        s.blocked_ids.len(),
+                        s.muted_ids.len(),
+                        if self.net.is_extreme() {
+                            " (Extreme: deny lists not durable)"
+                        } else {
+                            ""
+                        }
+                    ));
+                }
                 if let Some(note) = self.net.extreme_lock_summary() {
                     self.push_msg(note);
                 }
@@ -1230,6 +1474,13 @@ impl App {
                 self.push_msg(
                     "  :disappear [off|30s|…]  local TTL erase + ratchet skipped-key wipe",
                 );
+                self.push_msg(
+                    "  :block / :unblock [id]  refuse send + drop inbound (fail-closed)",
+                );
+                self.push_msg(
+                    "  :mute / :unmute [id]    suppress inbound UI (decrypt for sync)",
+                );
+                self.push_msg("  :blocked                list blocked + muted ids");
                 self.push_msg("  :wipe                   nuclear local wipe (confirm)");
                 self.push_msg("  :quit                   exit");
                 self.push_msg(
@@ -1273,6 +1524,23 @@ impl App {
             other if other == ":mode" || other.starts_with(":mode ") => {
                 let args = other.strip_prefix(":mode").unwrap_or("").trim();
                 self.handle_mode(args);
+            }
+            other if other == ":block" || other.starts_with(":block ") => {
+                let args = other.strip_prefix(":block").unwrap_or("").trim();
+                self.handle_block_command(args);
+            }
+            other if other == ":unblock" || other.starts_with(":unblock ") => {
+                let args = other.strip_prefix(":unblock").unwrap_or("").trim();
+                self.handle_unblock_command(args);
+            }
+            ":blocked" => self.handle_blocked_list(),
+            other if other == ":mute" || other.starts_with(":mute ") => {
+                let args = other.strip_prefix(":mute").unwrap_or("").trim();
+                self.handle_mute_command(args);
+            }
+            other if other == ":unmute" || other.starts_with(":unmute ") => {
+                let args = other.strip_prefix(":unmute").unwrap_or("").trim();
+                self.handle_unmute_command(args);
             }
             other if other == ":disappear"
                 || other.starts_with(":disappear ")

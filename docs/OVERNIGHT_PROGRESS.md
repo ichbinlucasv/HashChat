@@ -2,7 +2,7 @@
 
 **Snapshot:** 22 September 2026 (Europe/Zurich)  
 **Branch:** `codeberg-primary`  
-**Tip:** `e91768117e9c6d69ab9045e2d55f7efb7be928fe`
+**Tip:** `a782d172b396a34887032680c11f465066e7e26e`
 
 ## Executive summary
 
@@ -30,6 +30,9 @@ The Rust desktop path moved from scaffold to a usable, Tor-first two-peer TUI. T
 - **Extreme persistence minimization (Rust TUI) — `e917681`:** Under Extreme posture, `SessionState::for_disk` / `save_session` persist identity + onion + net prefs + disappear TTL only; contacts / ratchets / pending are written empty (blob stays v4). Load keeps legacy contacts in RAM for the current session; next Extreme save strips them. Switching *to* Extreme clears in-memory chat transcript (zeroize). `:status`/`:help` note contacts/queue are not durable and do not claim Android Extreme parity. Standard H3 round-trip unchanged. Tests: Extreme save→load empty contacts/pending; Standard keeps contacts; legacy Extreme-with-contacts then Extreme save strips.
 
 
+- **Contact block / mute (Rust TUI):** `:block` / `:unblock` / `:blocked` plus optional `:mute` / `:unmute`. Session blob **v5** stores blocked/muted contact-id lists under Standard (v1–v4 load empty lists). Block = refuse send + drop inbound without decrypt/display (fail-closed; no plaintext in status). Mute = decrypt for ratchet sync, suppress UI. Extreme `for_disk` strips deny lists with contacts/queue. Tests: v5 round-trip, v4→empty deny lists, SAS-prefix resolve + refuse helpers, Extreme strip. THREATMODEL + EXTREME_PROFILE honesty. No push.
+
+
 ## How to run
 
 From a checkout of `codeberg-primary`, with a compatible Rust toolchain and a local Tor service configured for SOCKS plus cookie-authenticated ControlPort:
@@ -49,7 +52,7 @@ cargo build --release --locked --bin hashchat-tui --features tui
 
 Inside the TUI, unlock or create an identity, use `:listen`, then exchange signed `hashchat://` contacts with the other peer. The default transport is Tor and the application fails closed if the required Tor path is unavailable. Do not copy Tor cookies, onion private material, passphrases, or message bodies into logs, tickets, or chat.
 
-The tip commit records `cargo test --lib` passing with 75 tests and a successful `cargo build --bin hashchat-tui --features tui`, plus offline `./scripts/ci-security-gate.sh`.
+The tip commit records `cargo test --lib` passing with 78 tests and a successful `cargo build --bin hashchat-tui --features tui`, plus offline `./scripts/ci-security-gate.sh`.
 
 ## Remaining backlog
 
@@ -60,7 +63,7 @@ The tip commit records `cargo test --lib` passing with 75 tests and a successful
 
 ### Rust/TUI and posture
 
-- Extreme TUI metadata surfaces gated (contact export / groups / voice stubs / short SAS). Local disappearing TTL enabled (default 1h under Extreme when previously off). Extreme durable footprint minimized (contacts/queue not written; identity/onion/prefs/TTL still persist). Remaining: wire-enforced TTL (not planned without format bump), and Android contact-QR / disappear / persistence parity — not claimed done here.
+- Extreme TUI metadata surfaces gated (contact export / groups / voice stubs / short SAS). Local disappearing TTL enabled (default 1h under Extreme when previously off). Extreme durable footprint minimized (contacts/queue/deny lists not written; identity/onion/prefs/TTL still persist). Contact block/mute shipped on Rust TUI (v5). Remaining: wire-enforced TTL (not planned without format bump), and Android contact-QR / disappear / block / persistence parity — not claimed done here.
 - Haskell retirement: criteria 1+2+3 met; 4+5 open (INSTALL.md). Keep transitional / non-recommended opt-in hatch; do not delete.
 
 ### Android and cross-device parity

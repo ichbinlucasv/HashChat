@@ -341,7 +341,7 @@ impl NetConfig {
             return None;
         }
         Some(
-            "Extreme active — locked: Tor-only; :my-contact export; groups; voice; contacts/queue not durable across restart. SAS ok (short). Onion tails preferred. Not Android Extreme parity.",
+            "Extreme active — locked: Tor-only; :my-contact export; groups; voice; contacts/queue/block-mute lists not durable across restart. SAS ok (short). Onion tails preferred. Not Android Extreme parity.",
         )
     }
 }
