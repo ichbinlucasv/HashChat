@@ -6,7 +6,7 @@
 **Fill-in (two-peer):** `scripts/validation-evidence-template.txt`  
 **Client:** Rust `hashchat-tui` (Haskell desktop is transitional / not recommended)
 
-Tor is the **default** transport and is **fail-closed**. Do not suggest silent clearnet fallbacks in reports.
+Tor is the **default** transport and is **fail-closed**. Do not suggest silent clearnet fallbacks in reports. Local Tor host setup (SOCKS / cookie ControlPort): [`TOR_HOST_SETUP.md`](TOR_HOST_SETUP.md).
 
 This note tells reporters **what to include** and **what never to paste**. Maintainers: point contributors here from `SECURITY.md` / `CONTRIBUTING.md`.
 

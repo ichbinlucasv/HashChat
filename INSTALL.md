@@ -328,6 +328,8 @@ Enable audio in the **template** if the app qube needs voice; minimal qubes ofte
 
 HashChat’s default transport is **Tor-only**. You need:
 
+**Host Tor deep-dive:** [`docs/TOR_HOST_SETUP.md`](docs/TOR_HOST_SETUP.md) (SOCKS 9050/9150, cookie ControlPort, groups, IsolateSOCKSAuth, fail-closed, OPSEC).
+
 | Need | Typical value | Notes |
 |------|---------------|--------|
 | SOCKS | `127.0.0.1:9050` (or Tor Browser `9150`) | Loopback only |
