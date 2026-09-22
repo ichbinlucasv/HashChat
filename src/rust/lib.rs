@@ -1425,6 +1425,7 @@ pub extern "C" fn rust_session_state_save(
             disappear_ttl_secs: 0,
             blocked_ids: Vec::new(),
             muted_ids: Vec::new(),
+            verified_ids: Vec::new(),
         };
         let mode = PersistMode::from_flags(insecure_dev != 0);
         save_session(Path::new(dir), mode, pass, &state).is_ok()

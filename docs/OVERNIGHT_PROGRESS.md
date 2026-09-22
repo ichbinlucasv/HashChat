@@ -38,6 +38,8 @@ The Rust desktop path moved from scaffold to a usable, Tor-first two-peer TUI. T
 
 - **Best-effort TUI mlock — `d84e1df`:** After successful unlock/create, Rust TUI calls `mlockall(MCL_CURRENT|MCL_FUTURE)` + `mlock` on the live passphrase `String` bytes (safe wrappers `mlockall_current` / `mlock_bytes` in lib; FFI unchanged for Android stubs). Failure never aborts; status notes once “mlock unavailable (best-effort)”. Unit smoke: wrappers return bool without panicking (no CAP_IPC_LOCK). **Honesty:** mlock is best-effort; String reallocation makes per-buffer lock imperfect; Tails/Qubes stronger; Android still weaker. CI gate optional anchor that TUI references `mlockall_current`. No push.
 
+- **SAS verify gate before send — `PENDING_SHA`:** New `:add-contact` entries start **unverified**; session blob **v6** stores `verified_ids` (Standard durable). Pre-v6 contacts load as verified for continuity. `:verify` / `:unverify` after short SAS compare (Extreme: short SAS only). Send refuses unverified; `:send-unverified` Standard-only (Extreme: no bypass). Contact list shows `[unverified]`. Extreme `for_disk` strips verified set with contacts/queue/deny lists. **Honesty:** TOFU helper on Ed25519 link verify — not extra cryptographic binding. Tests: v6 round-trip, pre-v6 continuity, Extreme strip, refuse helpers. THREATMODEL + EXTREME_PROFILE. No push.
+
 
 
 
@@ -61,7 +63,7 @@ cargo build --release --locked --bin hashchat-tui --features tui
 
 Inside the TUI, unlock or create an identity, use `:listen`, then exchange signed `hashchat://` contacts with the other peer. The default transport is Tor and the application fails closed if the required Tor path is unavailable. Do not copy Tor cookies, onion private material, passphrases, or message bodies into logs, tickets, or chat.
 
-The tip commit records `cargo test --lib` passing (includes mlock wrapper smoke + HS oversize/queue-full + framed max tests) and a successful `cargo build --bin hashchat-tui --features tui`, plus offline `./scripts/ci-security-gate.sh` (TUI mlockall_current anchor).
+The tip commit records `cargo test --lib` passing (includes SAS verify/v6 blob + mlock wrapper smoke + HS oversize/queue-full + framed max tests) and a successful `cargo build --bin hashchat-tui --features tui`, plus offline `./scripts/ci-security-gate.sh` (TUI mlockall_current anchor).
 
 ## Remaining backlog
 
@@ -72,7 +74,7 @@ The tip commit records `cargo test --lib` passing (includes mlock wrapper smoke 
 
 ### Rust/TUI and posture
 
-- Extreme TUI metadata surfaces gated (contact export / groups / voice stubs / short SAS). Local disappearing TTL enabled (default 1h under Extreme when previously off). Extreme durable footprint minimized (contacts/queue/deny lists not written; identity/onion/prefs/TTL still persist). Contact block/mute + delete-contact (ratchet wipe) shipped on Rust TUI (v5). Remaining: wire-enforced TTL (not planned without format bump), and Android contact-QR / disappear / block / persistence parity — not claimed done here.
+- Extreme TUI metadata surfaces gated (contact export / groups / voice stubs / short SAS). Local disappearing TTL enabled (default 1h under Extreme when previously off). Extreme durable footprint minimized (contacts/queue/deny lists not written; identity/onion/prefs/TTL still persist). Contact block/mute + delete-contact (ratchet wipe) + SAS verify gate shipped on Rust TUI (v6). Remaining: wire-enforced TTL (not planned without format bump), and Android contact-QR / disappear / block / persistence parity — not claimed done here.
 - Haskell retirement: criteria 1+2+3 met; 4+5 open (INSTALL.md). Keep transitional / non-recommended opt-in hatch; do not delete.
 
 ### Android and cross-device parity

@@ -31,27 +31,31 @@
 //! v3 = + network prefs ([`crate::net_mode::NetConfig`]: mode / DNS / posture).
 //! v4 = + disappearing TTL seconds (u32 BE; 0 = off). Local policy only — not on the wire.
 //! v5 = + blocked / muted contact-id string lists (deny list; Standard durable).
-//! Load accepts v1–v5; save always writes v5. Older blobs load empty deny lists.
+//! v6 = + verified contact-id string list (SAS out-of-band trust gate; Standard durable).
+//! Load accepts v1–v6; save always writes v6. Older blobs load empty deny lists;
+//! pre-v6 contacts are treated as **verified** for continuity (new `:add-contact`
+//! entries start unverified).
 //!
 //! ## Extreme disk policy (honest, fail-closed)
 //! When [`crate::net_mode::PostureProfile::Extreme`] is set on the session's
 //! [`NetConfig`], [`save_session`] persists **identity + onion + net prefs +
-//! disappear TTL only**. Contacts, ratchets, pending frames, and blocked/muted
-//! lists are written as empty vectors (blob stays v5). Trade-off: smaller at-rest
-//! footprint and no multi-session contact/deny-list continuity — the user must
-//! re-add contacts (and re-block if needed) after restart. Tor 1:1 messaging for
-//! the **current** process session is unchanged (in-memory contacts/ratchets/queue
-//! /deny lists still work until exit).
+//! disappear TTL only**. Contacts, ratchets, pending frames, blocked/muted, and
+//! verified lists are written as empty vectors (blob stays v6). Trade-off: smaller
+//! at-rest footprint and no multi-session contact/deny/verify continuity — the user
+//! must re-add contacts (and re-block / re-verify if needed) after restart. Tor 1:1
+//! messaging for the **current** process session is unchanged (in-memory
+//! contacts/ratchets/queue/deny/verify lists still work until exit).
 //!
-//! **Load:** legacy Extreme blobs that still contain contacts/deny lists are
+//! **Load:** legacy Extreme blobs that still contain contacts/deny/verify lists are
 //! loaded into memory for the current session; the next Extreme save strips them.
-//! Standard posture keeps full H3 + deny-list round-trip.
+//! Standard posture keeps full H3 + deny-list + verified-set round-trip.
 //!
 //! Prefs are non-secret policy but live inside the wrapped blob so they cannot be
 //! silently toggled by swapping a plaintext sibling file under `hashchat_data/`.
 //! Missing prefs on v1/v2 load default to [`crate::net_mode::NetConfig::default`]
 //! (Tor + standard); missing TTL on v1–v3 loads as `0` (off); missing deny lists
-//! on v1–v4 load as empty.
+//! on v1–v4 load as empty; missing verified set on v1–v5 loads as all contact ids
+//! verified (continuity).
 
 use crate::envelope;
 use crate::longterm_identity::LongTermIdentity;
@@ -70,6 +74,7 @@ const BLOB_VERSION_V2: u8 = 2;
 const BLOB_VERSION_V3: u8 = 3;
 const BLOB_VERSION_V4: u8 = 4;
 const BLOB_VERSION_V5: u8 = 5;
+const BLOB_VERSION_V6: u8 = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PersistMode {
@@ -155,6 +160,11 @@ pub struct SessionState {
     /// Mute still advances the ratchet for sync; block does not decrypt.
     #[zeroize(skip)]
     pub muted_ids: Vec<String>,
+    /// Contact ids marked SAS-verified out-of-band (v6+; Standard durable).
+    /// Pre-v6 loads treat existing contacts as verified; new adds start unverified.
+    /// This is a TOFU helper on top of Ed25519 link verify — not extra crypto binding.
+    #[zeroize(skip)]
+    pub verified_ids: Vec<String>,
 }
 
 impl SessionState {
@@ -168,6 +178,7 @@ impl SessionState {
             disappear_ttl_secs: 0,
             blocked_ids: Vec::new(),
             muted_ids: Vec::new(),
+            verified_ids: Vec::new(),
         }
     }
 
@@ -182,6 +193,7 @@ impl SessionState {
             disappear_ttl_secs: 0,
             blocked_ids: Vec::new(),
             muted_ids: Vec::new(),
+            verified_ids: Vec::new(),
         }
     }
 
@@ -275,6 +287,56 @@ impl SessionState {
         } else {
             Ok(())
         }
+    }
+
+    /// True if `contact_id` is on the SAS-verified set.
+    pub fn is_verified_id(&self, contact_id: &str) -> bool {
+        self.verified_ids.iter().any(|id| id == contact_id)
+    }
+
+    /// Fail-closed send gate: Err when contact is not SAS-verified. No plaintext logging.
+    pub fn refuse_send_if_unverified(&self, contact_id: &str) -> Result<(), &'static str> {
+        if self.is_verified_id(contact_id) {
+            Ok(())
+        } else {
+            Err("unverified contact")
+        }
+    }
+
+    /// Mark contact id as SAS-verified (idempotent). Returns true if newly verified.
+    pub fn verify_contact_id(&mut self, contact_id: impl Into<String>) -> bool {
+        let id = contact_id.into();
+        if self.verified_ids.iter().any(|v| v == &id) {
+            return false;
+        }
+        self.verified_ids.push(id);
+        true
+    }
+
+    /// Remove id from verified set (contact resolve or orphan token). Returns true if removed.
+    pub fn unverify_contact_id(&mut self, token: &str) -> bool {
+        let t = token.trim();
+        if t.is_empty() {
+            return false;
+        }
+        let before = self.verified_ids.len();
+        if let Some(id) = self.resolve_deny_token(t) {
+            self.verified_ids.retain(|v| v != &id);
+        }
+        let tl = t.to_ascii_lowercase();
+        let list_matches: Vec<String> = self
+            .verified_ids
+            .iter()
+            .filter(|v| v == &t || v.to_ascii_lowercase().starts_with(&tl))
+            .cloned()
+            .collect();
+        if list_matches.len() == 1 {
+            let id = &list_matches[0];
+            self.verified_ids.retain(|v| v != id);
+        } else if list_matches.iter().any(|v| v == t) {
+            self.verified_ids.retain(|v| v != t);
+        }
+        self.verified_ids.len() < before
     }
 
     /// Inbound policy for a known contact id (after wire hint / ratchet match).
@@ -418,6 +480,7 @@ impl SessionState {
 
         self.blocked_ids.retain(|b| b != id);
         self.muted_ids.retain(|m| m != id);
+        self.verified_ids.retain(|v| v != id);
         true
     }
 
@@ -439,10 +502,10 @@ impl SessionState {
 
     /// Build the on-disk view for the current posture.
     ///
-    /// Under **Extreme**, contacts / ratchets / pending / blocked / muted are empty
-    /// so they are not durable across restart. Identity, onion material, net prefs,
-    /// and disappear TTL are kept. Under **Standard**, returns a full clone (H3 +
-    /// deny lists).
+    /// Under **Extreme**, contacts / ratchets / pending / blocked / muted / verified
+    /// are empty so they are not durable across restart. Identity, onion material,
+    /// net prefs, and disappear TTL are kept. Under **Standard**, returns a full
+    /// clone (H3 + deny lists + verified set).
     ///
     /// The live in-memory session is unchanged; callers keep working state for the
     /// current Tor session and only the durable blob is minimized.
@@ -463,6 +526,7 @@ impl SessionState {
             disappear_ttl_secs: self.disappear_ttl_secs,
             blocked_ids: Vec::new(),
             muted_ids: Vec::new(),
+            verified_ids: Vec::new(),
         }
     }
 
@@ -477,6 +541,7 @@ impl SessionState {
         self.contacts.clear();
         self.blocked_ids.clear();
         self.muted_ids.clear();
+        self.verified_ids.clear();
         self.identity.seed.zeroize();
         self.identity.onion_key.zeroize();
         self.identity.onion_key.clear();
@@ -555,7 +620,7 @@ fn read_string_list(buf: &[u8], pos: &mut usize) -> Result<Vec<String>, &'static
 
 fn serialize_blob(state: &SessionState) -> Vec<u8> {
     let mut plain = Vec::new();
-    plain.push(BLOB_VERSION_V5);
+    plain.push(BLOB_VERSION_V6);
     plain.extend_from_slice(&state.identity.seed);
     write_len_str(&mut plain, &state.identity.onion);
     write_len_bytes(&mut plain, &state.identity.onion_key);
@@ -595,6 +660,9 @@ fn serialize_blob(state: &SessionState) -> Vec<u8> {
     write_string_list(&mut plain, &state.blocked_ids);
     write_string_list(&mut plain, &state.muted_ids);
 
+    // verified set (v6+)
+    write_string_list(&mut plain, &state.verified_ids);
+
     plain
 }
 
@@ -608,6 +676,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         && ver != BLOB_VERSION_V3
         && ver != BLOB_VERSION_V4
         && ver != BLOB_VERSION_V5
+        && ver != BLOB_VERSION_V6
     {
         return Err("bad state blob version");
     }
@@ -686,7 +755,11 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         pending.push((onion, frame));
     }
 
-    let net = if ver == BLOB_VERSION_V3 || ver == BLOB_VERSION_V4 || ver == BLOB_VERSION_V5 {
+    let net = if ver == BLOB_VERSION_V3
+        || ver == BLOB_VERSION_V4
+        || ver == BLOB_VERSION_V5
+        || ver == BLOB_VERSION_V6
+    {
         let prefs = read_len_bytes(plain, &mut pos)?;
         NetConfig::from_persist_bytes(&prefs).map_err(|_| "bad net prefs")?
     } else {
@@ -694,7 +767,10 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         NetConfig::default()
     };
 
-    let disappear_ttl_secs = if ver == BLOB_VERSION_V4 || ver == BLOB_VERSION_V5 {
+    let disappear_ttl_secs = if ver == BLOB_VERSION_V4
+        || ver == BLOB_VERSION_V5
+        || ver == BLOB_VERSION_V6
+    {
         if pos + 4 > plain.len() {
             return Err("truncated disappear ttl");
         }
@@ -705,12 +781,20 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         0
     };
 
-    let (blocked_ids, muted_ids) = if ver == BLOB_VERSION_V5 {
+    let (blocked_ids, muted_ids) = if ver == BLOB_VERSION_V5 || ver == BLOB_VERSION_V6 {
         let blocked = read_string_list(plain, &mut pos)?;
         let muted = read_string_list(plain, &mut pos)?;
         (blocked, muted)
     } else {
         (Vec::new(), Vec::new())
+    };
+
+    // v6: explicit verified set. Pre-v6: treat all loaded contacts as verified
+    // so existing sessions are not suddenly blocked from sending.
+    let verified_ids = if ver == BLOB_VERSION_V6 {
+        read_string_list(plain, &mut pos)?
+    } else {
+        contacts.iter().map(|c| c.id.clone()).collect()
     };
 
     if pos != plain.len() {
@@ -726,6 +810,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         disappear_ttl_secs,
         blocked_ids,
         muted_ids,
+        verified_ids,
     })
 }
 
@@ -813,11 +898,11 @@ fn open_env(
     }
 }
 
-/// Save session state. Always writes v5.
+/// Save session state. Always writes v6.
 ///
 /// Under Extreme posture (`state.net.is_extreme()`), contacts / ratchets / pending /
-/// blocked / muted are stripped via [`SessionState::for_disk`] before sealing.
-/// Standard keeps full H3 + deny lists.
+/// blocked / muted / verified are stripped via [`SessionState::for_disk`] before sealing.
+/// Standard keeps full H3 + deny lists + verified set.
 pub fn save_session(
     data_dir: &Path,
     mode: PersistMode,
@@ -836,9 +921,10 @@ pub fn save_session(
     Ok(())
 }
 
-/// Load full session state. Accepts v1–v5 blobs (deny lists empty before v5).
+/// Load full session state. Accepts v1–v6 blobs (deny lists empty before v5;
+/// pre-v6 contacts default to verified).
 ///
-/// Extreme policy: if a legacy blob still contains contacts/queue/deny lists, they
+/// Extreme policy: if a legacy blob still contains contacts/queue/deny/verify lists, they
 /// are loaded into memory for this session; the next Extreme [`save_session`] strips them.
 pub fn load_session(
     data_dir: &Path,
@@ -1306,7 +1392,7 @@ mod tests {
         let loaded = load_session(&dir, PersistMode::Passphrase, b"v2-pass").unwrap();
         assert_eq!(loaded.identity.seed, identity.seed);
         assert_eq!(loaded.net, NetConfig::default());
-        // Re-save upgrades to v5.
+        // Re-save upgrades to v6.
         save_session(&dir, PersistMode::Passphrase, b"v2-pass", &loaded).unwrap();
         let again = load_session(&dir, PersistMode::Passphrase, b"v2-pass").unwrap();
         assert_eq!(again.net, NetConfig::default());
@@ -1351,7 +1437,7 @@ mod tests {
         let loaded = load_session(&dir, PersistMode::Passphrase, b"v3pass").unwrap();
         assert_eq!(loaded.disappear_ttl_secs, 0);
         assert_eq!(loaded.net, NetConfig::default());
-        // Re-save upgrades to v5; TTL stays off unless set.
+        // Re-save upgrades to v6; TTL stays off unless set.
         save_session(&dir, PersistMode::Passphrase, b"v3pass", &loaded).unwrap();
         let again = load_session(&dir, PersistMode::Passphrase, b"v3pass").unwrap();
         assert_eq!(again.disappear_ttl_secs, 0);
@@ -1386,6 +1472,7 @@ mod tests {
         session.queue_pending("alice.onion", vec![0x22u8; 16]);
         session.block_contact_id("alice");
         session.muted_ids.push("other".into()); // orphan mute id
+        session.verify_contact_id("alice");
 
         // In-memory for_disk preview is stripped; live session unchanged.
         let preview = session.for_disk();
@@ -1394,6 +1481,7 @@ mod tests {
         assert!(preview.pending.is_empty());
         assert!(preview.blocked_ids.is_empty());
         assert!(preview.muted_ids.is_empty());
+        assert!(preview.verified_ids.is_empty());
         assert_eq!(preview.identity.seed, session.identity.seed);
         assert_eq!(preview.disappear_ttl_secs, 3600);
         assert_eq!(session.contacts.len(), 1);
@@ -1417,6 +1505,7 @@ mod tests {
         assert!(loaded.pending.is_empty());
         assert!(loaded.blocked_ids.is_empty());
         assert!(loaded.muted_ids.is_empty());
+        assert!(loaded.verified_ids.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1597,6 +1686,7 @@ mod tests {
             "carolonionaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion",
             vec![0xEEu8; 16],
         );
+        assert!(session.verify_contact_id("bob"));
         assert!(session.block_contact_id("bob"));
         assert_eq!(session.mute_contact_id("carol").unwrap(), true);
 
@@ -1612,6 +1702,7 @@ mod tests {
             .all(|(o, _)| !o.starts_with("bobonion")));
         assert_eq!(session.pending.len(), 1);
         assert!(!session.is_blocked_id("bob"));
+        assert!(!session.is_verified_id("bob"));
         assert!(session.is_muted_id("carol"));
         assert!(!session.delete_contact_secure("bob"));
         // Other contact material intact.
@@ -1650,6 +1741,7 @@ mod tests {
         assert!(disk.pending.is_empty());
         assert!(disk.blocked_ids.is_empty());
         assert!(disk.muted_ids.is_empty());
+        assert!(disk.verified_ids.is_empty());
     }
 
     #[test]
@@ -1678,7 +1770,7 @@ mod tests {
         assert_eq!(loaded.disappear_ttl_secs, 120);
         assert!(loaded.blocked_ids.is_empty());
         assert!(loaded.muted_ids.is_empty());
-        // Re-save upgrades to v5.
+        // Re-save upgrades to v6.
         save_session(&dir, PersistMode::Passphrase, b"v4pass", &loaded).unwrap();
         let again = load_session(&dir, PersistMode::Passphrase, b"v4pass").unwrap();
         assert_eq!(again.disappear_ttl_secs, 120);
@@ -1686,5 +1778,104 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+
+
+    #[test]
+    fn v6_verified_roundtrip_and_refuse_send() {
+        let dir = tmp_dir("v6-verify");
+        let id = LongTermIdentity::from_seed([0x66u8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "verify.onion",
+            vec![],
+        ));
+        session.contacts.push(PersistedContact {
+            id: "c1".into(),
+            display_name: "SASNEW01".into(),
+            onion: "peer.onion".into(),
+            x25519: [9u8; 32],
+            ed25519: [8u8; 32],
+        });
+        // New contact starts unverified — refuse send.
+        assert!(!session.is_verified_id("c1"));
+        assert_eq!(
+            session.refuse_send_if_unverified("c1").unwrap_err(),
+            "unverified contact"
+        );
+        assert!(session.verify_contact_id("c1"));
+        assert!(!session.verify_contact_id("c1")); // idempotent
+        assert!(session.refuse_send_if_unverified("c1").is_ok());
+        save_session(&dir, PersistMode::Passphrase, b"v6-pass", &session).unwrap();
+        let mut loaded = load_session(&dir, PersistMode::Passphrase, b"v6-pass").unwrap();
+        assert_eq!(loaded.verified_ids, vec!["c1".to_string()]);
+        assert!(loaded.is_verified_id("c1"));
+        assert!(loaded.unverify_contact_id("SASNEW"));
+        assert!(!loaded.is_verified_id("c1"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pre_v6_contacts_load_as_verified_continuity() {
+        // Craft a v5 blob with one contact and empty deny lists — load must mark verified.
+        let dir = tmp_dir("v5_verified_cont");
+        let id = LongTermIdentity::from_seed([0xC5u8; 32]);
+        let identity =
+            IdentityOnionState::from_identity(&id, "oldv5.onion", b"k".to_vec());
+        let mut plain = Vec::new();
+        plain.push(BLOB_VERSION_V5);
+        plain.extend_from_slice(&identity.seed);
+        write_len_str(&mut plain, &identity.onion);
+        write_len_bytes(&mut plain, &identity.onion_key);
+        plain.extend_from_slice(&1u32.to_be_bytes()); // 1 contact
+        write_len_str(&mut plain, "legacy");
+        write_len_str(&mut plain, "SASLEG01");
+        write_len_str(&mut plain, "peer.onion");
+        plain.extend_from_slice(&[0xAAu8; 32]);
+        plain.extend_from_slice(&[0xBBu8; 32]);
+        plain.extend_from_slice(&0u32.to_be_bytes()); // ratchets
+        plain.extend_from_slice(&0u32.to_be_bytes()); // pending
+        let prefs = NetConfig::default().to_persist_bytes();
+        write_len_bytes(&mut plain, &prefs);
+        plain.extend_from_slice(&0u32.to_be_bytes()); // ttl
+        write_string_list(&mut plain, &[]); // blocked
+        write_string_list(&mut plain, &[]); // muted
+        let env = envelope::seal(b"v5cont", &plain).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        write_private(&dir.join("state.enc"), &env).unwrap();
+
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"v5cont").unwrap();
+        assert_eq!(loaded.contacts.len(), 1);
+        assert_eq!(loaded.contacts[0].id, "legacy");
+        assert!(loaded.is_verified_id("legacy"));
+        assert!(loaded.refuse_send_if_unverified("legacy").is_ok());
+        // Re-save upgrades to v6 and keeps verified set.
+        save_session(&dir, PersistMode::Passphrase, b"v5cont", &loaded).unwrap();
+        let again = load_session(&dir, PersistMode::Passphrase, b"v5cont").unwrap();
+        assert!(again.is_verified_id("legacy"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extreme_for_disk_strips_verified_ids() {
+        use crate::net_mode::PostureProfile;
+        let id = LongTermIdentity::from_seed([0xEFu8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "extv.onion",
+            vec![],
+        ));
+        session.net.set_posture(PostureProfile::Extreme);
+        session.contacts.push(PersistedContact {
+            id: "x".into(),
+            display_name: "SASX".into(),
+            onion: "x.onion".into(),
+            x25519: [1u8; 32],
+            ed25519: [2u8; 32],
+        });
+        session.verify_contact_id("x");
+        let disk = session.for_disk();
+        assert!(disk.verified_ids.is_empty());
+        assert!(session.is_verified_id("x"));
+    }
 
 }

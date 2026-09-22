@@ -663,6 +663,9 @@ impl App {
                         } else if s.is_muted_id(&c.id) {
                             label.push_str(" [muted]");
                         }
+                        if !s.is_verified_id(&c.id) {
+                            label.push_str(" [unverified]");
+                        }
                         label
                     })
                     .collect()
@@ -1007,7 +1010,7 @@ impl App {
                     return;
                 }
                 let onion_tail = Self::onion_tail(&peer.onion);
-                let (select_idx, was_update) = {
+                let (select_idx, was_update, verified) = {
                     let session = self.session.as_mut().unwrap();
                     let existing = session
                         .contacts
@@ -1019,6 +1022,7 @@ impl App {
                         session.contacts[i].onion = peer.onion.clone();
                         session.contacts[i].x25519 = peer.x25519;
                         session.contacts[i].ed25519 = peer.ed25519;
+                        // Keep existing verified/unverified status on update.
                         id
                     } else {
                         let id = format!("c{}", session.contacts.len() + 1);
@@ -1029,23 +1033,32 @@ impl App {
                             x25519: peer.x25519,
                             ed25519: peer.ed25519,
                         });
+                        // New contacts start unverified (SAS compare via :verify).
                         id
                     };
                     session.set_ratchet_bytes(&id, ratchet.to_bytes());
+                    let verified = session.is_verified_id(&id);
                     let idx = session.contacts.iter().position(|c| c.id == id);
-                    (idx, existing.is_some())
+                    (idx, existing.is_some(), verified)
                 };
                 match self.persist_session() {
                     Ok(()) => {
                         let verb = if was_update { "Updated" } else { "Added" };
-                        self.status_msg = format!("{verb} contact (SAS {sas})");
-                        self.push_msg(format!(
-                            "{verb} {sas} — onion …{onion_tail} (peer must :add-contact you too)"
-                        ));
+                        let trust = if verified { "verified" } else { "unverified — :verify after SAS compare" };
+                        self.status_msg = format!("{verb} contact (SAS {sas}, {trust})");
+                        if was_update {
+                            self.push_msg(format!(
+                                "{verb} {sas} — onion …{onion_tail} ({trust})"
+                            ));
+                        } else {
+                            self.push_msg(format!(
+                                "{verb} {sas} [unverified] — onion …{onion_tail}; compare SAS then :verify (peer must :add-contact you too)"
+                            ));
+                        }
                         if let Some(i) = select_idx {
                             self.select_contact(i);
                             // Prefer add/update verb in status over generic Selected line.
-                            self.status_msg = format!("{verb} contact (SAS {sas})");
+                            self.status_msg = format!("{verb} contact (SAS {sas}, {trust})");
                         }
                     }
                     Err(_) => self.status_msg = "Failed to persist contact.".into(),
@@ -1060,7 +1073,7 @@ impl App {
         }
     }
 
-    fn send_text(&mut self, text: &str) {
+    fn send_text(&mut self, text: &str, allow_unverified: bool) {
         if let Err(e) = self.net.require_messenger_transport() {
             self.status_msg = format!("Send refused: {e}");
             self.push_msg(self.status_msg.clone());
@@ -1084,6 +1097,26 @@ impl App {
                 self.status_msg = "Send refused: contact is blocked.".into();
                 self.push_msg(self.status_msg.clone());
                 return;
+            }
+            if !allow_unverified {
+                if let Err(_) = session.refuse_send_if_unverified(&contact.id) {
+                    self.status_msg =
+                        "Send refused: contact unverified — compare SAS then :verify (or :send-unverified under Standard)."
+                            .into();
+                    self.push_msg(self.status_msg.clone());
+                    return;
+                }
+            } else if self.net.is_extreme() {
+                // Defense in depth: Extreme never bypasses the verify gate.
+                self.status_msg =
+                    "Send refused: Extreme forbids :send-unverified — :verify required.".into();
+                self.push_msg(self.status_msg.clone());
+                return;
+            } else if let Err(_) = session.refuse_send_if_unverified(&contact.id) {
+                // Allowed bypass under Standard — note in status, still no onion dump.
+                self.push_msg(
+                    "Sending to unverified contact (Standard bypass via :send-unverified).",
+                );
             }
         }
         if !is_onion_destination(&contact.onion) {
@@ -1299,7 +1332,7 @@ impl App {
                     "Default Tor. I2P/clearnet refuse messenger sockets until implemented.",
                 );
                 self.push_msg(
-                    "Extreme: Tor-only; refuses :my-contact/groups/voice; contacts/queue/deny-lists not durable; SAS ok (short). Not Android Extreme parity.",
+                    "Extreme: Tor-only; refuses :my-contact/groups/voice/:send-unverified; contacts/queue/deny/verify lists not durable; SAS ok (short). Not Android Extreme parity.",
                 );
                 if let Some(note) = self.net.extreme_lock_summary() {
                     self.push_msg(note);
@@ -1325,6 +1358,103 @@ impl App {
             .selected_contact_record()
             .ok_or("Select a contact or pass id/SAS prefix")?;
         Ok(c.id.clone())
+    }
+
+
+    fn handle_verify_command(&mut self, args: &str) {
+        let id = match self.deny_token_or_selected(args) {
+            Ok(id) => id,
+            Err(e) => {
+                self.status_msg = format!(":verify refused: {e}");
+                self.push_msg(self.status_msg.clone());
+                return;
+            }
+        };
+        let (label, extreme) = {
+            let extreme = self.net.is_extreme();
+            let label = self
+                .session
+                .as_ref()
+                .and_then(|s| s.contacts.iter().find(|c| c.id == id))
+                .map(|c| Self::contact_sas_short(c).to_string())
+                .unwrap_or_else(|| id.clone());
+            (label, extreme)
+        };
+        // Show short SAS again for out-of-band confirm (no full onion URI in Extreme).
+        if extreme {
+            self.push_msg(format!("Confirm SAS {label} (compare out-of-band)"));
+        } else {
+            let tail = self
+                .session
+                .as_ref()
+                .and_then(|s| s.contacts.iter().find(|c| c.id == id))
+                .map(|c| Self::onion_tail(&c.onion))
+                .unwrap_or_else(|| "?".into());
+            self.push_msg(format!(
+                "Confirm SAS {label} · …{tail} (compare out-of-band)"
+            ));
+        }
+        let newly = self
+            .session
+            .as_mut()
+            .map(|s| s.verify_contact_id(id))
+            .unwrap_or(false);
+        match self.persist_session() {
+            Ok(()) => {
+                let verb = if newly { "Verified" } else { "Already verified" };
+                self.status_msg = format!("{verb} SAS {label} (send allowed)");
+                self.push_msg(self.status_msg.clone());
+            }
+            Err(_) => self.status_msg = "Failed to persist verified set.".into(),
+        }
+    }
+
+    fn handle_unverify_command(&mut self, args: &str) {
+        let args = args.trim();
+        if args.is_empty() {
+            let token = match self.selected_contact_record() {
+                Some(c) => c.id.clone(),
+                None => {
+                    self.status_msg = "Usage: :unverify <contact|sas-prefix|id>".into();
+                    self.push_msg(self.status_msg.clone());
+                    return;
+                }
+            };
+            return self.handle_unverify_command(&token);
+        }
+        let Some(session) = self.session.as_mut() else {
+            self.status_msg = "Unlock first.".into();
+            return;
+        };
+        let removed = session.unverify_contact_id(args);
+        if !removed {
+            self.status_msg = ":unverify: not verified (or ambiguous)".into();
+            self.push_msg(self.status_msg.clone());
+            return;
+        }
+        match self.persist_session() {
+            Ok(()) => {
+                self.status_msg = "Contact marked unverified (send refused until :verify).".into();
+                self.push_msg(self.status_msg.clone());
+            }
+            Err(_) => self.status_msg = "Failed to persist unverify.".into(),
+        }
+    }
+
+    fn handle_send_unverified(&mut self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            self.status_msg = "Usage: :send-unverified <message>".into();
+            self.push_msg(self.status_msg.clone());
+            return;
+        }
+        if self.net.is_extreme() {
+            self.status_msg =
+                "Extreme refuses :send-unverified — compare SAS then :verify.".into();
+            self.push_msg(self.status_msg.clone());
+            return;
+        }
+        self.send_text(text, true);
     }
 
     fn handle_block_command(&mut self, args: &str) {
@@ -1599,12 +1729,18 @@ impl App {
                     format_ttl(self.disappear_ttl_secs)
                 ));
                 if let Some(s) = self.session.as_ref() {
+                    let unverified = s
+                        .contacts
+                        .iter()
+                        .filter(|c| !s.is_verified_id(&c.id))
+                        .count();
                     self.push_msg(format!(
-                        "deny: {} blocked · {} muted{}",
+                        "deny: {} blocked · {} muted · {} unverified{}",
                         s.blocked_ids.len(),
                         s.muted_ids.len(),
+                        unverified,
                         if self.net.is_extreme() {
-                            " (Extreme: deny lists not durable)"
+                            " (Extreme: deny/verify lists not durable)"
                         } else {
                             ""
                         }
@@ -1639,6 +1775,12 @@ impl App {
                     "  :mute / :unmute [id]    suppress inbound UI (decrypt for sync)",
                 );
                 self.push_msg("  :blocked                list blocked + muted ids");
+                self.push_msg(
+                    "  :verify / :unverify [id] SAS trust gate (new contacts unverified)",
+                );
+                self.push_msg(
+                    "  :send-unverified <msg>  Standard only — Extreme: no bypass",
+                );
                 self.push_msg(
                     "  :delete-contact [id]    remove contact + wipe ratchet (confirm)",
                 );
@@ -1695,6 +1837,18 @@ impl App {
                 self.handle_unblock_command(args);
             }
             ":blocked" => self.handle_blocked_list(),
+            other if other == ":verify" || other.starts_with(":verify ") => {
+                let args = other.strip_prefix(":verify").unwrap_or("").trim();
+                self.handle_verify_command(args);
+            }
+            other if other == ":unverify" || other.starts_with(":unverify ") => {
+                let args = other.strip_prefix(":unverify").unwrap_or("").trim();
+                self.handle_unverify_command(args);
+            }
+            other if other == ":send-unverified" || other.starts_with(":send-unverified ") => {
+                let args = other.strip_prefix(":send-unverified").unwrap_or("").trim();
+                self.handle_send_unverified(args);
+            }
             other if other == ":mute" || other.starts_with(":mute ") => {
                 let args = other.strip_prefix(":mute").unwrap_or("").trim();
                 self.handle_mute_command(args);
@@ -1730,7 +1884,7 @@ impl App {
             other if other.starts_with(':') => {
                 self.push_msg(format!("Unknown command: {other}  (:help)"));
             }
-            other => self.send_text(other),
+            other => self.send_text(other, false),
         }
     }
 
