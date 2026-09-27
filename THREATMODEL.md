@@ -42,6 +42,7 @@
 - **Unlock attempt backoff (Rust TUI, honest):** After consecutive wrong passphrases (Standard: **5**; Extreme: **3**), the unlock screen refuses further tries until an increasing cooldown elapses (2s, 4s, 8s… capped at **60s** Standard / **120s** Extreme). Successful unlock resets the counter. Failure status stays opaque (`wrong passphrase or corrupt store`) and does not hint “almost right.” **This is local UI rate-limiting only** — it is **not** remote authentication, and the on-disk `state.enc` blob remains offline-attackable (Argon2id cost is the primary at-rest brake). Process restart clears the in-RAM counter.
 - **`:clear` / `:cls` (Rust TUI):** Zeroizes and drops the in-memory chat transcript only; session, contacts, ratchets, and disk `state.enc` are untouched. Not a wipe.
 - **`:evidence` / `:audit-status` (Rust TUI):** Prints posture **metadata** only (unlock state, net/DNS/posture tokens, TTL/lock labels, contact/deny **counts**, Tor socks/control ok/fail, HS listening/drops). Never onions, links, SAS, passphrases, or bodies. **Not a proof of E2EE** — validation still requires SAS OOB compare + signed-contact verify (see `docs/TWO_PEER_VALIDATION.md`).
+- **Max plaintext send size (Rust TUI, honest):** Before ratchet encrypt, the TUI refuses UTF-8 plaintext larger than **`MAX_PLAINTEXT_SEND_BYTES` (8 KiB)** via `check_plaintext_send_size`. Status is a short refuse line (no body echo). Sized so AES-GCM ciphertext + wire-v2 framing stays under **`MAX_HS_INBOUND_FRAME` (16 KiB)**. **Local UX / memory gate only** — not a wire-protocol version bump; inbound transport still enforces its own frame cap independently. Does not claim to stop a malicious peer from sending up to the inbound limit.
 
 ### 2. Metadata Resistance (Current State)
 - All communication is intended to go over Tor hidden services (v3).
@@ -196,6 +197,7 @@ Full ritual + force-with-lease + CI checks on every batch. See todo "ALL-Recs-Wa
 **DDoS / Availability (part of kill chain):**
 - Tor v3 hidden services + no central infrastructure is the correct architectural choice. Changing language does almost nothing here — the transport model matters far more.
 - **App-side HS accept backpressure (honest):** Local framed listener now enforces `MAX_HS_INBOUND_FRAME` (16 KiB, ≤ `MAX_SOCKS_FRAME`), a bounded inbound mpsc (`HS_INBOUND_QUEUE_CAP` = 64; drops counted, never unbounded), and a soft per-connection frame budget. Oversize length closes that stream without reading/queuing the body. **This is not Tor-level DoS protection** — availability still depends on the local Tor daemon and the onion circuit; we only bound HashChat process memory/queue pressure on the accept path.
+- **Outbound plaintext send cap (honest):** TUI `MAX_PLAINTEXT_SEND_BYTES` (8 KiB) refuses oversized pastes before encrypt so framed ciphertext stays ≤ inbound `MAX_HS_INBOUND_FRAME`. Local UX limit — see Cryptographic Protections; not a protocol version change.
 - Rust's async + Tokio (if we expand the receiver) would give better DoS resilience in the future than many alternatives.
 
 **SQL Injection / Injection attacks (MITRE ATT&CK T1190, T1055, etc.):**

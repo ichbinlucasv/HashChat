@@ -59,7 +59,10 @@ pub use tor_socks::{
     socks_isolation_for_contact, socks_isolation_for_onion, write_framed_u16, SocksIsolationCreds,
     TorProbe, MAX_SOCKS_FRAME,
 };
-pub use wire::{frame_v2, unframe_v2};
+pub use wire::{
+    check_plaintext_send_size, frame_v2, unframe_v2, MAX_FRAMED_SEND_BYTES,
+    MAX_PLAINTEXT_SEND_BYTES,
+};
 
 // long-13: gated quantum module. Only compiled with `cargo build --features quantum`.
 // The module itself documents the strict constant-time / zeroize / side-channel

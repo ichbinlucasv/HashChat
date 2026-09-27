@@ -18,18 +18,18 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use hashchat_rust::{
-    bootstrap_ratchet_from_signed_link, build_wire_aad, clear_scrub_callback, commit_outgoing,
-    encrypt_with_key, extreme_default_lock_timeout, extreme_default_ttl, format_lock_timeout,
-    format_signed_contact_link, format_ttl, frame_v2, install_panic_scrub_hook,
-    install_terminate_signal_flag, is_onion_destination, load_session, mlock_bytes,
-    mlockall_current, parse_lock_timeout_token, parse_signed_contact_link, parse_ttl_token,
-    register_scrub_callback, sas_fingerprint, sas_for_signed, save_session, socks5_send,
-    socks_isolation_for_contact, socks_isolation_for_onion, SocksIsolationCreds,
+    bootstrap_ratchet_from_signed_link, build_wire_aad, check_plaintext_send_size,
+    clear_scrub_callback, commit_outgoing, encrypt_with_key, extreme_default_lock_timeout,
+    extreme_default_ttl, format_lock_timeout, format_signed_contact_link, format_ttl, frame_v2,
+    install_panic_scrub_hook, install_terminate_signal_flag, is_onion_destination, load_session,
+    mlock_bytes, mlockall_current, parse_lock_timeout_token, parse_signed_contact_link,
+    parse_ttl_token, register_scrub_callback, sas_fingerprint, sas_for_signed, save_session,
+    socks5_send, socks_isolation_for_contact, socks_isolation_for_onion, SocksIsolationCreds,
     start_hidden_service_with_key, state_exists, take_terminate_signal, tor_probe, unframe_v2,
     unlock_backoff_delay_secs, wipe_local_sensitive, DnsPreference, DoubleRatchet, HiddenService,
     IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode, PersistMode,
     PersistedContact, PostureProfile, SessionState, UnlockBackoffPolicy, DEFAULT_LOCK_TIMEOUT_SECS,
-    WIRE_VERSION_V2,
+    MAX_PLAINTEXT_SEND_BYTES, WIRE_VERSION_V2,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -1384,6 +1384,14 @@ impl App {
             self.push_msg("Send refused: contact has no valid v3 .onion.");
             return;
         }
+        // Local UX gate: refuse huge pastes before ratchet encrypt (no body echo).
+        if check_plaintext_send_size(text.as_bytes()).is_err() {
+            let kib = MAX_PLAINTEXT_SEND_BYTES / 1024;
+            self.status_msg =
+                format!("Send refused: message exceeds {kib} KiB plaintext limit.");
+            self.push_msg(self.status_msg.clone());
+            return;
+        }
 
         let peer_label = if contact.display_name.is_empty() {
             contact.id.clone()
@@ -2269,6 +2277,10 @@ impl App {
                     "  :verify / :unverify [id] SAS trust gate (new contacts unverified)",
                 );
                 self.push_msg("  :send-unverified <msg>  Standard only — Extreme: no bypass");
+                self.push_msg(format!(
+                    "  plaintext send cap        max {} KiB UTF-8 before encrypt (local UX)",
+                    MAX_PLAINTEXT_SEND_BYTES / 1024
+                ));
                 self.push_msg("  :delete-contact [id]    remove contact + wipe ratchet (confirm)");
                 self.push_msg("  :clear / :cls           zeroize in-memory chat transcript only");
                 self.push_msg(
