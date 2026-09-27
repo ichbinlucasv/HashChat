@@ -666,6 +666,72 @@ pub fn mlock_bytes(buf: &[u8]) -> bool {
     }
 }
 
+/// Append `ch` to a secret `String` without letting it reallocate beyond `cap`
+/// bytes. A reallocation would free the old buffer with the secret prefix still
+/// in it. If `buf` has less than `cap` capacity it is moved once into a
+/// `cap`-sized allocation and the old buffer is zeroized. Returns `false` (buffer
+/// unchanged) if `ch` does not fit.
+pub fn push_char_no_realloc(buf: &mut String, ch: char, cap: usize) -> bool {
+    if buf.capacity() < cap {
+        if buf.len() + ch.len_utf8() > cap {
+            return false;
+        }
+        let mut bigger = String::with_capacity(cap);
+        bigger.push_str(buf);
+        buf.zeroize();
+        *buf = bigger;
+    }
+    if buf.len() + ch.len_utf8() > buf.capacity() {
+        return false;
+    }
+    buf.push(ch);
+    true
+}
+
+/// Outcome of [`disable_core_dumps_best_effort`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DumpHardening {
+    /// `RLIMIT_CORE` set to 0 (soft and hard).
+    pub core_limit_zero: bool,
+    /// `PR_SET_DUMPABLE` cleared: no core file even via a core pipe handler, and
+    /// same-uid ptrace / `/proc/<pid>/mem` access is refused (root excepted).
+    pub non_dumpable: bool,
+}
+
+impl DumpHardening {
+    pub fn all(self) -> bool {
+        self.core_limit_zero && self.non_dumpable
+    }
+}
+
+/// Best-effort: keep secrets out of core files and away from same-uid debuggers.
+///
+/// Linux only; other targets return both flags `false`. Never panics; callers
+/// treat failure as non-fatal and may surface it as a posture note.
+pub fn disable_core_dumps_best_effort() -> DumpHardening {
+    #[cfg(target_os = "linux")]
+    {
+        let lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: plain syscalls with valid arguments; no memory is shared.
+        let core_limit_zero = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &lim) == 0 };
+        let non_dumpable = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) == 0 };
+        DumpHardening {
+            core_limit_zero,
+            non_dumpable,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        DumpHardening {
+            core_limit_zero: false,
+            non_dumpable: false,
+        }
+    }
+}
+
 /// FFI: lock all current and future memory (delegates to [`mlockall_current`]).
 #[no_mangle]
 pub extern "C" fn rust_mlockall_current() -> bool {
@@ -1610,6 +1676,49 @@ pub extern "C" fn rust_session_commit_outgoing(
 #[cfg(test)]
 mod memlock_tests {
     use super::{mlock_bytes, mlockall_current, rust_mlock, rust_mlockall_current};
+
+    #[test]
+    fn push_char_no_realloc_keeps_one_allocation() {
+        let mut s = String::with_capacity(16);
+        let ptr = s.as_ptr();
+        for _ in 0..16 {
+            assert!(super::push_char_no_realloc(&mut s, 'x', 16));
+        }
+        assert!(!super::push_char_no_realloc(&mut s, 'x', 16), "full");
+        assert_eq!(s.len(), 16);
+        assert_eq!(s.as_ptr(), ptr, "no reallocation");
+        // Multi-byte char that does not fit is refused whole.
+        let mut t = String::with_capacity(4);
+        assert!(super::push_char_no_realloc(&mut t, 'a', 4));
+        assert!(super::push_char_no_realloc(&mut t, 'ä', 4));
+        assert!(!super::push_char_no_realloc(&mut t, '€', 4));
+        assert_eq!(t, "aä");
+        // Undersized buffer is moved once to full capacity.
+        let mut u = String::new();
+        assert!(super::push_char_no_realloc(&mut u, 'z', 64));
+        assert!(u.capacity() >= 64);
+        let p = u.as_ptr();
+        for _ in 0..63 {
+            assert!(super::push_char_no_realloc(&mut u, 'z', 64));
+        }
+        assert_eq!(u.as_ptr(), p);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn disable_core_dumps_sets_limit_and_flag() {
+        let h = super::disable_core_dumps_best_effort();
+        assert!(h.all(), "{h:?}");
+        let mut lim = libc::rlimit {
+            rlim_cur: 1,
+            rlim_max: 1,
+        };
+        // SAFETY: valid out-pointer.
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut lim) }, 0);
+        assert_eq!((lim.rlim_cur, lim.rlim_max), (0, 0));
+        // SAFETY: no arguments besides the option.
+        assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) }, 0);
+    }
 
     /// Smoke: wrappers return a bool and must not panic (no CAP_IPC_LOCK required).
     #[test]

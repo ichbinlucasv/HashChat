@@ -20,17 +20,17 @@ use crossterm::terminal::{
 use hashchat_rust::{
     bootstrap_ratchet_from_signed_link, build_wire_aad, check_new_passphrase,
     check_plaintext_send_size, check_state_storage, clear_scrub_callback, commit_outgoing,
-    encrypt_with_key, extreme_default_lock_timeout, extreme_default_ttl, format_lock_timeout,
-    format_signed_contact_link, format_ttl, frame_v2, install_panic_scrub_hook,
-    install_terminate_signal_flag, is_onion_destination, is_terminal_safe, load_session,
-    mlock_bytes, mlockall_current, parse_lock_timeout_token, parse_signed_contact_link,
-    parse_ttl_token, register_scrub_callback, sanitize_for_terminal, sas_fingerprint,
-    sas_for_signed, save_session, socks5_send, socks_isolation_for_contact,
-    socks_isolation_for_onion, start_hidden_service_with_key, state_exists,
-    take_terminate_signal, tor_probe, unframe_v2, unlock_backoff_delay_secs,
-    wipe_local_sensitive, DnsPreference, DoubleRatchet, HiddenService, IdentityOnionState,
-    InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode, PersistMode, PersistedContact,
-    PostureProfile, SessionState, SocksIsolationCreds, UnlockBackoffPolicy,
+    disable_core_dumps_best_effort, encrypt_with_key, extreme_default_lock_timeout,
+    extreme_default_ttl, format_lock_timeout, format_signed_contact_link, format_ttl, frame_v2,
+    install_panic_scrub_hook, install_terminate_signal_flag, is_onion_destination,
+    is_terminal_safe, load_session, mlock_bytes, mlockall_current, parse_lock_timeout_token,
+    parse_signed_contact_link, parse_ttl_token, push_char_no_realloc, register_scrub_callback,
+    sanitize_for_terminal, sas_fingerprint, sas_for_signed, save_session, socks5_send,
+    socks_isolation_for_contact, socks_isolation_for_onion, start_hidden_service_with_key,
+    state_exists, take_terminate_signal, tor_probe, unframe_v2, unlock_backoff_delay_secs,
+    wipe_local_sensitive, DnsPreference, DoubleRatchet, DumpHardening, HiddenService,
+    IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode, PersistMode,
+    PersistedContact, PostureProfile, SessionState, SocksIsolationCreds, UnlockBackoffPolicy,
     DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES, MIN_NEW_PASSPHRASE_CHARS,
     MIN_NEW_PASSPHRASE_CHARS_EXTREME, WIRE_VERSION_V2,
 };
@@ -40,7 +40,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Terminal;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 const DATA_DIR: &str = "hashchat_data";
 const GOLD: Color = Color::Rgb(255, 215, 0); // #FFD700
@@ -100,6 +100,14 @@ struct ChatLine {
     wipe_key: Option<(String, u32)>,
 }
 
+/// Passphrase buffers are pre-allocated to this many bytes and never grow, so
+/// typing does not leave freed copies of passphrase prefixes on the heap.
+const PASSPHRASE_BUF_CAP: usize = 1024;
+
+fn push_secret_char(buf: &mut String, ch: char) -> bool {
+    push_char_no_realloc(buf, ch, PASSPHRASE_BUF_CAP)
+}
+
 /// Transcript text is sanitised when stored so no later render path can forget.
 /// The unsanitised original is zeroized (it may be peer plaintext).
 fn terminal_safe_owned(mut s: String) -> String {
@@ -147,6 +155,8 @@ struct App {
     screen: Screen,
     focus: Focus,
     passphrase: String,
+    /// Core-dump / ptrace hardening applied at startup (posture token for :evidence).
+    dump_hardening: Option<DumpHardening>,
     passphrase_confirm: String,
     unlock_mode_create: bool,
     unlock_step: UnlockStep,
@@ -224,8 +234,9 @@ impl App {
         Self {
             screen: Screen::Unlock,
             focus: Focus::Contacts,
-            passphrase: String::new(),
-            passphrase_confirm: String::new(),
+            passphrase: String::with_capacity(PASSPHRASE_BUF_CAP),
+            dump_hardening: None,
+            passphrase_confirm: String::with_capacity(PASSPHRASE_BUF_CAP),
             unlock_mode_create: !exists,
             unlock_step: UnlockStep::EnterPass,
             mlock_note_shown: false,
@@ -359,7 +370,7 @@ impl App {
     }
 
     fn wipe_contact_skipped_key(&mut self, contact_id: &str, msg_number: u32) {
-        let pass = self.passphrase.as_bytes().to_vec();
+        let pass = Zeroizing::new(self.passphrase.as_bytes().to_vec());
         let Some(session) = self.session.as_mut() else {
             return;
         };
@@ -1221,7 +1232,7 @@ impl App {
     ) -> Result<(String, String, String, u32, bool), String> {
         let (hint, step, sender_dh, ct) =
             unframe_v2(transport_frame).map_err(|_| "malformed wire frame".to_string())?;
-        let pass = self.passphrase.as_bytes().to_vec();
+        let pass = Zeroizing::new(self.passphrase.as_bytes().to_vec());
         let net = self.net.clone();
         let session = self
             .session
@@ -2130,6 +2141,16 @@ impl App {
             "contacts={contacts} · blocked={blocked} · muted={muted} · unverified={unverified}"
         ));
 
+        let (core0, nodump) = match self.dump_hardening {
+            Some(h) => (h.core_limit_zero, h.non_dumpable),
+            None => (false, false),
+        };
+        self.push_msg(format!(
+            "process: core_limit={} · dumpable={}",
+            if core0 { "0" } else { "unchanged" },
+            if nodump { "off" } else { "on" }
+        ));
+
         let socks = if probe.socks_ok { "ok" } else { "fail" };
         let control = if probe.control_ok { "ok" } else { "fail" };
         self.push_msg(format!("tor: socks={socks} · control={control}"));
@@ -2857,7 +2878,7 @@ impl Drop for App {
     }
 }
 
-fn run() -> io::Result<()> {
+fn run(dumps: DumpHardening) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -2865,6 +2886,10 @@ fn run() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
+    app.dump_hardening = Some(dumps);
+    if !dumps.all() {
+        app.status_msg = "core-dump hardening incomplete (best-effort)".into();
+    }
     bind_app_scrub();
     app.check_tor(true);
 
@@ -2936,10 +2961,13 @@ fn run() -> io::Result<()> {
                     }
                 }
                 KeyCode::Char(ch) => {
-                    if app.unlock_step == UnlockStep::ConfirmPass {
-                        app.passphrase_confirm.push(ch);
+                    let buf = if app.unlock_step == UnlockStep::ConfirmPass {
+                        &mut app.passphrase_confirm
                     } else {
-                        app.passphrase.push(ch);
+                        &mut app.passphrase
+                    };
+                    if !push_secret_char(buf, ch) {
+                        app.status_msg = "Passphrase too long.".into();
                     }
                 }
                 _ => {}
@@ -3088,10 +3116,12 @@ fn main() {
         );
         std::process::exit(2);
     }
+    // First, before any secret exists: no core files, no same-uid ptrace.
+    let dumps = disable_core_dumps_best_effort();
     // Before App exists: hook is a no-op until bind_app_scrub.
     install_panic_scrub_hook();
     install_terminate_signal_flag();
-    if let Err(e) = run() {
+    if let Err(e) = run(dumps) {
         eprintln!("hashchat-tui error: {e}");
         std::process::exit(1);
     }

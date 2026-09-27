@@ -199,6 +199,11 @@ pass "TUI references mlockall_current"
   || fail "hashchat_tui.rs missing lock_ui (idle/:lock RAM clear)"
 pass "TUI references lock_ui"
 
+# Core dumps off + non-dumpable before any secret exists (best-effort).
+"${SEARCH[@]}" 'disable_core_dumps_best_effort\(\)' src/bin/hashchat_tui.rs >/dev/null \
+  || fail "hashchat_tui.rs does not disable core dumps at startup"
+pass "TUI disables core dumps at startup"
+
 # Panic path must install the best-effort scrub hook before entering the TUI.
 "${SEARCH[@]}" 'install_panic_scrub_hook' src/bin/hashchat_tui.rs >/dev/null \
   || fail "hashchat_tui.rs does not install the panic scrub hook"
