@@ -2,14 +2,22 @@
 
 **Snapshot:** 22 September 2026 (Europe/Zurich)  
 **Branch:** `codeberg-primary`  
-**Tip:** `779e468`
+**Tip:** `e8526ac`
 
 ## Executive summary
 
-HashChat now has a usable Rust two-peer TUI with fail-closed Tor transport, encrypted session blob v7, 137 passing library tests, and an offline CI security gate. Shipped controls include local disappearing TTL, Extreme minimal persistence, block/mute/delete with ratchet wipe, a SAS verification gate, idle/manual lock, unlock-attempt backoff, `:clear` transcript scrub, best-effort `mlock`, panic/signal secret scrubbing, and contact display-name rename (`:rename`). The Haskell desktop remains transitional and non-recommended; this is a hardened preview path, not a claim of production readiness.
+HashChat now has a usable Rust two-peer TUI with fail-closed Tor transport, encrypted session blob v7, 168 passing library tests (167 without `tui`), and an offline CI security gate. Shipped controls include local disappearing TTL, Extreme minimal persistence, block/mute/delete with ratchet wipe, a SAS verification gate, idle/manual lock, unlock-attempt backoff, `:clear` transcript scrub, best-effort `mlock`, panic/signal secret scrubbing, and contact display-name rename (`:rename`). The Haskell desktop remains transitional and non-recommended; this is a hardened preview path, not a claim of production readiness.
 
 ## Shipped since the previous checkpoint
 
+- **Security review fixes (review at `fcf01dd`, `/workspace/reviews/hashchat-security-review.md`):**
+  - **H-1 — `6d275b5`:** peer text is sanitised before render (`term_sanitize::sanitize_for_terminal`): control characters and bidi/line-separator format characters become U+FFFD, tab/newline become a space. Applied when decrypted text is produced, when any transcript line is stored, and again at render for labels, title, input and status lines.
+  - **H-2 — `0629290`:** ControlPort auth is now SAFECOOKIE. HashChat checks the server's proof before answering and never sends the cookie itself. The advertised cookie path is used only if it resolves to a system Tor location (`/run/tor/control.authcookie`, `/var/run/tor/…`, `/var/lib/tor/control_auth_cookie`, `/var/lib/tor/control.authcookie`). **Non-standard Tor layouts must set `HASHCHAT_TOR_COOKIE_FILE=/abs/path`**, which then becomes the only accepted path. Also: the cookie must be a 32-byte regular file, control replies are bounded, and the stored onion key is validated before `ADD_ONION`. `docs/TOR_HOST_SETUP.md` should mention the override (not edited here).
+  - **H-3 — `11c933d`:** `SessionState::upsert_contact_from_link` drops SAS verification and resets the label when onion, X25519 or Ed25519 change; the TUI prints a SAFETY NUMBER CHANGED notice with old/new SAS. A byte-identical re-import keeps trust and label. New contact ids never reuse an id still referenced by verified/blocked/muted/ratchet lists.
+  - **M-4 + M-6 — `8b5e1cd`:** FFI encrypt/decrypt honour the caller's output capacity; `HASHCHAT_INSECURE_DEV_PERSIST` only opts in when exactly `1`.
+  - **M-7 — `149b878`:** new-store passphrase floor: 12 characters (16 under Extreme), at least 5 distinct characters. Existing stores are not re-checked.
+  - **M-8 + part of M-9 — `e8526ac`:** at startup the TUI sets `RLIMIT_CORE=0` and clears `PR_SET_DUMPABLE` (best-effort; shown in `:evidence` as `process: core_limit=… · dumpable=…`). Passphrase buffers are fixed-capacity (no reallocation copies), and per-message passphrase copies are zeroized.
+  - **Still open from the review:** M-1 (bootstrap handshake), M-2 (skipped-key handling), M-3 (HS accept slowloris), M-5 (FFI global ratchet store), the rest of M-9 (keep a derived key instead of the passphrase), all Low and Info items.
 - **State file hygiene — `779e468`:** new `private_fs` module for `hashchat_data/`. The data dir must be a non-symlink directory owned by the current user; group/other bits are cleared to 0700 (existing 0755 dirs upgrade in place). `state.enc` / `machine.key` are opened `O_NOFOLLOW` and **refused** if they are symlinks, non-regular, foreign-owned, group/other-accessible, or over a 256 MiB cap. Writes are temp file (0600) + `fsync` + `rename`, so a crash cannot leave a truncated blob and a loose-mode file is replaced rather than rewritten in place. TUI runs `check_state_storage` before the KDF; a refusal shows a fixed, path-free reason and does not count toward unlock backoff. A malformed `machine.key` (insecure-dev only) is refused instead of regenerated. Residual: only the final dir component is checked (parent symlinks such as `/home -> /var/home` stay allowed); a symlinked `hashchat_data` is refused. **No blob or wire format change.**
 - **Max plaintext send size — `a1ef213`:** TUI refuses UTF-8 plaintext > **`MAX_PLAINTEXT_SEND_BYTES` (8 KiB)** via `check_plaintext_send_size` **before** ratchet encrypt; clear status, no body echo. Sized so AES-GCM + wire-v2 framing stays under `MAX_HS_INBOUND_FRAME` (16 KiB) (`MAX_FRAMED_SEND_BYTES` compile-time assert). Unit tests in `wire.rs`; `:help` one-liner. **Local UX / memory gate — not a wire-protocol version bump.**
 - **Contact SOCKS isolation polish — `4bdc085`:** TUI send/retry pass optional `SocksIsolationCreds` into `socks5_send`. Prefer `socks_isolation_for_contact(contact_id, &seed)` when unlocked; fall back to `socks_isolation_for_onion` for pending retries. Creds use redacted `Debug`; never logged. Default-on NetConfig `socks_isolation` with optional `:isolate on|off|status` (Extreme forces on / refuses off); older prefs blobs default on. `:evidence` prints `socks_isol=on|off` only. Fail-closed loopback + onion policy unchanged.
@@ -58,7 +66,7 @@ cargo build --release --locked --bin hashchat-tui --features tui
 
 Unlock or create an identity, run `:listen`, exchange signed `hashchat://` contacts, compare SAS out of band, then `:verify` before sending. Use `:evidence` for posture metadata. Never copy Tor cookies, onion private material, passphrases, SAS values, or message bodies into evidence.
 
-Recorded validation at tip `779e468`: `cargo test --lib` passed 137 tests, `cargo build --bin hashchat-tui --features tui` succeeded, and `./scripts/ci-security-gate.sh` passed offline.
+Recorded validation at tip `e8526ac`: `cargo test --lib` passed 167 tests (168 with `--features tui`), `cargo build --bin hashchat-tui --features tui` succeeded, and `./scripts/ci-security-gate.sh` passed offline.
 
 ## When Lucas wakes
 
