@@ -709,9 +709,9 @@ pub extern "C" fn rust_madvise_dontneed(ptr: *mut u8, len: usize) {
 pub extern "C" fn rust_apply_basic_seccomp() -> bool {
     #[cfg(target_os = "linux")]
     {
-        // In a future iteration enable the seccomp crate behind a feature flag.
-        // For maximum paranoid users: combine with systemd unit RestrictNamespaces, SystemCallFilter, etc.
-        true
+        // No filter is installed yet, so report that honestly; callers must
+        // not treat this as "sandboxed". Use systemd SystemCallFilter etc.
+        false
     }
     #[cfg(not(target_os = "linux"))]
     {

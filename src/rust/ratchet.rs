@@ -121,36 +121,6 @@ impl DoubleRatchet {
         }
     }
 
-    /// Advanced ratchet receive that properly handles skipped keys and out-of-order delivery.
-    /// This is a more complete version for real messaging.
-    pub fn ratchet_recv_advanced(&mut self, remote: &PublicKey, msg_number: u32) -> Result<[u8; RATCHET_KEY_LEN], &'static str> {
-        if self.remote_dh.as_ref() != Some(remote) {
-            self.dh_ratchet_recv(remote);
-        }
-
-        if let Some(key) = self.get_skipped_key(msg_number) {
-            return Ok(key);
-        }
-
-        let hk = Hkdf::<Sha256>::new(None, &self.chain_key_recv);
-        let mut new_chain = [0u8; RATCHET_KEY_LEN];
-        let mut msg_key = [0u8; RATCHET_KEY_LEN];
-
-        hk.expand(b"HashChat-v1-chain", &mut new_chain).map_err(|_| "KDF failed")?;
-        hk.expand(b"HashChat-v1-msg-key", &mut msg_key).map_err(|_| "KDF failed")?;
-
-        self.chain_key_recv = new_chain;
-
-        if msg_number > self.recv_count {
-            for n in self.recv_count..msg_number {
-                self.store_skipped_key(n, msg_key);
-            }
-        }
-
-        self.recv_count = msg_number + 1;
-        Ok(msg_key)
-    }
-
     /// Securely clear sensitive state (called automatically on drop).
     pub fn clear(&mut self) {
         self.zeroize();
@@ -252,7 +222,8 @@ impl DoubleRatchet {
 
         self.chain_key_send = new_chain;
         let count = self.send_count;
-        self.send_count += 1;
+        // Never wraps (a wrapped counter would repeat step labels).
+        self.send_count = self.send_count.saturating_add(1);
         self.sends_since_dh = self.sends_since_dh.saturating_add(1);
 
         (msg_key, count)
@@ -277,7 +248,7 @@ impl DoubleRatchet {
 
         self.chain_key_recv = new_chain;
         let count = self.recv_count;
-        self.recv_count += 1;
+        self.recv_count = self.recv_count.saturating_add(1);
 
         (msg_key, count)
     }
@@ -290,6 +261,9 @@ impl DoubleRatchet {
         ciphertext: &[u8],
         aad: &[u8],
     ) -> Result<(Vec<u8>, u32), &'static str> {
+        if self.recv_count == u32::MAX {
+            return Err("receive counter exhausted");
+        }
         let snap = self.to_bytes();
         let mut scratch = DoubleRatchet::from_bytes(&snap)?;
         let (mut key, step) = scratch.ratchet_recv(remote);
@@ -695,4 +669,20 @@ mod tests {
         assert_eq!(k[0], 0x22);
     }
 
+
+    #[test]
+    fn counters_saturate_and_recv_refuses_when_exhausted() {
+        let mut r = DoubleRatchet::new();
+        let (root, _, _) = r.export_state();
+        r.restore_state(root, u32::MAX, u32::MAX);
+        let (_k1, c1) = r.ratchet_send();
+        let (_k2, c2) = r.ratchet_send();
+        assert_eq!((c1, c2), (u32::MAX, u32::MAX));
+        let (_, send, _) = r.export_state();
+        assert_eq!(send, u32::MAX);
+        let remote = x25519_dalek::PublicKey::from([9u8; 32]);
+        assert!(r.try_recv_decrypt(&remote, &[0u8; 40], b"").is_err());
+        let (_, _, recv) = r.export_state();
+        assert_eq!(recv, u32::MAX);
+    }
 }
