@@ -1240,12 +1240,13 @@ fn unpack_contacts_section(buf: &[u8]) -> Result<Vec<PersistedContact>, &'static
     }
     let n = u32::from_be_bytes(buf[0..4].try_into().unwrap()) as usize;
     let mut pos = 4;
-    let mut out = Vec::with_capacity(n);
+    // Each contact needs >= 12 length bytes + 64 key bytes; bound the prealloc.
+    let mut out = Vec::with_capacity(n.min((buf.len() - 4) / 76));
     for _ in 0..n {
         let id = read_ffi_len_str(buf, &mut pos)?;
         let display_name = read_ffi_len_str(buf, &mut pos)?;
         let onion = read_ffi_len_str(buf, &mut pos)?;
-        if pos + 64 > buf.len() {
+        if buf.len().saturating_sub(pos) < 64 {
             return Err("short contact keys");
         }
         let mut x25519 = [0u8; 32];
@@ -1284,7 +1285,8 @@ fn unpack_kv_section(buf: &[u8]) -> Result<Vec<(String, Vec<u8>)>, &'static str>
     }
     let n = u32::from_be_bytes(buf[0..4].try_into().unwrap()) as usize;
     let mut pos = 4;
-    let mut out = Vec::with_capacity(n);
+    // Each entry needs >= 8 length bytes; bound the prealloc.
+    let mut out = Vec::with_capacity(n.min((buf.len() - 4) / 8));
     for _ in 0..n {
         let k = read_ffi_len_str(buf, &mut pos)?;
         let v = read_ffi_len_bytes(buf, &mut pos)?;
@@ -1299,11 +1301,12 @@ fn read_ffi_len_bytes(buf: &[u8], pos: &mut usize) -> Result<Vec<u8>, &'static s
     }
     let n = u32::from_be_bytes(buf[*pos..*pos + 4].try_into().unwrap()) as usize;
     *pos += 4;
-    if *pos + n > buf.len() {
+    let end = pos.checked_add(n).ok_or("truncated bytes")?;
+    if end > buf.len() {
         return Err("truncated bytes");
     }
-    let out = buf[*pos..*pos + n].to_vec();
-    *pos += n;
+    let out = buf[*pos..end].to_vec();
+    *pos = end;
     Ok(out)
 }
 
@@ -1618,6 +1621,16 @@ mod ffi_bounds_tests {
         rust_decrypt_blob_with_passphrase, rust_decrypt_with_key,
         rust_encrypt_blob_with_passphrase, rust_encrypt_with_key,
     };
+
+    #[test]
+    fn pack_parsers_refuse_huge_counts_without_prealloc() {
+        let mut buf = u32::MAX.to_be_bytes().to_vec();
+        buf.extend_from_slice(&[0xff; 8]);
+        assert!(super::unpack_kv_section(&buf).is_err());
+        assert!(super::unpack_contacts_section(&buf).is_err());
+        let mut pos = 0usize;
+        assert!(super::read_ffi_len_bytes(&[0xff, 0xff, 0xff, 0xff, 1], &mut pos).is_err());
+    }
 
     #[test]
     fn passphrase_blob_ffi_uses_shared_envelope() {

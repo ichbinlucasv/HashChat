@@ -780,11 +780,12 @@ fn read_len_bytes(buf: &[u8], pos: &mut usize) -> Result<Vec<u8>, &'static str> 
     }
     let n = u32::from_be_bytes(buf[*pos..*pos + 4].try_into().unwrap()) as usize;
     *pos += 4;
-    if *pos + n > buf.len() {
+    let end = pos.checked_add(n).ok_or("truncated bytes")?;
+    if end > buf.len() {
         return Err("truncated bytes");
     }
-    let out = buf[*pos..*pos + n].to_vec();
-    *pos += n;
+    let out = buf[*pos..end].to_vec();
+    *pos = end;
     Ok(out)
 }
 
@@ -810,7 +811,8 @@ fn read_string_list(buf: &[u8], pos: &mut usize) -> Result<Vec<String>, &'static
     }
     let n = u32::from_be_bytes(buf[*pos..*pos + 4].try_into().unwrap()) as usize;
     *pos += 4;
-    let mut out = Vec::with_capacity(n);
+    // Each string needs >= 4 length bytes; bound the prealloc.
+    let mut out = Vec::with_capacity(n.min(buf.len().saturating_sub(*pos) / 4));
     for _ in 0..n {
         out.push(read_len_str(buf, pos)?);
     }
@@ -909,12 +911,12 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
     let n_contacts =
         u32::from_be_bytes(plain[pos..pos + 4].try_into().unwrap()) as usize;
     pos += 4;
-    let mut contacts = Vec::with_capacity(n_contacts);
+    let mut contacts = Vec::with_capacity(n_contacts.min(plain.len().saturating_sub(pos) / 76));
     for _ in 0..n_contacts {
         let id = read_len_str(plain, &mut pos)?;
         let display_name = read_len_str(plain, &mut pos)?;
         let onion = read_len_str(plain, &mut pos)?;
-        if pos + 64 > plain.len() {
+        if plain.len().saturating_sub(pos) < 64 {
             return Err("truncated contact keys");
         }
         let mut x25519 = [0u8; 32];
@@ -938,7 +940,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
     let n_ratchets =
         u32::from_be_bytes(plain[pos..pos + 4].try_into().unwrap()) as usize;
     pos += 4;
-    let mut ratchets = Vec::with_capacity(n_ratchets);
+    let mut ratchets = Vec::with_capacity(n_ratchets.min(plain.len().saturating_sub(pos) / 8));
     for _ in 0..n_ratchets {
         let id = read_len_str(plain, &mut pos)?;
         let bytes = read_len_bytes(plain, &mut pos)?;
@@ -951,7 +953,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
     let n_pending =
         u32::from_be_bytes(plain[pos..pos + 4].try_into().unwrap()) as usize;
     pos += 4;
-    let mut pending = Vec::with_capacity(n_pending);
+    let mut pending = Vec::with_capacity(n_pending.min(plain.len().saturating_sub(pos) / 8));
     for _ in 0..n_pending {
         let onion = read_len_str(plain, &mut pos)?;
         let frame = read_len_bytes(plain, &mut pos)?;

@@ -403,7 +403,7 @@ fn read_persist_str(buf: &[u8], pos: &mut usize) -> Result<String, ()> {
     }
     let n = u32::from_be_bytes(buf[*pos..*pos + 4].try_into().map_err(|_| ())?) as usize;
     *pos += 4;
-    if *pos + n > buf.len() {
+    if pos.checked_add(n).map_or(true, |end| end > buf.len()) {
         return Err(());
     }
     let s = std::str::from_utf8(&buf[*pos..*pos + n]).map_err(|_| ())?.to_string();
