@@ -475,7 +475,7 @@ flatpak install --user result/hashchat-tui.flatpak
 flatpak run org.hashchat.HashChat
 ```
 
-**Host Tor is required.** The Flatpak does **not** bundle Tor and does not replace a system Tor daemon with loopback SOCKS + ControlPort cookie auth. Cookie path comes from Tor `PROTOCOLINFO` (typical: `/run/tor/control.authcookie`); your user must be able to read it — never paste cookie bytes or onion private keys into tickets.
+**Host Tor is required.** The Flatpak does **not** bundle Tor and does not replace a system Tor daemon with loopback SOCKS + ControlPort cookie auth. ControlPort auth is SAFECOOKIE-only, and HashChat trusts only the known system cookie paths (or `HASHCHAT_TOR_COOKIE_FILE=/abs/path`), see [`docs/TOR_HOST_SETUP.md`](docs/TOR_HOST_SETUP.md#trusted-cookie-paths-and-hashchat_tor_cookie_file). The manifest does **not** grant access to `/run/tor` or `/var/lib/tor`: expose the cookie's directory read-only (e.g. `flatpak override --user --filesystem=/run/tor:ro org.hashchat.HashChat`) and, for a non-standard path, add `--env=HASHCHAT_TOR_COOKIE_FILE=/abs/path`. Your user must be able to read the cookie. Never paste cookie bytes or onion private keys into tickets.
 
 Transport is **fail-closed**: missing/unreadable ControlPort cookie or non-Tor modes do **not** silently fall back to clearnet. Preview packaging only — not a production-readiness claim. Details: `flatpak/README.md` and `flatpak/org.hashchat.HashChat.metainfo.xml`.
 
