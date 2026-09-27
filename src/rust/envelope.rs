@@ -88,8 +88,73 @@ pub fn open(passphrase: &[u8], envelope: &[u8]) -> Result<Vec<u8>, &'static str>
     Ok(plain.to_vec())
 }
 
+/// Minimum passphrase length (Unicode scalars) for a **new** store, Standard posture.
+pub const MIN_NEW_PASSPHRASE_CHARS: usize = 12;
+/// Minimum passphrase length for a new store under Extreme posture.
+pub const MIN_NEW_PASSPHRASE_CHARS_EXTREME: usize = 16;
+/// Minimum number of distinct characters (rejects e.g. one key held down).
+const MIN_DISTINCT_CHARS: usize = 5;
+
+/// Creation-time floor for the at-rest passphrase. `state.enc` can be attacked
+/// offline, and Argon2id does not rescue a very short passphrase. Existing
+/// stores are not re-checked on unlock. The error never echoes the input.
+pub fn check_new_passphrase(pass: &str, extreme: bool) -> Result<(), &'static str> {
+    let min = if extreme {
+        MIN_NEW_PASSPHRASE_CHARS_EXTREME
+    } else {
+        MIN_NEW_PASSPHRASE_CHARS
+    };
+    let n = pass.chars().count();
+    if n < min {
+        return Err(if extreme {
+            "passphrase too short (Extreme: at least 16 characters)"
+        } else {
+            "passphrase too short (at least 12 characters)"
+        });
+    }
+    if pass.trim().chars().count() < min {
+        return Err("passphrase is mostly whitespace");
+    }
+    let mut distinct: Vec<char> = Vec::with_capacity(MIN_DISTINCT_CHARS);
+    for c in pass.chars() {
+        if !distinct.contains(&c) {
+            distinct.push(c);
+            if distinct.len() >= MIN_DISTINCT_CHARS {
+                break;
+            }
+        }
+    }
+    let enough = distinct.len() >= MIN_DISTINCT_CHARS;
+    distinct.zeroize();
+    if !enough {
+        return Err("passphrase too repetitive");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn new_passphrase_floor() {
+        assert!(check_new_passphrase("", false).is_err());
+        assert!(check_new_passphrase("short", false).is_err());
+        assert!(check_new_passphrase("elevenchars", false).is_err());
+        assert!(check_new_passphrase("aaaaaaaaaaaaaaaa", false).is_err());
+        assert!(check_new_passphrase("abababababababab", false).is_err());
+        assert!(check_new_passphrase("      abcdef      ", false).is_err());
+        assert!(check_new_passphrase("twelve chars", false).is_ok());
+        assert!(check_new_passphrase("correct horse battery", false).is_ok());
+        // Extreme needs 16.
+        assert!(check_new_passphrase("fifteen chars!!", true).is_err());
+        assert!(check_new_passphrase("sixteen chars ok", true).is_ok());
+        // Counted in characters, not bytes.
+        assert!(check_new_passphrase("äöüéèàçñßøåæ", false).is_ok());
+        assert!(check_new_passphrase("äöüéèàçñß", false).is_err());
+        // Errors never echo input.
+        let e = check_new_passphrase("hunter2", false).unwrap_err();
+        assert!(!e.contains("hunter2"));
+    }
     use super::*;
 
     #[test]

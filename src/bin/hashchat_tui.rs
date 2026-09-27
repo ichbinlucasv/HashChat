@@ -18,9 +18,9 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use hashchat_rust::{
-    bootstrap_ratchet_from_signed_link, build_wire_aad, check_plaintext_send_size,
-    check_state_storage, clear_scrub_callback, commit_outgoing, encrypt_with_key,
-    extreme_default_lock_timeout, extreme_default_ttl, format_lock_timeout,
+    bootstrap_ratchet_from_signed_link, build_wire_aad, check_new_passphrase,
+    check_plaintext_send_size, check_state_storage, clear_scrub_callback, commit_outgoing,
+    encrypt_with_key, extreme_default_lock_timeout, extreme_default_ttl, format_lock_timeout,
     format_signed_contact_link, format_ttl, frame_v2, install_panic_scrub_hook,
     install_terminate_signal_flag, is_onion_destination, is_terminal_safe, load_session,
     mlock_bytes, mlockall_current, parse_lock_timeout_token, parse_signed_contact_link,
@@ -31,7 +31,8 @@ use hashchat_rust::{
     wipe_local_sensitive, DnsPreference, DoubleRatchet, HiddenService, IdentityOnionState,
     InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode, PersistMode, PersistedContact,
     PostureProfile, SessionState, SocksIsolationCreds, UnlockBackoffPolicy,
-    DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES, WIRE_VERSION_V2,
+    DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES, MIN_NEW_PASSPHRASE_CHARS,
+    MIN_NEW_PASSPHRASE_CHARS_EXTREME, WIRE_VERSION_V2,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -743,6 +744,15 @@ impl App {
 
         if self.unlock_mode_create {
             if self.unlock_step == UnlockStep::EnterPass {
+                // Creation-time strength floor (stricter under Extreme).
+                if let Err(reason) =
+                    check_new_passphrase(&self.passphrase, self.net.is_extreme())
+                {
+                    self.status_msg = format!("Refused: {reason}.");
+                    self.passphrase.zeroize();
+                    self.passphrase.clear();
+                    return;
+                }
                 self.unlock_step = UnlockStep::ConfirmPass;
                 self.status_msg = "Confirm passphrase.".into();
                 return;
@@ -2518,11 +2528,18 @@ fn draw_unlock(f: &mut ratatui::Frame, app: &App, area: Rect) {
 
     let prompt = if app.unlock_mode_create {
         match app.unlock_step {
-            UnlockStep::EnterPass => "New passphrase:",
-            UnlockStep::ConfirmPass => "Confirm passphrase:",
+            UnlockStep::EnterPass => {
+                let min = if app.net.is_extreme() {
+                    MIN_NEW_PASSPHRASE_CHARS_EXTREME
+                } else {
+                    MIN_NEW_PASSPHRASE_CHARS
+                };
+                format!("New passphrase ({min}+ chars):")
+            }
+            UnlockStep::ConfirmPass => "Confirm passphrase:".to_string(),
         }
     } else {
-        "Passphrase:"
+        "Passphrase:".to_string()
     };
     let masked = if app.unlock_step == UnlockStep::ConfirmPass {
         "*".repeat(app.passphrase_confirm.chars().count())

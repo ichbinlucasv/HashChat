@@ -37,6 +37,9 @@ pub use emergency_scrub::{
     clear_scrub_callback, emergency_scrub, install_panic_scrub_hook, install_terminate_signal_flag,
     register_scrub_callback, scrub_bytes, take_terminate_signal, terminate_signal_pending,
 };
+pub use envelope::{
+    check_new_passphrase, MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME,
+};
 pub use hidden_service::{
     cookie_path_from_protocolinfo, start_hidden_service_with_key, HiddenService,
     HS_INBOUND_QUEUE_CAP, MAX_HS_INBOUND_FRAME,
