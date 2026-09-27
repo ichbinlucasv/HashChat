@@ -194,6 +194,17 @@ pass "TUI references lock_ui"
   || fail "hashchat_tui.rs does not install the panic scrub hook"
 pass "TUI installs panic scrub hook"
 
+# At-rest state files: owner-only, symlink-refusing, atomic writes.
+"${SEARCH[@]}" 'O_NOFOLLOW' src/rust/private_fs.rs >/dev/null \
+  || fail "private_fs.rs no longer opens state files with O_NOFOLLOW"
+"${SEARCH[@]}" 'TooPermissive' src/rust/private_fs.rs >/dev/null \
+  || fail "private_fs.rs no longer refuses group/other-accessible state files"
+"${SEARCH[@]}" 'private_fs::read_private_file' src/rust/session_persist.rs >/dev/null \
+  || fail "session_persist.rs does not load state through private_fs"
+"${SEARCH[@]}" 'check_state_storage' src/bin/hashchat_tui.rs >/dev/null \
+  || fail "hashchat_tui.rs does not check state storage before unlock"
+pass "state files owner-only + O_NOFOLLOW + TUI pre-unlock storage check"
+
 # ---------------------------------------------------------------------------
 # 4) Workflow wires this script (self-check when present).
 # ---------------------------------------------------------------------------

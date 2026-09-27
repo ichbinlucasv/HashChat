@@ -15,6 +15,7 @@ mod envelope;
 mod hidden_service;
 mod longterm_identity;
 mod net_mode;
+mod private_fs;
 mod ratchet;
 mod session_persist;
 mod tor_socks;
@@ -47,8 +48,9 @@ pub use net_mode::{DnsPreference, NetConfig, NetModeError, NetworkMode, PostureP
 pub use ratchet::{
     build_wire_aad, decrypt_with_key, encrypt_with_key, DoubleRatchet, WIRE_VERSION_V2,
 };
+pub use private_fs::MAX_PRIVATE_FILE_BYTES;
 pub use session_persist::{
-    commit_outgoing, load_disk, load_session, save_disk, save_session, state_exists,
+    check_state_storage, commit_outgoing, load_disk, load_session, save_disk, save_session, state_exists,
     validate_display_name, wipe_disk, IdentityOnionState, InboundDenyPolicy, PersistMode,
     PersistedContact, SessionState, MAX_DISPLAY_NAME_LEN,
 };

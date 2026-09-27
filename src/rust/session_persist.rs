@@ -37,6 +37,13 @@
 //! pre-v6 contacts are treated as **verified** for continuity (new `:add-contact`
 //! entries start unverified). Pre-v7 loads default idle lock to 5 minutes.
 //!
+//! ## File hygiene
+//! `state.enc` and `machine.key` go through [`crate::private_fs`]: the data dir must
+//! be a non-symlink directory owned by the effective uid (group/other bits are
+//! cleared to 0700); files are opened `O_NOFOLLOW` and refused unless they are
+//! regular, owner-owned, and carry no group/other bits. Writes are temp-file +
+//! `fsync` + `rename`, so a crash cannot leave a truncated blob.
+//!
 //! ## Extreme disk policy (honest, fail-closed)
 //! When [`crate::net_mode::PostureProfile::Extreme`] is set on the session's
 //! [`NetConfig`], [`save_session`] persists **identity + onion + net prefs +
@@ -62,6 +69,7 @@ use crate::disappearing::DEFAULT_LOCK_TIMEOUT_SECS;
 use crate::envelope;
 use crate::longterm_identity::LongTermIdentity;
 use crate::net_mode::NetConfig;
+use crate::private_fs::{self, PrivateFsError, MAX_PRIVATE_FILE_BYTES};
 use crate::ratchet::{decrypt_with_key, encrypt_with_key};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -909,66 +917,57 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
     })
 }
 
-#[cfg(not(unix))]
-fn set_private(path: &Path) -> std::io::Result<()> {
-    let _ = path;
-    Ok(())
-}
+const STATE_FILE: &str = "state.enc";
+const MACHINE_KEY_FILE: &str = "machine.key";
 
+/// Test helper: atomic owner-only write; `path` must be `dir/name`.
+#[cfg(test)]
 fn write_private(path: &Path, data: &[u8]) -> Result<(), &'static str> {
-    // Prefer create with 0600 then write to reduce TOCTOU (audit L2).
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)
-            .map_err(|_| "open private")?;
-        f.write_all(data).map_err(|_| "write private")?;
-        return Ok(());
-    }
-    #[cfg(not(unix))]
-    {
-        fs::write(path, data).map_err(|_| "write")?;
-        let _ = set_private(path);
-        Ok(())
-    }
+    let dir = path.parent().ok_or("invalid state path")?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("invalid state path")?;
+    private_fs::write_private_file(dir, name, data).map_err(PrivateFsError::as_str)
 }
 
-fn machine_key_load_or_create(path: &Path) -> Result<[u8; 32], &'static str> {
-    if let Ok(b) = fs::read(path) {
-        if b.len() == 32 {
+fn machine_key_load_or_create(data_dir: &Path) -> Result<[u8; 32], &'static str> {
+    match private_fs::read_private_file(data_dir, MACHINE_KEY_FILE, 32) {
+        Ok(mut b) => {
+            if b.len() != 32 {
+                b.zeroize();
+                // Refuse rather than regenerate: a new key would orphan state.enc.
+                return Err("machine.key malformed");
+            }
             let mut k = [0u8; 32];
             k.copy_from_slice(&b);
-            return Ok(k);
+            b.zeroize();
+            Ok(k)
         }
+        Err(PrivateFsError::NotFound) => {
+            let mut k = [0u8; 32];
+            getrandom::getrandom(&mut k).map_err(|_| "csprng failed")?;
+            private_fs::write_private_file(data_dir, MACHINE_KEY_FILE, &k)
+                .map_err(PrivateFsError::as_str)?;
+            Ok(k)
+        }
+        Err(e) => Err(e.as_str()),
     }
-    let mut k = [0u8; 32];
-    getrandom::getrandom(&mut k).map_err(|_| "csprng failed")?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|_| "mkdir")?;
-    }
-    write_private(path, &k)?;
-    Ok(k)
 }
 
 fn seal_plain(
     mode: PersistMode,
     passphrase: &[u8],
-    key_path: &Path,
+    data_dir: &Path,
     plain: &[u8],
 ) -> Result<Vec<u8>, &'static str> {
     match mode {
         PersistMode::Passphrase => {
-            let _ = fs::remove_file(key_path);
+            let _ = fs::remove_file(data_paths(data_dir).1);
             envelope::seal(passphrase, plain)
         }
         PersistMode::InsecureDevMachineKey => {
-            let mut key = machine_key_load_or_create(key_path)?;
+            let mut key = machine_key_load_or_create(data_dir)?;
             let env = encrypt_with_key(&key, plain, STATE_AAD)?;
             key.zeroize();
             Ok(env)
@@ -979,13 +978,13 @@ fn seal_plain(
 fn open_env(
     mode: PersistMode,
     passphrase: &[u8],
-    key_path: &Path,
+    data_dir: &Path,
     env: &[u8],
 ) -> Result<Vec<u8>, &'static str> {
     match mode {
         PersistMode::Passphrase => envelope::open(passphrase, env),
         PersistMode::InsecureDevMachineKey => {
-            let mut key = machine_key_load_or_create(key_path)?;
+            let mut key = machine_key_load_or_create(data_dir)?;
             let out = decrypt_with_key(&key, env, STATE_AAD)?;
             key.zeroize();
             Ok(out)
@@ -1005,15 +1004,16 @@ pub fn save_session(
     passphrase: &[u8],
     state: &SessionState,
 ) -> Result<(), &'static str> {
-    fs::create_dir_all(data_dir).map_err(|_| "mkdir")?;
-    let (state_path, key_path) = data_paths(data_dir);
+    // Harden / refuse the directory before the (slow) KDF and before any write.
+    private_fs::ensure_private_dir(data_dir).map_err(PrivateFsError::as_str)?;
     let disk = state.for_disk();
     let mut plain = serialize_blob(&disk);
-    let envelope = seal_plain(mode, passphrase, &key_path, &plain)?;
+    let envelope = seal_plain(mode, passphrase, data_dir, &plain);
     plain.zeroize();
     // `disk` ZeroizeOnDrop clears onion_key / ratchet / pending copies.
     drop(disk);
-    write_private(&state_path, &envelope)?;
+    private_fs::write_private_file(data_dir, STATE_FILE, &envelope?)
+        .map_err(PrivateFsError::as_str)?;
     Ok(())
 }
 
@@ -1027,12 +1027,12 @@ pub fn load_session(
     mode: PersistMode,
     passphrase: &[u8],
 ) -> Result<SessionState, &'static str> {
-    let (state_path, key_path) = data_paths(data_dir);
-    let env = fs::read(&state_path).map_err(|_| "read state.enc")?;
-    let mut plain = open_env(mode, passphrase, &key_path, &env)?;
-    let state = deserialize_blob(&plain)?;
+    let env = private_fs::read_private_file(data_dir, STATE_FILE, MAX_PRIVATE_FILE_BYTES)
+        .map_err(PrivateFsError::as_str)?;
+    let mut plain = open_env(mode, passphrase, data_dir, &env)?;
+    let state = deserialize_blob(&plain);
     plain.zeroize();
-    Ok(state)
+    state
 }
 
 /// Save identity + onion state.
@@ -1111,12 +1111,31 @@ pub fn wipe_disk(data_dir: &Path) -> std::io::Result<()> {
     let (state_path, key_path) = data_paths(data_dir);
     let _ = fs::remove_file(state_path);
     let _ = fs::remove_file(key_path);
+    private_fs::remove_stale_temps(data_dir, STATE_FILE);
+    private_fs::remove_stale_temps(data_dir, MACHINE_KEY_FILE);
     Ok(())
 }
 
-/// True if a state.enc exists (caller still needs the right mode + passphrase).
+/// True if anything exists at `state.enc` (caller still needs the right mode + passphrase).
+///
+/// Uses `lstat`: a symlink, dangling or not, counts as existing so the TUI goes
+/// to the unlock path (where [`check_state_storage`] refuses it) instead of the
+/// create path.
 pub fn state_exists(data_dir: &Path) -> bool {
-    data_paths(data_dir).0.is_file()
+    fs::symlink_metadata(data_paths(data_dir).0).is_ok()
+}
+
+/// Validate the state directory and `state.enc` (type, owner, mode, size) without
+/// decrypting. Missing dir/file is `Ok`. Also clears group/other bits on the
+/// directory. Returns an opaque, path-free reason on refusal.
+///
+/// Call before unlock so a storage problem is reported as such and is not counted
+/// as a wrong passphrase by the unlock backoff.
+pub fn check_state_storage(data_dir: &Path) -> Result<(), &'static str> {
+    if fs::symlink_metadata(data_dir).is_err() {
+        return Ok(());
+    }
+    private_fs::check_private_file(data_dir, STATE_FILE).map_err(PrivateFsError::as_str)
 }
 
 #[cfg(test)]
@@ -1175,6 +1194,125 @@ mod tests {
         let state = IdentityOnionState::from_identity(&id, "y.onion", Vec::new());
         save_disk(&dir, PersistMode::Passphrase, b"alpha", &state).unwrap();
         assert!(load_disk(&dir, PersistMode::Passphrase, b"beta").is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_state_is_owner_only_and_loose_state_refused() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = tmp_dir("perm");
+        // tmp_dir creates the dir under the ambient umask (typically 0755).
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let id = LongTermIdentity::from_seed([6u8; 32]);
+        let state = IdentityOnionState::from_identity(&id, "p.onion", Vec::new());
+        save_disk(&dir, PersistMode::Passphrase, b"alpha", &state).unwrap();
+        assert_eq!(fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(
+            fs::metadata(dir.join("state.enc")).unwrap().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(check_state_storage(&dir), Ok(()));
+
+        fs::set_permissions(dir.join("state.enc"), fs::Permissions::from_mode(0o644)).unwrap();
+        let err = check_state_storage(&dir).unwrap_err();
+        assert!(err.contains("group/other"));
+        // Refused before decryption, even with the right passphrase.
+        assert!(load_disk(&dir, PersistMode::Passphrase, b"alpha").is_err());
+
+        fs::set_permissions(dir.join("state.enc"), fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            load_disk(&dir, PersistMode::Passphrase, b"alpha").unwrap().seed,
+            state.seed
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_state_enc_refused_and_counts_as_existing() {
+        let dir = tmp_dir("symstate");
+        let other = tmp_dir("symstate-real");
+        let id = LongTermIdentity::from_seed([7u8; 32]);
+        let state = IdentityOnionState::from_identity(&id, "q.onion", Vec::new());
+        save_disk(&other, PersistMode::Passphrase, b"alpha", &state).unwrap();
+        std::os::unix::fs::symlink(other.join("state.enc"), dir.join("state.enc")).unwrap();
+
+        assert!(state_exists(&dir));
+        assert!(check_state_storage(&dir).unwrap_err().contains("symlink"));
+        assert!(load_disk(&dir, PersistMode::Passphrase, b"alpha").is_err());
+        let s2 = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "q.onion",
+            Vec::new(),
+        ));
+        assert!(save_session(&dir, PersistMode::Passphrase, b"alpha", &s2).is_err());
+
+        // Dangling link: still "exists", so the TUI never takes the create path over it.
+        fs::remove_file(dir.join("state.enc")).unwrap();
+        std::os::unix::fs::symlink(dir.join("nowhere"), dir.join("state.enc")).unwrap();
+        assert!(state_exists(&dir));
+        assert!(save_session(&dir, PersistMode::Passphrase, b"alpha", &s2).is_err());
+        assert!(!dir.join("nowhere").exists());
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&other);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_data_dir_refused() {
+        let real = tmp_dir("symdir-real");
+        let link = std::env::temp_dir().join(format!(
+            "hashchat-h3-symdir-link-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let id = LongTermIdentity::from_seed([8u8; 32]);
+        let state = IdentityOnionState::from_identity(&id, "r.onion", Vec::new());
+        assert!(save_disk(&link, PersistMode::Passphrase, b"alpha", &state).is_err());
+        assert!(!real.join("state.enc").exists());
+        save_disk(&real, PersistMode::Passphrase, b"alpha", &state).unwrap();
+        assert!(check_state_storage(&link).unwrap_err().contains("symlink"));
+        assert!(load_disk(&link, PersistMode::Passphrase, b"alpha").is_err());
+        let _ = fs::remove_file(&link);
+        let _ = fs::remove_dir_all(&real);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn machine_key_owner_only_and_malformed_key_not_regenerated() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = tmp_dir("mkey");
+        let id = LongTermIdentity::from_seed([9u8; 32]);
+        let state = IdentityOnionState::from_identity(&id, "s.onion", Vec::new());
+        save_disk(&dir, PersistMode::InsecureDevMachineKey, b"", &state).unwrap();
+        let kp = dir.join("machine.key");
+        assert_eq!(fs::metadata(&kp).unwrap().mode() & 0o777, 0o600);
+
+        fs::set_permissions(&kp, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(load_disk(&dir, PersistMode::InsecureDevMachineKey, b"").is_err());
+        fs::set_permissions(&kp, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let before = fs::read(&kp).unwrap();
+        write_private(&kp, &before[..31]).unwrap();
+        assert!(load_disk(&dir, PersistMode::InsecureDevMachineKey, b"").is_err());
+        assert_eq!(fs::read(&kp).unwrap().len(), 31, "short key must not be replaced");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wipe_disk_sweeps_stale_temp_files() {
+        let dir = tmp_dir("wipetmp");
+        let id = LongTermIdentity::from_seed([10u8; 32]);
+        let state = IdentityOnionState::from_identity(&id, "t.onion", Vec::new());
+        save_disk(&dir, PersistMode::Passphrase, b"alpha", &state).unwrap();
+        fs::write(dir.join(".state.enc.tmp-0011223344556677"), b"x").unwrap();
+        wipe_disk(&dir).unwrap();
+        assert!(!state_exists(&dir));
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
         let _ = fs::remove_dir_all(&dir);
     }
 

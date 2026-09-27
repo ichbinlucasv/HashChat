@@ -19,7 +19,7 @@ use crossterm::terminal::{
 };
 use hashchat_rust::{
     bootstrap_ratchet_from_signed_link, build_wire_aad, check_plaintext_send_size,
-    clear_scrub_callback, commit_outgoing, encrypt_with_key, extreme_default_lock_timeout,
+    check_state_storage, clear_scrub_callback, commit_outgoing, encrypt_with_key, extreme_default_lock_timeout,
     extreme_default_ttl, format_lock_timeout, format_signed_contact_link, format_ttl, frame_v2,
     install_panic_scrub_hook, install_terminate_signal_flag, is_onion_destination, load_session,
     mlock_bytes, mlockall_current, parse_lock_timeout_token, parse_signed_contact_link,
@@ -772,14 +772,23 @@ impl App {
                                 "Session initialized. :listen then :my-contact to share a signed link.",
                             );
                         }
-                        Err(_) => {
-                            self.status_msg = "Failed to save session.".into();
+                        Err(reason) => {
+                            // Reasons are fixed, path-free strings (no secrets).
+                            self.status_msg = format!("Failed to save session: {reason}.");
                         }
                     }
                 }
                 Err(_) => self.status_msg = "Identity generation failed.".into(),
             }
         } else {
+            // Storage policy (symlink / owner / mode / type) is checked before any KDF
+            // work and is not counted as a failed passphrase attempt.
+            if let Err(reason) = check_state_storage(Path::new(DATA_DIR)) {
+                self.status_msg = format!("State storage refused: {reason}.");
+                self.passphrase.zeroize();
+                self.passphrase.clear();
+                return;
+            }
             match load_session(Path::new(DATA_DIR), PersistMode::Passphrase, pass) {
                 Ok(state) => {
                     self.unlock_fail_count = 0;
