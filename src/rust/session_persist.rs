@@ -66,7 +66,7 @@
 //! verified (continuity); missing idle lock on v1–v6 loads as 300 seconds (5m).
 
 use crate::disappearing::DEFAULT_LOCK_TIMEOUT_SECS;
-use crate::envelope;
+use crate::envelope::{self, StoreKey};
 use crate::longterm_identity::LongTermIdentity;
 use crate::net_mode::NetConfig;
 use crate::private_fs::{self, PrivateFsError, MAX_PRIVATE_FILE_BYTES};
@@ -1073,18 +1073,33 @@ fn machine_key_load_or_create(data_dir: &Path) -> Result<[u8; 32], &'static str>
     }
 }
 
-fn seal_plain(
-    mode: PersistMode,
-    passphrase: &[u8],
-    data_dir: &Path,
-    plain: &[u8],
-) -> Result<Vec<u8>, &'static str> {
-    match mode {
-        PersistMode::Passphrase => {
+/// How a state blob is wrapped. Internal: public APIs pick one.
+enum Wrap<'a> {
+    Passphrase(&'a [u8]),
+    InsecureDevMachineKey,
+    Key(&'a StoreKey),
+}
+
+impl<'a> Wrap<'a> {
+    fn from_mode(mode: PersistMode, passphrase: &'a [u8]) -> Self {
+        match mode {
+            PersistMode::Passphrase => Wrap::Passphrase(passphrase),
+            PersistMode::InsecureDevMachineKey => Wrap::InsecureDevMachineKey,
+        }
+    }
+}
+
+fn seal_plain(wrap: &Wrap<'_>, data_dir: &Path, plain: &[u8]) -> Result<Vec<u8>, &'static str> {
+    match wrap {
+        Wrap::Passphrase(passphrase) => {
             let _ = fs::remove_file(data_paths(data_dir).1);
             envelope::seal(passphrase, plain)
         }
-        PersistMode::InsecureDevMachineKey => {
+        Wrap::Key(k) => {
+            let _ = fs::remove_file(data_paths(data_dir).1);
+            envelope::seal_with_key(k, plain)
+        }
+        Wrap::InsecureDevMachineKey => {
             let mut key = machine_key_load_or_create(data_dir)?;
             let env = encrypt_with_key(&key, plain, STATE_AAD)?;
             key.zeroize();
@@ -1093,15 +1108,11 @@ fn seal_plain(
     }
 }
 
-fn open_env(
-    mode: PersistMode,
-    passphrase: &[u8],
-    data_dir: &Path,
-    env: &[u8],
-) -> Result<Vec<u8>, &'static str> {
-    match mode {
-        PersistMode::Passphrase => envelope::open(passphrase, env),
-        PersistMode::InsecureDevMachineKey => {
+fn open_env(wrap: &Wrap<'_>, data_dir: &Path, env: &[u8]) -> Result<Vec<u8>, &'static str> {
+    match wrap {
+        Wrap::Passphrase(passphrase) => envelope::open(passphrase, env),
+        Wrap::Key(k) => envelope::open_with_key(k, env),
+        Wrap::InsecureDevMachineKey => {
             let mut key = machine_key_load_or_create(data_dir)?;
             let out = decrypt_with_key(&key, env, STATE_AAD)?;
             key.zeroize();
@@ -1110,7 +1121,38 @@ fn open_env(
     }
 }
 
-/// Save session state. Always writes v6.
+fn save_session_wrapped(
+    data_dir: &Path,
+    wrap: &Wrap<'_>,
+    state: &SessionState,
+) -> Result<(), &'static str> {
+    // Harden / refuse the directory before the (slow) KDF and before any write.
+    private_fs::ensure_private_dir(data_dir).map_err(PrivateFsError::as_str)?;
+    let disk = state.for_disk();
+    let mut plain = serialize_blob(&disk);
+    let envelope = seal_plain(wrap, data_dir, &plain);
+    plain.zeroize();
+    // `disk` ZeroizeOnDrop clears onion_key / ratchet / pending copies.
+    drop(disk);
+    private_fs::write_private_file(data_dir, STATE_FILE, &envelope?)
+        .map_err(PrivateFsError::as_str)?;
+    Ok(())
+}
+
+fn read_state_envelope(data_dir: &Path) -> Result<Vec<u8>, &'static str> {
+    private_fs::read_private_file(data_dir, STATE_FILE, MAX_PRIVATE_FILE_BYTES)
+        .map_err(PrivateFsError::as_str)
+}
+
+fn load_session_wrapped(data_dir: &Path, wrap: &Wrap<'_>) -> Result<SessionState, &'static str> {
+    let env = read_state_envelope(data_dir)?;
+    let mut plain = open_env(wrap, data_dir, &env)?;
+    let state = deserialize_blob(&plain);
+    plain.zeroize();
+    state
+}
+
+/// Save session state. Always writes v7.
 ///
 /// Under Extreme posture (`state.net.is_extreme()`), contacts / ratchets / pending /
 /// blocked / muted / verified are stripped via [`SessionState::for_disk`] before sealing
@@ -1122,20 +1164,10 @@ pub fn save_session(
     passphrase: &[u8],
     state: &SessionState,
 ) -> Result<(), &'static str> {
-    // Harden / refuse the directory before the (slow) KDF and before any write.
-    private_fs::ensure_private_dir(data_dir).map_err(PrivateFsError::as_str)?;
-    let disk = state.for_disk();
-    let mut plain = serialize_blob(&disk);
-    let envelope = seal_plain(mode, passphrase, data_dir, &plain);
-    plain.zeroize();
-    // `disk` ZeroizeOnDrop clears onion_key / ratchet / pending copies.
-    drop(disk);
-    private_fs::write_private_file(data_dir, STATE_FILE, &envelope?)
-        .map_err(PrivateFsError::as_str)?;
-    Ok(())
+    save_session_wrapped(data_dir, &Wrap::from_mode(mode, passphrase), state)
 }
 
-/// Load full session state. Accepts v1–v6 blobs (deny lists empty before v5;
+/// Load full session state. Accepts v1–v7 blobs (deny lists empty before v5;
 /// pre-v6 contacts default to verified).
 ///
 /// Extreme policy: if a legacy blob still contains contacts/queue/deny/verify lists, they
@@ -1145,12 +1177,36 @@ pub fn load_session(
     mode: PersistMode,
     passphrase: &[u8],
 ) -> Result<SessionState, &'static str> {
-    let env = private_fs::read_private_file(data_dir, STATE_FILE, MAX_PRIVATE_FILE_BYTES)
-        .map_err(PrivateFsError::as_str)?;
-    let mut plain = open_env(mode, passphrase, data_dir, &env)?;
+    load_session_wrapped(data_dir, &Wrap::from_mode(mode, passphrase))
+}
+
+/// Passphrase unlock that returns the derived [`StoreKey`] so the caller can
+/// drop the passphrase and use [`save_session_with_key`] afterwards. Runs
+/// Argon2id once. Same on-disk format as [`load_session`].
+pub fn unlock_session(
+    data_dir: &Path,
+    passphrase: &[u8],
+) -> Result<(SessionState, StoreKey), &'static str> {
+    let env = read_state_envelope(data_dir)?;
+    let key = StoreKey::derive_for_envelope(passphrase, &env)?;
+    let mut plain = envelope::open_with_key(&key, &env)?;
     let state = deserialize_blob(&plain);
     plain.zeroize();
-    state
+    Ok((state?, key))
+}
+
+/// Save with a key from [`unlock_session`] / [`StoreKey::derive_new`] (no KDF run).
+pub fn save_session_with_key(
+    data_dir: &Path,
+    key: &StoreKey,
+    state: &SessionState,
+) -> Result<(), &'static str> {
+    save_session_wrapped(data_dir, &Wrap::Key(key), state)
+}
+
+/// Load with a key from [`unlock_session`] (no KDF run).
+pub fn load_session_with_key(data_dir: &Path, key: &StoreKey) -> Result<SessionState, &'static str> {
+    load_session_wrapped(data_dir, &Wrap::Key(key))
 }
 
 /// Save identity + onion state.
@@ -1218,6 +1274,24 @@ pub fn commit_outgoing(
     session.set_ratchet_bytes(contact_id, ratchet_bytes);
     session.queue_pending(dest_onion, frame);
     let r = save_session(data_dir, mode, passphrase, &session);
+    session.clear_pending_secure();
+    session.clear_ratchets_secure();
+    r
+}
+
+/// [`commit_outgoing`] with a derived [`StoreKey`] instead of a passphrase.
+pub fn commit_outgoing_with_key(
+    data_dir: &Path,
+    key: &StoreKey,
+    contact_id: &str,
+    ratchet_bytes: Vec<u8>,
+    dest_onion: &str,
+    frame: Vec<u8>,
+) -> Result<(), &'static str> {
+    let mut session = load_session_with_key(data_dir, key)?;
+    session.set_ratchet_bytes(contact_id, ratchet_bytes);
+    session.queue_pending(dest_onion, frame);
+    let r = save_session_with_key(data_dir, key, &session);
     session.clear_pending_secure();
     session.clear_ratchets_secure();
     r
@@ -1418,6 +1492,84 @@ mod tests {
         write_private(&kp, &before[..31]).unwrap();
         assert!(load_disk(&dir, PersistMode::InsecureDevMachineKey, b"").is_err());
         assert_eq!(fs::read(&kp).unwrap().len(), 31, "short key must not be replaced");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unlock_returns_key_and_key_saves_stay_passphrase_compatible() {
+        let dir = tmp_dir("storekey");
+        let id = LongTermIdentity::from_seed([21u8; 32]);
+        let mut state = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "k.onion",
+            b"onionkey".to_vec(),
+        ));
+        save_session(&dir, PersistMode::Passphrase, b"correct horse", &state).unwrap();
+        let env1 = fs::read(dir.join("state.enc")).unwrap();
+
+        assert!(unlock_session(&dir, b"wrong horse").is_err());
+        let (loaded, key) = unlock_session(&dir, b"correct horse").unwrap();
+        assert_eq!(loaded.identity.seed, state.identity.seed);
+
+        // Save twice with the key: header salt kept, nonce fresh, no KDF needed.
+        state.disappear_ttl_secs = 60;
+        save_session_with_key(&dir, &key, &state).unwrap();
+        let env2 = fs::read(dir.join("state.enc")).unwrap();
+        save_session_with_key(&dir, &key, &state).unwrap();
+        let env3 = fs::read(dir.join("state.enc")).unwrap();
+        assert_eq!(env1[..17], env2[..17], "version + salt unchanged");
+        assert_ne!(env2[17..29], env3[17..29], "nonce must differ per save");
+
+        // Same format: the passphrase path still opens it.
+        let via_pass = load_session(&dir, PersistMode::Passphrase, b"correct horse").unwrap();
+        assert_eq!(via_pass.disappear_ttl_secs, 60);
+        let via_key = load_session_with_key(&dir, &key).unwrap();
+        assert_eq!(via_key.disappear_ttl_secs, 60);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn store_key_from_other_store_is_refused() {
+        let a = tmp_dir("storekey-a");
+        let b = tmp_dir("storekey-b");
+        let id = LongTermIdentity::from_seed([22u8; 32]);
+        let st = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "x.onion",
+            Vec::new(),
+        ));
+        save_session(&a, PersistMode::Passphrase, b"same pass phrase", &st).unwrap();
+        save_session(&b, PersistMode::Passphrase, b"same pass phrase", &st).unwrap();
+        let (_, ka) = unlock_session(&a, b"same pass phrase").unwrap();
+        // Different salt → different key, refused before AEAD.
+        assert!(load_session_with_key(&b, &ka).is_err());
+        let _ = fs::remove_dir_all(&a);
+        let _ = fs::remove_dir_all(&b);
+    }
+
+    #[test]
+    fn new_store_key_creates_loadable_store_and_commit_with_key() {
+        let dir = tmp_dir("storekey-new");
+        let id = LongTermIdentity::from_seed([23u8; 32]);
+        let mut st = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "n.onion",
+            Vec::new(),
+        ));
+        st.contacts.push(PersistedContact {
+            id: "c1".into(),
+            display_name: "C".into(),
+            onion: "p.onion".into(),
+            x25519: [1; 32],
+            ed25519: [2; 32],
+        });
+        let key = StoreKey::derive_new(b"brand new passphrase").unwrap();
+        save_session_with_key(&dir, &key, &st).unwrap();
+        commit_outgoing_with_key(&dir, &key, "c1", vec![9, 9], "p.onion", vec![1, 2, 3]).unwrap();
+        let back = load_session(&dir, PersistMode::Passphrase, b"brand new passphrase").unwrap();
+        assert_eq!(back.pending.len(), 1);
+        assert_eq!(back.ratchets.len(), 1);
+        assert!(StoreKey::derive_new(b"").is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 

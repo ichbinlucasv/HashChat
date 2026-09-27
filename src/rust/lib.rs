@@ -38,7 +38,7 @@ pub use emergency_scrub::{
     register_scrub_callback, scrub_bytes, take_terminate_signal, terminate_signal_pending,
 };
 pub use envelope::{
-    check_new_passphrase, MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME,
+    check_new_passphrase, StoreKey, MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME,
 };
 pub use hidden_service::{
     cookie_path_from_protocolinfo, start_hidden_service_with_key, HiddenService,
@@ -54,7 +54,8 @@ pub use ratchet::{
 };
 pub use private_fs::MAX_PRIVATE_FILE_BYTES;
 pub use session_persist::{
-    check_state_storage, commit_outgoing, load_disk, load_session, save_disk, save_session,
+    check_state_storage, commit_outgoing, commit_outgoing_with_key, load_disk, load_session,
+    load_session_with_key, save_disk, save_session, save_session_with_key, unlock_session,
     state_exists, validate_display_name, wipe_disk, ContactUpsert, IdentityOnionState,
     InboundDenyPolicy, PersistMode, PersistedContact, SessionState, MAX_DISPLAY_NAME_LEN,
 };

@@ -108,9 +108,13 @@ if ! "${SEARCH[@]}" 'insecure_dev \|\| std::env::var_os\("HASHCHAT_INSECURE_DEV_
 fi
 pass "from_flags still requires insecure_dev || env opt-in"
 
-# Production TUI path must use Passphrase (not InsecureDevMachineKey as default).
-if ! "${SEARCH[@]}" 'PersistMode::Passphrase' src/bin/hashchat_tui.rs >/dev/null; then
-  fail "hashchat_tui.rs does not use PersistMode::Passphrase"
+# Production TUI path must be passphrase-derived: unlock via unlock_session
+# (Argon2id once, then a zeroizing StoreKey) and never the insecure machine key.
+if ! "${SEARCH[@]}" 'unlock_session\(' src/bin/hashchat_tui.rs >/dev/null; then
+  fail "hashchat_tui.rs does not unlock via unlock_session (passphrase-derived key)"
+fi
+if "${SEARCH[@]}" 'InsecureDevMachineKey' src/bin/hashchat_tui.rs >/dev/null; then
+  fail "hashchat_tui.rs references InsecureDevMachineKey"
 fi
 # TUI must refuse running when insecure env is set (passphrase-only production).
 if ! "${SEARCH[@]}" 'HASHCHAT_INSECURE_DEV_PERSIST' src/bin/hashchat_tui.rs >/dev/null; then

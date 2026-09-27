@@ -19,20 +19,20 @@ use crossterm::terminal::{
 };
 use hashchat_rust::{
     bootstrap_ratchet_from_signed_link, build_wire_aad, check_new_passphrase,
-    check_plaintext_send_size, check_state_storage, clear_scrub_callback, commit_outgoing,
+    check_plaintext_send_size, check_state_storage, clear_scrub_callback, commit_outgoing_with_key,
     disable_core_dumps_best_effort, encrypt_with_key, extreme_default_lock_timeout,
     extreme_default_ttl, format_lock_timeout, format_signed_contact_link, format_ttl, frame_v2,
     install_panic_scrub_hook, install_terminate_signal_flag, is_onion_destination,
-    is_terminal_safe, load_session, mlock_bytes, mlockall_current, parse_lock_timeout_token,
-    parse_signed_contact_link, parse_ttl_token, push_char_no_realloc, register_scrub_callback,
-    sanitize_for_terminal, sas_fingerprint, sas_for_signed, save_session, socks5_send,
+    is_terminal_safe, mlockall_current, parse_lock_timeout_token, parse_signed_contact_link,
+    parse_ttl_token, push_char_no_realloc, register_scrub_callback, sanitize_for_terminal,
+    sas_fingerprint, sas_for_signed, save_session_with_key, socks5_send,
     socks_isolation_for_contact, socks_isolation_for_onion, start_hidden_service_with_key,
     state_exists, take_terminate_signal, tor_probe, unframe_v2, unlock_backoff_delay_secs,
-    wipe_local_sensitive, DnsPreference, DoubleRatchet, DumpHardening, HiddenService,
-    IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode, PersistMode,
-    PersistedContact, PostureProfile, SessionState, SocksIsolationCreds, UnlockBackoffPolicy,
-    DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES, MIN_NEW_PASSPHRASE_CHARS,
-    MIN_NEW_PASSPHRASE_CHARS_EXTREME, WIRE_VERSION_V2,
+    unlock_session, wipe_local_sensitive, DnsPreference, DoubleRatchet, DumpHardening,
+    HiddenService, IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode,
+    PersistedContact, PostureProfile, SessionState, SocksIsolationCreds, StoreKey,
+    UnlockBackoffPolicy, DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES,
+    MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME, WIRE_VERSION_V2,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -40,7 +40,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Terminal;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
 const DATA_DIR: &str = "hashchat_data";
 const GOLD: Color = Color::Rgb(255, 215, 0); // #FFD700
@@ -155,6 +155,9 @@ struct App {
     screen: Screen,
     focus: Focus,
     passphrase: String,
+    /// Argon2id-derived store key kept after unlock instead of the passphrase
+    /// (boxed so its address is stable for mlock). Dropped (zeroized) on lock.
+    store_key: Option<Box<StoreKey>>,
     /// Core-dump / ptrace hardening applied at startup (posture token for :evidence).
     dump_hardening: Option<DumpHardening>,
     passphrase_confirm: String,
@@ -235,6 +238,7 @@ impl App {
             screen: Screen::Unlock,
             focus: Focus::Contacts,
             passphrase: String::with_capacity(PASSPHRASE_BUF_CAP),
+            store_key: None,
             dump_hardening: None,
             passphrase_confirm: String::with_capacity(PASSPHRASE_BUF_CAP),
             unlock_mode_create: !exists,
@@ -302,19 +306,14 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return Err("no session");
         };
-        if self.passphrase.is_empty() {
-            return Err("passphrase required");
-        }
+        let Some(key) = self.store_key.as_deref() else {
+            return Err("locked");
+        };
         // Keep blob prefs aligned with live NetConfig + TTL + idle lock.
         session.net = self.net.clone();
         session.disappear_ttl_secs = self.disappear_ttl_secs;
         session.lock_timeout_secs = self.lock_timeout_secs;
-        save_session(
-            Path::new(DATA_DIR),
-            PersistMode::Passphrase,
-            self.passphrase.as_bytes(),
-            session,
-        )
+        save_session_with_key(Path::new(DATA_DIR), key, session)
     }
 
     /// Persist current session after a successful `:mode` change.
@@ -370,7 +369,6 @@ impl App {
     }
 
     fn wipe_contact_skipped_key(&mut self, contact_id: &str, msg_number: u32) {
-        let pass = Zeroizing::new(self.passphrase.as_bytes().to_vec());
         let Some(session) = self.session.as_mut() else {
             return;
         };
@@ -387,8 +385,8 @@ impl App {
         };
         r.wipe_skipped_key(msg_number);
         session.set_ratchet_bytes(contact_id, r.to_bytes());
-        if !pass.is_empty() {
-            let _ = save_session(Path::new(DATA_DIR), PersistMode::Passphrase, &pass, session);
+        if let Some(key) = self.store_key.as_deref() {
+            let _ = save_session_with_key(Path::new(DATA_DIR), key, session);
         }
     }
 
@@ -549,10 +547,11 @@ impl App {
     /// Idle / manual lock: zeroize secrets in RAM, stop HS accept, return to unlock.
     /// Disk `state.enc` is left intact (prefer durable save first). Re-unlock via load_session.
     fn lock_ui(&mut self) {
-        // Best-effort save while passphrase still available (prefs / pending).
-        if self.session.is_some() && !self.passphrase.is_empty() {
+        // Best-effort save while the store key is still available (prefs / pending).
+        if self.session.is_some() && self.store_key.is_some() {
             let _ = self.persist_session();
         }
+        self.store_key = None;
         // Drop HS: stops accept thread + closes ControlPort (onion key stays in state.enc).
         self.hs = None;
         self.hs_drops_seen = 0;
@@ -589,6 +588,7 @@ impl App {
         if let Some(mut s) = self.session.take() {
             s.wipe_memory_secure();
         }
+        self.store_key = None;
         self.passphrase.zeroize();
         self.passphrase.clear();
         self.passphrase_confirm.zeroize();
@@ -709,8 +709,7 @@ impl App {
 
     /// Best-effort anti-swap after passphrase accepted.
     ///
-    /// Calls `mlockall(MCL_CURRENT|MCL_FUTURE)` then `mlock` on the live passphrase
-    /// `String` heap bytes. Failure never aborts the session (unprivileged users often
+    /// Calls `mlockall(MCL_CURRENT|MCL_FUTURE)` then `mlock` on the boxed store key. Failure never aborts the session (unprivileged users often
     /// lack `RLIMIT_MEMLOCK`). Status notes once: "mlock unavailable (best-effort)".
     ///
     /// **Imperfection:** `String` may reallocate on later growth; that drops the per-buffer
@@ -718,8 +717,12 @@ impl App {
     /// Wipe path only zeroizes (no `munlock`) — keep wipe strong.
     fn apply_mlock_best_effort(&mut self) {
         let all_ok = mlockall_current();
-        // Lock current passphrase allocation (contiguous heap of String).
-        let pass_ok = mlock_bytes(self.passphrase.as_bytes());
+        // Lock the boxed store key (stable heap address while unlocked).
+        let pass_ok = self
+            .store_key
+            .as_deref()
+            .map(|k| k.mlock_best_effort())
+            .unwrap_or(true);
         if !(all_ok && pass_ok) && !self.mlock_note_shown {
             self.mlock_note_shown = true;
             let note = "mlock unavailable (best-effort)";
@@ -785,8 +788,13 @@ impl App {
                         onion_key: Vec::new(),
                     };
                     let state = SessionState::from_identity_with_net(identity, self.net.clone());
-                    match save_session(Path::new(DATA_DIR), PersistMode::Passphrase, pass, &state) {
-                        Ok(()) => {
+                    // Argon2id runs once here; afterwards only the derived key is kept.
+                    let saved = StoreKey::derive_new(pass).and_then(|key| {
+                        save_session_with_key(Path::new(DATA_DIR), &key, &state).map(|()| key)
+                    });
+                    match saved {
+                        Ok(key) => {
+                            self.store_key = Some(Box::new(key));
                             self.unlock_fail_count = 0;
                             self.unlock_cooldown_until = None;
                             self.session = Some(state);
@@ -823,8 +831,9 @@ impl App {
                 self.passphrase.clear();
                 return;
             }
-            match load_session(Path::new(DATA_DIR), PersistMode::Passphrase, pass) {
-                Ok(state) => {
+            match unlock_session(Path::new(DATA_DIR), pass) {
+                Ok((state, key)) => {
+                    self.store_key = Some(Box::new(key));
                     self.unlock_fail_count = 0;
                     self.unlock_cooldown_until = None;
                     let n_contacts = state.contacts.len();
@@ -881,6 +890,9 @@ impl App {
         }
         self.passphrase_confirm.zeroize();
         self.passphrase_confirm.clear();
+        // The passphrase is not kept after unlock / create; the store key is.
+        self.passphrase.zeroize();
+        self.passphrase.clear();
     }
 
     /// Short SAS fingerprint from contact public keys (not display_name).
@@ -1232,7 +1244,6 @@ impl App {
     ) -> Result<(String, String, String, u32, bool), String> {
         let (hint, step, sender_dh, ct) =
             unframe_v2(transport_frame).map_err(|_| "malformed wire frame".to_string())?;
-        let pass = Zeroizing::new(self.passphrase.as_bytes().to_vec());
         let net = self.net.clone();
         let session = self
             .session
@@ -1296,8 +1307,9 @@ impl App {
                         c.display_name.clone()
                     };
                     let display = !session.is_muted_id(&contact_id);
-                    let _ =
-                        save_session(Path::new(DATA_DIR), PersistMode::Passphrase, &pass, session);
+                    if let Some(key) = self.store_key.as_deref() {
+                        let _ = save_session_with_key(Path::new(DATA_DIR), key, session);
+                    }
                     return Ok((label, text, contact_id, step, display));
                 }
                 Err(_) => continue,
@@ -1496,10 +1508,13 @@ impl App {
         };
 
         // H3: durable queue commit before Tor send.
-        if commit_outgoing(
+        let Some(key) = self.store_key.as_deref() else {
+            self.push_msg("Send aborted: session locked.");
+            return;
+        };
+        if commit_outgoing_with_key(
             Path::new(DATA_DIR),
-            PersistMode::Passphrase,
-            self.passphrase.as_bytes(),
+            key,
             &contact.id,
             rbytes.clone(),
             &contact.onion,
@@ -2214,6 +2229,7 @@ impl App {
                 if let Some(mut s) = self.session.take() {
                     s.wipe_memory_secure();
                 }
+                self.store_key = None;
                 self.passphrase.zeroize();
                 self.passphrase.clear();
                 self.passphrase_confirm.zeroize();
@@ -3105,6 +3121,7 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
 
     unbind_app_scrub();
     app.hs = None;
+    app.store_key = None;
     app.passphrase.zeroize();
     app.passphrase_confirm.zeroize();
 
