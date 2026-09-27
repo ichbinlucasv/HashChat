@@ -172,6 +172,19 @@ pub struct PersistedContact {
     pub ed25519: [u8; 32],
 }
 
+/// Result of [`SessionState::upsert_contact_from_link`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContactUpsert {
+    pub id: String,
+    pub was_update: bool,
+    /// Onion, X25519 or Ed25519 differ from the stored record (SAS changed).
+    pub identity_changed: bool,
+    /// Record before the update (public material only).
+    pub previous: Option<PersistedContact>,
+    /// Verification state after the upsert.
+    pub verified: bool,
+}
+
 /// Full session state inside the passphrase wrap (H2 identity + H3 session).
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct SessionState {
@@ -248,6 +261,102 @@ impl SessionState {
             slot.1 = bytes;
         } else {
             self.ratchets.push((id, bytes));
+        }
+    }
+
+    /// Insert or update a contact from a verified signed link, applying the
+    /// SAS trust rule:
+    ///
+    /// - A record matches if its onion **or** Ed25519 key equals the link's
+    ///   (a record matching both is preferred).
+    /// - If onion, X25519 and Ed25519 are all byte-identical, the record is a pure
+    ///   re-import: verification and any `:rename` label are kept.
+    /// - If any of the three differ, the SAS the user compared no longer applies:
+    ///   the id is removed from `verified_ids` and the label is reset to
+    ///   `default_label`, so neither trust nor a trusted name carries over to
+    ///   new keys.
+    /// - New records get an id not used by any contact or by the verified /
+    ///   blocked / muted / ratchet lists, and always start unverified.
+    ///
+    /// The caller installs the ratchet for the returned id and persists.
+    pub fn upsert_contact_from_link(
+        &mut self,
+        onion: &str,
+        x25519: [u8; 32],
+        ed25519: [u8; 32],
+        default_label: &str,
+    ) -> ContactUpsert {
+        let both = self
+            .contacts
+            .iter()
+            .position(|c| c.onion == onion && c.ed25519 == ed25519);
+        let existing = both.or_else(|| {
+            self.contacts
+                .iter()
+                .position(|c| c.onion == onion || c.ed25519 == ed25519)
+        });
+        if let Some(i) = existing {
+            let previous = self.contacts[i].clone();
+            let identity_changed = previous.onion != onion
+                || previous.x25519 != x25519
+                || previous.ed25519 != ed25519;
+            let id = previous.id.clone();
+            {
+                let c = &mut self.contacts[i];
+                c.onion = onion.to_string();
+                c.x25519 = x25519;
+                c.ed25519 = ed25519;
+                if identity_changed || c.display_name.is_empty() {
+                    c.display_name = default_label.to_string();
+                }
+            }
+            if identity_changed {
+                self.verified_ids.retain(|v| v != &id);
+            }
+            let verified = self.is_verified_id(&id);
+            return ContactUpsert {
+                id,
+                was_update: true,
+                identity_changed,
+                previous: Some(previous),
+                verified,
+            };
+        }
+        let id = self.fresh_contact_id();
+        self.verified_ids.retain(|v| v != &id);
+        self.contacts.push(PersistedContact {
+            id: id.clone(),
+            display_name: default_label.to_string(),
+            onion: onion.to_string(),
+            x25519,
+            ed25519,
+        });
+        ContactUpsert {
+            id,
+            was_update: false,
+            identity_changed: false,
+            previous: None,
+            verified: false,
+        }
+    }
+
+    /// `c<N>` not referenced by any contact or per-id list (avoids inheriting
+    /// verification / block / mute / ratchet state after deletes).
+    fn fresh_contact_id(&self) -> String {
+        let used = |id: &str| {
+            self.contacts.iter().any(|c| c.id == id)
+                || self.verified_ids.iter().any(|v| v == id)
+                || self.blocked_ids.iter().any(|v| v == id)
+                || self.muted_ids.iter().any(|v| v == id)
+                || self.ratchets.iter().any(|(k, _)| k == id)
+        };
+        let mut n = self.contacts.len() + 1;
+        loop {
+            let id = format!("c{n}");
+            if !used(&id) {
+                return id;
+            }
+            n += 1;
         }
     }
 
@@ -1301,6 +1410,132 @@ mod tests {
         assert!(load_disk(&dir, PersistMode::InsecureDevMachineKey, b"").is_err());
         assert_eq!(fs::read(&kp).unwrap().len(), 31, "short key must not be replaced");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn upsert_session() -> SessionState {
+        let id = LongTermIdentity::from_seed([11u8; 32]);
+        SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "me.onion",
+            Vec::new(),
+        ))
+    }
+
+    #[test]
+    fn upsert_new_contact_starts_unverified() {
+        let mut s = upsert_session();
+        let up = s.upsert_contact_from_link("a.onion", [1; 32], [2; 32], "SAS-A");
+        assert!(!up.was_update && !up.identity_changed && !up.verified);
+        assert!(s.refuse_send_if_unverified(&up.id).is_err());
+    }
+
+    #[test]
+    fn identical_reimport_keeps_verification_and_label() {
+        let mut s = upsert_session();
+        let up = s.upsert_contact_from_link("a.onion", [1; 32], [2; 32], "SAS-A");
+        s.verify_contact_id(&up.id);
+        s.rename_contact_display_name(&up.id, "Alice").unwrap();
+        let again = s.upsert_contact_from_link("a.onion", [1; 32], [2; 32], "SAS-A");
+        assert_eq!(again.id, up.id);
+        assert!(again.was_update && !again.identity_changed && again.verified);
+        assert_eq!(s.contacts[0].display_name, "Alice");
+        assert!(s.refuse_send_if_unverified(&up.id).is_ok());
+    }
+
+    #[test]
+    fn key_change_on_same_onion_drops_verification_and_label() {
+        let mut s = upsert_session();
+        let up = s.upsert_contact_from_link("a.onion", [1; 32], [2; 32], "SAS-A");
+        s.verify_contact_id(&up.id);
+        s.rename_contact_display_name(&up.id, "Alice").unwrap();
+
+        // Same onion, different identity keys.
+        let ch = s.upsert_contact_from_link("a.onion", [9; 32], [8; 32], "SAS-X");
+        assert_eq!(ch.id, up.id);
+        assert!(ch.was_update && ch.identity_changed && !ch.verified);
+        assert!(s.refuse_send_if_unverified(&up.id).is_err());
+        assert_eq!(s.contacts[0].display_name, "SAS-X");
+        assert_eq!(s.contacts[0].ed25519, [8; 32]);
+        let prev = ch.previous.unwrap();
+        assert_eq!(prev.ed25519, [2; 32]);
+        assert_eq!(prev.display_name, "Alice");
+    }
+
+    #[test]
+    fn x25519_only_change_drops_verification() {
+        let mut s = upsert_session();
+        let up = s.upsert_contact_from_link("a.onion", [1; 32], [2; 32], "SAS-A");
+        s.verify_contact_id(&up.id);
+        let ch = s.upsert_contact_from_link("a.onion", [3; 32], [2; 32], "SAS-B");
+        assert!(ch.identity_changed && !ch.verified);
+    }
+
+    #[test]
+    fn onion_change_with_same_ed25519_drops_verification() {
+        let mut s = upsert_session();
+        let up = s.upsert_contact_from_link("a.onion", [1; 32], [2; 32], "SAS-A");
+        s.verify_contact_id(&up.id);
+        let ch = s.upsert_contact_from_link("b.onion", [1; 32], [2; 32], "SAS-C");
+        assert_eq!(ch.id, up.id);
+        assert!(ch.identity_changed && !ch.verified);
+        assert_eq!(s.contacts[0].onion, "b.onion");
+    }
+
+    #[test]
+    fn identity_change_is_persisted_as_unverified() {
+        let dir = tmp_dir("upsert-persist");
+        let mut s = upsert_session();
+        let up = s.upsert_contact_from_link("a.onion", [1; 32], [2; 32], "SAS-A");
+        s.verify_contact_id(&up.id);
+        s.upsert_contact_from_link("a.onion", [5; 32], [6; 32], "SAS-Z");
+        save_session(&dir, PersistMode::Passphrase, b"pw", &s).unwrap();
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"pw").unwrap();
+        assert!(!loaded.is_verified_id(&up.id));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_id_never_reuses_a_verified_or_listed_id() {
+        let mut s = upsert_session();
+        let a = s.upsert_contact_from_link("a.onion", [1; 32], [1; 32], "A");
+        let b = s.upsert_contact_from_link("b.onion", [2; 32], [2; 32], "B");
+        s.verify_contact_id(&b.id);
+        s.block_contact_id(&b.id);
+        // Remove the first record only; b keeps its id ("c2") and state.
+        s.contacts.retain(|c| c.id != a.id);
+        let c = s.upsert_contact_from_link("c.onion", [3; 32], [3; 32], "C");
+        assert_ne!(c.id, b.id);
+        assert!(!c.verified);
+        assert!(!s.is_blocked_id(&c.id));
+        // Stale per-id list entries without a contact are not inherited either.
+        s.verified_ids.push("c9".into());
+        s.contacts.clear();
+        s.ratchets.clear();
+        s.blocked_ids.clear();
+        s.verified_ids.retain(|v| v == "c9");
+        for _ in 0..12 {
+            let n = s.contacts.len();
+            let up = s.upsert_contact_from_link(
+                &format!("n{n}.onion"),
+                [n as u8; 32],
+                [n as u8 + 100; 32],
+                "N",
+            );
+            assert_ne!(up.id, "c9");
+            assert!(!up.verified);
+        }
+    }
+
+    #[test]
+    fn prefers_record_matching_both_onion_and_key() {
+        let mut s = upsert_session();
+        let a = s.upsert_contact_from_link("a.onion", [1; 32], [1; 32], "A");
+        let b = s.upsert_contact_from_link("b.onion", [2; 32], [2; 32], "B");
+        s.verify_contact_id(&b.id);
+        let again = s.upsert_contact_from_link("b.onion", [2; 32], [2; 32], "B");
+        assert_eq!(again.id, b.id);
+        assert!(again.verified);
+        assert_ne!(again.id, a.id);
     }
 
     #[test]

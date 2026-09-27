@@ -1300,37 +1300,33 @@ impl App {
                     return;
                 }
                 let onion_tail = Self::onion_tail(&peer.onion);
-                let (select_idx, was_update, verified) = {
+                let (select_idx, up) = {
                     let session = self.session.as_mut().unwrap();
-                    let existing = session
-                        .contacts
-                        .iter()
-                        .position(|c| c.onion == peer.onion || c.ed25519 == peer.ed25519);
-                    let id = if let Some(i) = existing {
-                        let id = session.contacts[i].id.clone();
-                        session.contacts[i].display_name = sas.clone();
-                        session.contacts[i].onion = peer.onion.clone();
-                        session.contacts[i].x25519 = peer.x25519;
-                        session.contacts[i].ed25519 = peer.ed25519;
-                        // Keep existing verified/unverified status on update.
-                        id
-                    } else {
-                        let id = format!("c{}", session.contacts.len() + 1);
-                        session.contacts.push(PersistedContact {
-                            id: id.clone(),
-                            display_name: sas.clone(),
-                            onion: peer.onion.clone(),
-                            x25519: peer.x25519,
-                            ed25519: peer.ed25519,
-                        });
-                        // New contacts start unverified (SAS compare via :verify).
-                        id
-                    };
-                    session.set_ratchet_bytes(&id, ratchet.to_bytes());
-                    let verified = session.is_verified_id(&id);
-                    let idx = session.contacts.iter().position(|c| c.id == id);
-                    (idx, existing.is_some(), verified)
+                    let up = session.upsert_contact_from_link(
+                        &peer.onion,
+                        peer.x25519,
+                        peer.ed25519,
+                        &sas,
+                    );
+                    session.set_ratchet_bytes(&up.id, ratchet.to_bytes());
+                    let idx = session.contacts.iter().position(|c| c.id == up.id);
+                    (idx, up)
                 };
+                let was_update = up.was_update;
+                let verified = up.verified;
+                if up.identity_changed {
+                    // Loud notice: the SAS the user compared no longer applies.
+                    let (old_label, old_sas) = up
+                        .previous
+                        .as_ref()
+                        .map(|p| (Self::contact_list_label(p), Self::contact_sas_short(p)))
+                        .unwrap_or_default();
+                    self.push_msg(format!(
+                        "!! SAFETY NUMBER CHANGED for {old_label}: SAS {old_sas} -> {sas}. \
+                         Contact is now UNVERIFIED; sending is refused until you compare \
+                         the new SAS out of band and run :verify."
+                    ));
+                }
                 match self.persist_session() {
                     Ok(()) => {
                         let verb = if was_update { "Updated" } else { "Added" };
@@ -1339,7 +1335,11 @@ impl App {
                         } else {
                             "unverified — :verify after SAS compare"
                         };
-                        self.status_msg = format!("{verb} contact (SAS {sas}, {trust})");
+                        self.status_msg = if up.identity_changed {
+                            format!("SAS CHANGED · {verb} contact (SAS {sas}, {trust})")
+                        } else {
+                            format!("{verb} contact (SAS {sas}, {trust})")
+                        };
                         if was_update {
                             self.push_msg(format!("{verb} {sas} — onion …{onion_tail} ({trust})"));
                         } else {

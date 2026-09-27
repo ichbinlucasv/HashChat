@@ -215,6 +215,16 @@ pass "TUI installs panic scrub hook"
   || fail "hashchat_tui.rs does not check state storage before unlock"
 pass "state files owner-only + O_NOFOLLOW + TUI pre-unlock storage check"
 
+# Contact key change must drop SAS verification (no trust carry-over).
+"${SEARCH[@]}" 'fn upsert_contact_from_link' src/rust/session_persist.rs >/dev/null \
+  || fail "upsert_contact_from_link missing from session_persist.rs"
+"${SEARCH[@]}" 'upsert_contact_from_link' src/bin/hashchat_tui.rs >/dev/null \
+  || fail "hashchat_tui.rs does not add contacts via upsert_contact_from_link"
+if "${SEARCH[@]}" 'Keep existing verified/unverified status on update' src/bin/hashchat_tui.rs >/dev/null; then
+  fail "hashchat_tui.rs reintroduced verified-status carry-over on contact update"
+fi
+pass "contact identity change resets SAS verification"
+
 # Untrusted text must be sanitised before any ratatui widget sees it.
 "${SEARCH[@]}" 'fn sanitize_for_terminal' src/rust/term_sanitize.rs >/dev/null \
   || fail "sanitize_for_terminal missing from term_sanitize.rs"

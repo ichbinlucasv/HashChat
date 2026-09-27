@@ -51,9 +51,9 @@ pub use ratchet::{
 };
 pub use private_fs::MAX_PRIVATE_FILE_BYTES;
 pub use session_persist::{
-    check_state_storage, commit_outgoing, load_disk, load_session, save_disk, save_session, state_exists,
-    validate_display_name, wipe_disk, IdentityOnionState, InboundDenyPolicy, PersistMode,
-    PersistedContact, SessionState, MAX_DISPLAY_NAME_LEN,
+    check_state_storage, commit_outgoing, load_disk, load_session, save_disk, save_session,
+    state_exists, validate_display_name, wipe_disk, ContactUpsert, IdentityOnionState,
+    InboundDenyPolicy, PersistMode, PersistedContact, SessionState, MAX_DISPLAY_NAME_LEN,
 };
 pub use term_sanitize::{is_terminal_safe, sanitize_for_terminal};
 pub use unlock_backoff::{unlock_backoff_delay_secs, UnlockBackoffPolicy};
