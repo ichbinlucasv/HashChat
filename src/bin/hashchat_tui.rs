@@ -19,17 +19,19 @@ use crossterm::terminal::{
 };
 use hashchat_rust::{
     bootstrap_ratchet_from_signed_link, build_wire_aad, check_plaintext_send_size,
-    check_state_storage, clear_scrub_callback, commit_outgoing, encrypt_with_key, extreme_default_lock_timeout,
-    extreme_default_ttl, format_lock_timeout, format_signed_contact_link, format_ttl, frame_v2,
-    install_panic_scrub_hook, install_terminate_signal_flag, is_onion_destination, load_session,
+    check_state_storage, clear_scrub_callback, commit_outgoing, encrypt_with_key,
+    extreme_default_lock_timeout, extreme_default_ttl, format_lock_timeout,
+    format_signed_contact_link, format_ttl, frame_v2, install_panic_scrub_hook,
+    install_terminate_signal_flag, is_onion_destination, is_terminal_safe, load_session,
     mlock_bytes, mlockall_current, parse_lock_timeout_token, parse_signed_contact_link,
-    parse_ttl_token, register_scrub_callback, sas_fingerprint, sas_for_signed, save_session,
-    socks5_send, socks_isolation_for_contact, socks_isolation_for_onion, SocksIsolationCreds,
-    start_hidden_service_with_key, state_exists, take_terminate_signal, tor_probe, unframe_v2,
-    unlock_backoff_delay_secs, wipe_local_sensitive, DnsPreference, DoubleRatchet, HiddenService,
-    IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode, PersistMode,
-    PersistedContact, PostureProfile, SessionState, UnlockBackoffPolicy, DEFAULT_LOCK_TIMEOUT_SECS,
-    MAX_PLAINTEXT_SEND_BYTES, WIRE_VERSION_V2,
+    parse_ttl_token, register_scrub_callback, sanitize_for_terminal, sas_fingerprint,
+    sas_for_signed, save_session, socks5_send, socks_isolation_for_contact,
+    socks_isolation_for_onion, start_hidden_service_with_key, state_exists,
+    take_terminate_signal, tor_probe, unframe_v2, unlock_backoff_delay_secs,
+    wipe_local_sensitive, DnsPreference, DoubleRatchet, HiddenService, IdentityOnionState,
+    InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode, PersistMode, PersistedContact,
+    PostureProfile, SessionState, SocksIsolationCreds, UnlockBackoffPolicy,
+    DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES, WIRE_VERSION_V2,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -97,10 +99,21 @@ struct ChatLine {
     wipe_key: Option<(String, u32)>,
 }
 
+/// Transcript text is sanitised when stored so no later render path can forget.
+/// The unsanitised original is zeroized (it may be peer plaintext).
+fn terminal_safe_owned(mut s: String) -> String {
+    if is_terminal_safe(&s) {
+        return s;
+    }
+    let out = sanitize_for_terminal(&s).into_owned();
+    s.zeroize();
+    out
+}
+
 impl ChatLine {
     fn sys(text: impl Into<String>) -> Self {
         Self {
-            text: text.into(),
+            text: terminal_safe_owned(text.into()),
             expires_at: None,
             wipe_key: None,
         }
@@ -113,7 +126,7 @@ impl ChatLine {
             Some(Instant::now() + Duration::from_secs(u64::from(ttl_secs)))
         };
         Self {
-            text: text.into(),
+            text: terminal_safe_owned(text.into()),
             expires_at,
             wipe_key,
         }
@@ -1243,7 +1256,16 @@ impl App {
             let remote = x25519_dalek::PublicKey::from(sender_dh);
             match r.try_recv_decrypt(&remote, &ct, &aad) {
                 Ok((mut pt, step)) => {
-                    let text = String::from_utf8_lossy(&pt).to_string();
+                    // Neutralise terminal control / bidi characters before the text
+                    // can reach any widget; zeroize intermediate copies.
+                    let text = {
+                        let lossy = String::from_utf8_lossy(&pt);
+                        let safe = sanitize_for_terminal(&lossy).into_owned();
+                        if let std::borrow::Cow::Owned(mut o) = lossy {
+                            o.zeroize();
+                        }
+                        safe
+                    };
                     pt.zeroize();
                     let contact_id = c.id.clone();
                     session.set_ratchet_bytes(&contact_id, r.to_bytes());
@@ -2524,7 +2546,10 @@ fn draw_unlock(f: &mut ratatui::Frame, app: &App, area: Rect) {
             Span::styled("▌", Style::default().fg(GOLD)),
         ]),
         Line::from(""),
-        Line::from(Span::styled(&app.status_msg, Style::default().fg(DIM))),
+        Line::from(Span::styled(
+            sanitize_for_terminal(&app.status_msg),
+            Style::default().fg(DIM),
+        )),
         Line::from(""),
         Line::from(Span::styled(
             "Enter unlock · Esc clear · Tor required for network use",
@@ -2607,7 +2632,12 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     } else {
         names
             .iter()
-            .map(|n| ListItem::new(Span::styled(n.clone(), Style::default().fg(TEXT))))
+            .map(|n| {
+                ListItem::new(Span::styled(
+                    sanitize_for_terminal(n).into_owned(),
+                    Style::default().fg(TEXT),
+                ))
+            })
             .collect()
     };
     let contacts_border = if app.focus == Focus::Contacts {
@@ -2645,7 +2675,12 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
             .collect::<Vec<_>>()
             .into_iter()
             .rev()
-            .map(|m| Line::from(Span::styled(m.text.as_str(), Style::default().fg(TEXT))))
+            .map(|m| {
+                Line::from(Span::styled(
+                    sanitize_for_terminal(&m.text),
+                    Style::default().fg(TEXT),
+                ))
+            })
             .collect()
     };
     let chat_title = match app.selected_contact_record() {
@@ -2656,7 +2691,10 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(Span::styled(chat_title, gold_style()))
+                .title(Span::styled(
+                    sanitize_for_terminal(&chat_title).into_owned(),
+                    gold_style(),
+                ))
                 .border_style(Style::default().fg(GOLD))
                 .style(Style::default().bg(PANEL)),
         )
@@ -2670,7 +2708,7 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     };
     let input = Paragraph::new(Line::from(vec![
         Span::styled("> ", gold_style()),
-        Span::styled(&app.input, Style::default().fg(TEXT)),
+        Span::styled(sanitize_for_terminal(&app.input), Style::default().fg(TEXT)),
         Span::styled("▌", Style::default().fg(GOLD)),
     ]))
     .block(
@@ -2683,7 +2721,7 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     f.render_widget(input, root[2]);
 
     let status = Paragraph::new(Line::from(Span::styled(
-        &app.status_msg,
+        sanitize_for_terminal(&app.status_msg),
         Style::default().fg(DIM),
     )))
     .style(Style::default().bg(BG));
@@ -2725,7 +2763,10 @@ fn draw_wipe_modal(f: &mut ratatui::Frame, app: &App, area: Rect) {
             "Limits: not a kernel-implant / prior-exfil mitigator (THREATMODEL).",
             Style::default().fg(DIM),
         )),
-        Line::from(Span::styled(&app.status_msg, Style::default().fg(DIM))),
+        Line::from(Span::styled(
+            sanitize_for_terminal(&app.status_msg),
+            Style::default().fg(DIM),
+        )),
     ])
     .block(
         Block::default()
@@ -2774,7 +2815,10 @@ fn draw_delete_contact_modal(f: &mut ratatui::Frame, app: &App, area: Rect) {
             "Local only — not a remote wipe (THREATMODEL).",
             Style::default().fg(DIM),
         )),
-        Line::from(Span::styled(&app.status_msg, Style::default().fg(DIM))),
+        Line::from(Span::styled(
+            sanitize_for_terminal(&app.status_msg),
+            Style::default().fg(DIM),
+        )),
     ])
     .block(
         Block::default()

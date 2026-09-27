@@ -205,6 +205,15 @@ pass "TUI installs panic scrub hook"
   || fail "hashchat_tui.rs does not check state storage before unlock"
 pass "state files owner-only + O_NOFOLLOW + TUI pre-unlock storage check"
 
+# Untrusted text must be sanitised before any ratatui widget sees it.
+"${SEARCH[@]}" 'fn sanitize_for_terminal' src/rust/term_sanitize.rs >/dev/null \
+  || fail "sanitize_for_terminal missing from term_sanitize.rs"
+"${SEARCH[@]}" 'sanitize_for_terminal\(&lossy\)' src/bin/hashchat_tui.rs >/dev/null \
+  || fail "hashchat_tui.rs does not sanitise decrypted peer text"
+"${SEARCH[@]}" 'terminal_safe_owned\(text.into\(\)\)' src/bin/hashchat_tui.rs >/dev/null \
+  || fail "hashchat_tui.rs ChatLine no longer sanitises stored transcript text"
+pass "TUI sanitises peer text and transcript before render"
+
 # ---------------------------------------------------------------------------
 # 4) Workflow wires this script (self-check when present).
 # ---------------------------------------------------------------------------

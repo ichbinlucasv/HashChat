@@ -18,6 +18,7 @@ mod net_mode;
 mod private_fs;
 mod ratchet;
 mod session_persist;
+mod term_sanitize;
 mod tor_socks;
 mod unlock_backoff;
 mod wire;
@@ -54,6 +55,7 @@ pub use session_persist::{
     validate_display_name, wipe_disk, IdentityOnionState, InboundDenyPolicy, PersistMode,
     PersistedContact, SessionState, MAX_DISPLAY_NAME_LEN,
 };
+pub use term_sanitize::{is_terminal_safe, sanitize_for_terminal};
 pub use unlock_backoff::{unlock_backoff_delay_secs, UnlockBackoffPolicy};
 pub use tor_socks::{
     is_loopback_host, is_onion_destination, probe as tor_probe, read_framed_u16,
