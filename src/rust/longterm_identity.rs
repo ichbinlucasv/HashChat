@@ -82,6 +82,17 @@ impl LongTermIdentity {
         self.x25519_secret.diffie_hellman(peer).to_bytes()
     }
 
+    /// Static-DH that refuses non-contributory (low-order) peer keys.
+    /// Honest peers never produce these; callers should prefer this.
+    pub fn x25519_dh_checked(&self, peer: &X25519Public) -> Option<[u8; 32]> {
+        let shared = self.x25519_secret.diffie_hellman(peer);
+        if shared.was_contributory() {
+            Some(shared.to_bytes())
+        } else {
+            None
+        }
+    }
+
     pub fn sign(&self, message: &[u8]) -> Signature {
         self.ed25519_signing.sign(message)
     }
@@ -164,5 +175,19 @@ mod envelope_tests {
     fn identity_empty_passphrase_refused() {
         let id = LongTermIdentity::from_seed([1u8; 32]);
         assert!(export_encrypted(&id, b"").is_err());
+    }
+
+    #[test]
+    fn dh_checked_refuses_low_order_peer() {
+        let a = LongTermIdentity::generate().unwrap();
+        let b = LongTermIdentity::generate().unwrap();
+        assert_eq!(
+            a.x25519_dh_checked(&b.x25519_public()),
+            Some(a.x25519_dh(&b.x25519_public()))
+        );
+        assert!(a.x25519_dh_checked(&X25519Public::from([0u8; 32])).is_none());
+        let mut one = [0u8; 32];
+        one[0] = 1;
+        assert!(a.x25519_dh_checked(&X25519Public::from(one)).is_none());
     }
 }

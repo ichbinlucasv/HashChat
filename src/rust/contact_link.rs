@@ -221,9 +221,12 @@ pub fn bootstrap_ratchet_from_signed_link(
 ) -> Result<(DoubleRatchet, String), ContactLinkError> {
     let peer = parse_signed_contact_link(link)?;
     let peer_pub = X25519Public::from(peer.x25519);
-    let shared = local.x25519_dh(&peer_pub);
+    let mut shared = local
+        .x25519_dh_checked(&peer_pub)
+        .ok_or(ContactLinkError::DhFailed)?;
     let mut r = DoubleRatchet::new();
     r.init_symmetric(&shared);
+    zeroize::Zeroize::zeroize(&mut shared);
     let sas = sas_fingerprint(&peer.ed25519, &peer.x25519, &peer.onion);
     Ok((r, sas))
 }

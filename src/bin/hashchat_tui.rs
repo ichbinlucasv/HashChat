@@ -1480,9 +1480,18 @@ impl App {
                     }
                 }
             } else if contact.x25519 != [0u8; 32] {
-                let shared = local.x25519_dh(&x25519_dalek::PublicKey::from(contact.x25519));
+                let mut shared = match local
+                    .x25519_dh_checked(&x25519_dalek::PublicKey::from(contact.x25519))
+                {
+                    Some(s) => s,
+                    None => {
+                        self.push_msg("Contact key rejected (invalid).");
+                        return;
+                    }
+                };
                 let mut r = DoubleRatchet::new();
                 r.init_symmetric(&shared);
+                shared.zeroize();
                 r
             } else {
                 self.push_msg("No ratchet for contact — add via :add-contact <signed link>.");

@@ -264,6 +264,12 @@ impl DoubleRatchet {
         if self.recv_count == u32::MAX {
             return Err("receive counter exhausted");
         }
+        // Refuse non-contributory (low-order) sender keys before any state use.
+        if self.remote_dh.as_ref() != Some(remote)
+            && !self.dh_secret.diffie_hellman(remote).was_contributory()
+        {
+            return Err("invalid sender key");
+        }
         let snap = self.to_bytes();
         let mut scratch = DoubleRatchet::from_bytes(&snap)?;
         let (mut key, step) = scratch.ratchet_recv(remote);
@@ -684,5 +690,18 @@ mod tests {
         assert!(r.try_recv_decrypt(&remote, &[0u8; 40], b"").is_err());
         let (_, _, recv) = r.export_state();
         assert_eq!(recv, u32::MAX);
+    }
+
+    #[test]
+    fn recv_refuses_low_order_sender_key() {
+        let mut r = DoubleRatchet::new();
+        r.init_symmetric(&[7u8; 32]);
+        let before = r.to_bytes();
+        let bad = PublicKey::from([0u8; 32]);
+        assert_eq!(
+            r.try_recv_decrypt(&bad, &[0u8; 40], b""),
+            Err("invalid sender key")
+        );
+        assert_eq!(r.to_bytes(), before);
     }
 }
