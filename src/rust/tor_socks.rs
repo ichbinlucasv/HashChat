@@ -7,23 +7,39 @@
 //! - No clearnet fallback. Does not start Tor. Credentials are never logged.
 
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::time::Duration;
 
 /// Max payload for the 2-byte length-prefixed transport frame (matches Haskell Tor.hs).
 pub const MAX_SOCKS_FRAME: usize = u16::MAX as usize;
 
+/// Parse a loopback host without DNS: `localhost` maps to 127.0.0.1, all
+/// other names are refused, and the literal IP must be a loopback address.
+pub fn loopback_ip(host: &str) -> Option<IpAddr> {
+    let h = host.trim().to_ascii_lowercase();
+    if h == "localhost" {
+        return Some(IpAddr::V4(Ipv4Addr::LOCALHOST));
+    }
+    let lit = h
+        .strip_prefix('[')
+        .and_then(|x| x.strip_suffix(']'))
+        .unwrap_or(&h);
+    let ip: IpAddr = lit.parse().ok()?;
+    if ip.is_loopback() {
+        Some(ip)
+    } else {
+        None
+    }
+}
+
+/// Resolved loopback socket address (no resolver involved).
+pub fn loopback_socket_addr(host: &str, port: u16) -> Option<SocketAddr> {
+    loopback_ip(host).map(|ip| SocketAddr::new(ip, port))
+}
+
 /// H4: SOCKS proxy must be loopback only.
 pub fn is_loopback_host(host: &str) -> bool {
-    let h = host.trim().to_ascii_lowercase();
-    if h == "localhost" || h == "::1" || h == "[::1]" {
-        return true;
-    }
-    // IPv4 127.0.0.0/8
-    if let Some(rest) = h.strip_prefix("127.") {
-        return !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit() || b == b'.');
-    }
-    false
+    loopback_ip(host).is_some()
 }
 
 /// H4: outbound destinations must be Tor v3 onions (host part before optional `:port`).
@@ -71,12 +87,9 @@ pub fn probe(socks_host: &str, socks_port: u16, control_port: u16) -> TorProbe {
 }
 
 fn tcp_up(host: &str, port: u16, ms: u64) -> bool {
-    let addr = match format!("{host}:{port}").to_socket_addrs() {
-        Ok(mut a) => match a.next() {
-            Some(x) => x,
-            None => return false,
-        },
-        Err(_) => return false,
+    let addr = match loopback_socket_addr(host, port) {
+        Some(a) => a,
+        None => return false,
     };
     TcpStream::connect_timeout(&addr, Duration::from_millis(ms)).is_ok()
 }
@@ -249,11 +262,9 @@ fn socks5_handshake(
         return Err("destination refused (need v3 .onion)".into());
     }
 
-    let addr = format!("{proxy_host}:{proxy_port}")
-        .to_socket_addrs()
-        .map_err(|_| "SOCKS resolve failed".to_string())?
-        .next()
-        .ok_or_else(|| "SOCKS resolve empty".to_string())?;
+    let addr = loopback_socket_addr(proxy_host, proxy_port)
+        .ok_or_else(|| "SOCKS proxy refused (not loopback)".to_string())?;
+    debug_assert!(addr.ip().is_loopback());
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(8))
         .map_err(|_| "SOCKS connect failed".to_string())?;
     // Onion circuits can be slow on first use.
@@ -424,6 +435,22 @@ mod tests {
         assert!(!is_loopback_host("socks.example.com"));
         assert!(!is_loopback_host("192.168.1.1"));
         assert!(!is_loopback_host(""));
+        // Short / odd numeric forms are not resolved via DNS.
+        assert!(!is_loopback_host("127.1"));
+        assert!(!is_loopback_host("127.0.0.1.example"));
+        assert!(!is_loopback_host("localhost.example"));
+        assert!(!is_loopback_host("::ffff:8.8.8.8"));
+    }
+
+    #[test]
+    fn loopback_socket_addr_is_always_loopback() {
+        for h in ["localhost", "127.0.0.1", "127.9.8.7", "::1", "[::1]"] {
+            let a = loopback_socket_addr(h, 9050).unwrap();
+            assert!(a.ip().is_loopback());
+            assert_eq!(a.port(), 9050);
+        }
+        assert!(loopback_socket_addr("10.0.0.1", 9050).is_none());
+        assert!(loopback_socket_addr("example.org", 9050).is_none());
     }
 
     #[test]

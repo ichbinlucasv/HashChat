@@ -23,7 +23,7 @@
 //! When `ADD_ONION` returns `PrivateKey=`, callers must persist it only inside the
 //! passphrase-wrapped session blob (H2 `onion_key`).
 
-use crate::tor_socks::{is_loopback_host, MAX_SOCKS_FRAME};
+use crate::tor_socks::{is_loopback_host, loopback_socket_addr, MAX_SOCKS_FRAME};
 use ring::hmac;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -331,9 +331,8 @@ fn read_frame_with_deadlines(
 }
 
 fn connect_control(host: &str, port: u16) -> Result<TcpStream, String> {
-    let addr = format!("{host}:{port}")
-        .parse()
-        .map_err(|_| "bad control address".to_string())?;
+    let addr = loopback_socket_addr(host, port)
+        .ok_or_else(|| "bad control address".to_string())?;
     let s = TcpStream::connect_timeout(&addr, Duration::from_secs(2))
         .map_err(|_| format!("ControlPort {host}:{port} unreachable"))?;
     let _ = s.set_read_timeout(Some(Duration::from_secs(8)));
