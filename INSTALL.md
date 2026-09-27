@@ -359,8 +359,9 @@ sudo systemctl restart tor
 
 1. HashChat opens the ControlPort on loopback.
 2. It sends `PROTOCOLINFO` and reads `COOKIEFILE="…"` from Tor’s reply.
-3. It reads that file and authenticates with cookie `AUTHENTICATE` only.
-4. If the cookie file is missing or unreadable, it **fails closed** (refuses bare `AUTHENTICATE`). Cookie bytes are never meant to be logged.
+3. It accepts that path only if it is a trusted system location (`/run/tor/control.authcookie`, `/var/run/tor/control.authcookie`, `/var/lib/tor/control_auth_cookie`, `/var/lib/tor/control.authcookie`) or the absolute path in `HASHCHAT_TOR_COOKIE_FILE` (then the only accepted path). Otherwise `:listen` refuses to start. Details: [`docs/TOR_HOST_SETUP.md`](docs/TOR_HOST_SETUP.md#trusted-cookie-paths-and-hashchat_tor_cookie_file).
+4. It authenticates with SAFECOOKIE (`AUTHCHALLENGE SAFECOOKIE`) only.
+5. If the cookie file is missing, unreadable, or untrusted, it **fails closed** (refuses bare `AUTHENTICATE`). Cookie bytes are never meant to be logged.
 
 **Typical cookie paths** (distribution defaults; confirm via Tor, not by publishing contents):
 
@@ -524,6 +525,7 @@ Tor is required and **fail-closed** (no silent clearnet fallback). Use disposabl
 | No `hashchat-tui` | `cargo build --release --locked --bin hashchat-tui --features tui` |
 | Missing `libhashchat_rust.so` (Haskell fallback) | `cargo build --release --locked` and copy into `rust-lib/` |
 | Tor / `:listen` fails | Is `tor` active? Is TCP `9051` listening? Is `CookieAuthentication 1` set? Can your user **read** the cookie file (group membership)? Never log cookie bytes. |
+| `:listen failed: … COOKIEFILE not at an expected location` | Tor's cookie is at a non-standard path: restart with `HASHCHAT_TOR_COOKIE_FILE=/abs/path` pointing at Tor's own cookie file. See [`docs/TOR_HOST_SETUP.md`](docs/TOR_HOST_SETUP.md#troubleshooting-listen). |
 | Cookie “unreadable” | Add user to `debian-tor` (Debian/Ubuntu) or `tor` (Fedora/Arch as applicable); re-login; confirm with `test -r` on the cookie path — do not `cat` it. |
 | Tails / Whonix ControlPort denied | ControlPort may be filtered; HashChat needs cookie auth + `ADD_ONION`. Do not bypass via clearnet. |
 | Cabal dependency hell (opt-in parity only) | See § Transitional Haskell; not needed for recommended installs |

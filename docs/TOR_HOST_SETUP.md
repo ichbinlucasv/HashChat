@@ -16,9 +16,10 @@ This note describes how to run **host Tor** so HashChat can use loopback SOCKS a
 |------|---------------|--------|
 | SOCKS | `127.0.0.1:9050` (system Tor) or `127.0.0.1:9150` (Tor Browser) | **Loopback only** |
 | ControlPort | TCP `9051` | Desktop TUI expects **9051** today |
-| Auth | `CookieAuthentication 1` | Cookie only; **no** bare `AUTHENTICATE` |
+| Auth | `CookieAuthentication 1` | SAFECOOKIE only; **no** bare `AUTHENTICATE` |
+| Cookie location | A trusted system path, or `HASHCHAT_TOR_COOKIE_FILE` | See [Trusted cookie paths](#trusted-cookie-paths-and-hashchat_tor_cookie_file) |
 
-HashChat discovers the cookie path via Tor `PROTOCOLINFO` (`COOKIEFILE=…`), reads that file, and authenticates with cookie `AUTHENTICATE` only. If the cookie is missing or unreadable, `:listen` / ControlPort use **fails closed**.
+HashChat discovers the cookie path via Tor `PROTOCOLINFO` (`COOKIEFILE=…`), accepts it only if it is a trusted cookie location, and authenticates with `AUTHCHALLENGE SAFECOOKIE`. If the cookie is missing, unreadable, or at an untrusted location, `:listen` / ControlPort use **fails closed**.
 
 ---
 
@@ -66,10 +67,31 @@ Required behavior:
 
 1. Open ControlPort on **loopback** (TCP `9051` for the desktop TUI).
 2. Set **`CookieAuthentication 1`**.
-3. HashChat sends `PROTOCOLINFO`, reads `COOKIEFILE="…"`, then authenticates with the cookie.
-4. **Do not** configure HashChat to use a bare password `AUTHENTICATE`, and do not weaken Tor to allow unauthenticated ControlPort access.
+3. HashChat sends `PROTOCOLINFO` and reads `COOKIEFILE="…"`. The advertised path must be a [trusted cookie path](#trusted-cookie-paths-and-hashchat_tor_cookie_file); otherwise `:listen` refuses to start.
+4. HashChat authenticates with **SAFECOOKIE** (`AUTHCHALLENGE SAFECOOKIE`): it verifies Tor's proof before sending its own, and the cookie never leaves the HashChat process. Tor must offer `SAFECOOKIE` in `PROTOCOLINFO` (it does when `CookieAuthentication 1` is set).
+5. The cookie file must be a regular file of exactly 32 bytes (the file Tor writes); a symlink as the final path component is refused.
+6. **Do not** configure HashChat to use a bare password `AUTHENTICATE`, and do not weaken Tor to allow unauthenticated ControlPort access.
 
 If cookie auth cannot succeed, HashChat **refuses** ControlPort operations (fail-closed). That is expected.
+
+### Trusted cookie paths and `HASHCHAT_TOR_COOKIE_FILE`
+
+When `HASHCHAT_TOR_COOKIE_FILE` is **not** set, HashChat accepts only these system cookie locations (compared after resolving symlinks, so `/var/run` → `/run` aliases match):
+
+- `/run/tor/control.authcookie`
+- `/var/run/tor/control.authcookie`
+- `/var/lib/tor/control_auth_cookie`
+- `/var/lib/tor/control.authcookie`
+
+If your Tor writes its cookie elsewhere (for example a custom `CookieAuthFile` in `torrc`), set `HASHCHAT_TOR_COOKIE_FILE` to that file's **absolute** path before starting the TUI:
+
+```bash
+HASHCHAT_TOR_COOKIE_FILE=/abs/path/to/control_auth_cookie ./run-tui
+```
+
+- When set, it is the **only** accepted path: it must resolve to the same file Tor advertises in `COOKIEFILE=…`, and the default list above is not used.
+- A relative path is refused (`HASHCHAT_TOR_COOKIE_FILE must be an absolute path`).
+- Point it at the file Tor itself writes. Do not copy the cookie somewhere else to satisfy the check.
 
 ---
 
@@ -118,9 +140,30 @@ Tor’s **default** for `SocksPort` includes **`IsolateSOCKSAuth`**: distinct SO
 | Tor / SOCKS down | Send / retry refuse or queue; **no** clearnet path |
 | ControlPort down or filtered | `:listen` / `ADD_ONION` fail; **no** workaround via clearnet |
 | Cookie missing / unreadable | ControlPort auth fails closed (no bare `AUTHENTICATE`) |
+| Cookie at an untrusted / unknown path | `:listen` refuses to start until `HASHCHAT_TOR_COOKIE_FILE` names the real cookie file |
+| Tor does not offer SAFECOOKIE | ControlPort auth fails closed |
 | Non-Tor mode | Not a silent fallback; any alternate network must be an **explicit** user choice |
 
 Tails and Whonix often **filter** ControlPort (e.g. onion-grater). If `ADD_ONION` is unavailable, document the limitation — do not invent clearnet bypasses. Details: [`INSTALL.md`](../INSTALL.md) (Tails / Qubes sections).
+
+---
+
+## Troubleshooting `:listen`
+
+`:listen` shows a short reason as `:listen failed: …`. Error text never includes cookie bytes or the cookie path.
+
+| Message (after `:listen failed:`) | What to do |
+|-----------------------------------|------------|
+| `Tor control: COOKIEFILE not at an expected location (fail-closed; set HASHCHAT_TOR_COOKIE_FILE)` | Tor's cookie is not at a [trusted default path](#trusted-cookie-paths-and-hashchat_tor_cookie_file), or does not match `HASHCHAT_TOR_COOKIE_FILE`. Find the configured location in your `torrc` (`CookieAuthFile`) or distro defaults, then restart the TUI with `HASHCHAT_TOR_COOKIE_FILE=/abs/path`. If the variable is already set, check that it names the same file Tor uses. |
+| `HASHCHAT_TOR_COOKIE_FILE must be an absolute path` | Use a full path starting with `/`. |
+| `Tor control cookie unreadable (fail-closed)` | The file is missing or your user cannot read it: fix group membership / permissions (see above) and re-login. Check with `test -r`, never `cat`. |
+| `Tor control cookie malformed (fail-closed)` | The path is not a regular 32-byte Tor cookie file (e.g. wrong file). Point at the file Tor writes. |
+| `Tor control: SAFECOOKIE not offered (fail-closed; refusing bare AUTHENTICATE)` | Ensure `CookieAuthentication 1` is set and restart Tor. Password-only or unauthenticated ControlPorts are not supported. |
+| `Tor control: no COOKIEFILE in PROTOCOLINFO (fail-closed; refusing bare AUTHENTICATE)` | Cookie authentication is not enabled on this ControlPort. Set `CookieAuthentication 1` and restart Tor. |
+| `Tor control: ControlPort failed SAFECOOKIE proof (fail-closed)` | The service on the control port did not prove knowledge of the cookie. Confirm the system Tor is what listens on `127.0.0.1:9051` and that the cookie path belongs to it. |
+| `ControlPort 127.0.0.1:9051 unreachable` | Tor is not running or ControlPort `9051` is not enabled. |
+
+When reporting any of these, share only the message text, tip SHA, and OS / Tor versions. Never the cookie contents, and not the cookie path if it could reveal anything sensitive.
 
 ---
 
@@ -147,6 +190,7 @@ Reporting guidance: [`OPSEC_REPORTING.md`](OPSEC_REPORTING.md). What `:evidence`
 - [ ] ControlPort listening on loopback `9051`
 - [ ] `CookieAuthentication 1` in effect
 - [ ] Cookie file **readable** by the HashChat user (`test -r`, no `cat`)
+- [ ] Cookie at a trusted default path, or `HASHCHAT_TOR_COOKIE_FILE=/abs/path` set to Tor's actual cookie file
 - [ ] `:listen` succeeds or fails closed with a clear error — never falls back to clearnet
 - [ ] Optional: `:evidence` shows `socks=ok` / `control=ok` (metadata only)
 
