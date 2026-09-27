@@ -3,20 +3,62 @@
 //! M1: Cookie `AUTHENTICATE` only — never bare `AUTHENTICATE`. Fail closed if
 //! COOKIEFILE is missing or the cookie is unreadable. Cookie bytes are never logged.
 //!
+//! ControlPort peer authentication (SAFECOOKIE):
+//! - Whatever answers on the loopback control port is not trusted until it proves
+//!   knowledge of the cookie. We use `AUTHCHALLENGE SAFECOOKIE` and check the
+//!   server HMAC (constant time) **before** sending our own; the cookie itself
+//!   never leaves the process.
+//! - The `COOKIEFILE` path advertised in `PROTOCOLINFO` is only accepted if it
+//!   resolves to a known system Tor cookie location, or to the path in
+//!   `HASHCHAT_TOR_COOKIE_FILE` when that is set (then it is the only accepted
+//!   path). Without this, a listener that is not Tor could name a cookie file it
+//!   wrote itself and pass the HMAC check.
+//! - The cookie file must be a regular file of exactly 32 bytes, opened without
+//!   following a final symlink; size is checked before reading.
+//! - Control replies are bounded (line length and line count).
+//! - `ADD_ONION` (which carries the stored onion key) is only sent after the
+//!   above succeeds.
+//!
 //! The control TCP connection is kept open: Tor drops ephemeral onions when it closes.
 //! When `ADD_ONION` returns `PrivateKey=`, callers must persist it only inside the
 //! passphrase-wrapped session blob (H2 `onion_key`).
 
 use crate::tor_socks::{is_loopback_host, read_framed_u16_max, MAX_SOCKS_FRAME};
-use std::io::{BufRead, BufReader, Write};
+use ring::hmac;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use subtle::ConstantTimeEq;
+use zeroize::Zeroize;
 
 const MAX_ACCEPT_IDLE_SECS: u64 = 30;
+
+/// Tor control cookies are exactly 32 bytes (control-spec, COOKIE / SAFECOOKIE).
+const TOR_COOKIE_LEN: usize = 32;
+
+/// Env override naming the only acceptable cookie path (absolute).
+pub const TOR_COOKIE_FILE_ENV: &str = "HASHCHAT_TOR_COOKIE_FILE";
+
+/// System Tor cookie locations accepted when no override is set. Compared after
+/// canonicalisation, so `/var/run` → `/run` aliases match.
+const DEFAULT_COOKIE_PATHS: &[&str] = &[
+    "/run/tor/control.authcookie",
+    "/var/run/tor/control.authcookie",
+    "/var/lib/tor/control_auth_cookie",
+    "/var/lib/tor/control.authcookie",
+];
+
+const SAFECOOKIE_SERVER_KEY: &[u8] = b"Tor safe cookie authentication server-to-controller hash";
+const SAFECOOKIE_CLIENT_KEY: &[u8] = b"Tor safe cookie authentication controller-to-server hash";
+
+/// Bounds on a single control reply.
+const MAX_CONTROL_LINE: usize = 4096;
+const MAX_CONTROL_LINES: usize = 256;
 
 /// Strict max inbound HS transport frame body (bytes), **≤** [`MAX_SOCKS_FRAME`].
 ///
@@ -78,7 +120,8 @@ pub fn start_hidden_service_with_key(
         .port();
 
     let mut control = connect_control(control_host, control_port)?;
-    authenticate_cookie_only(&mut control)?;
+    let cookie_override = std::env::var_os(TOR_COOKIE_FILE_ENV).map(PathBuf::from);
+    authenticate_cookie_only(&mut control, cookie_override.as_deref())?;
     let existing_str = existing_key.and_then(|b| std::str::from_utf8(b).ok());
     let (onion, privkey) = add_onion(&mut control, local_port, existing_str)?;
 
@@ -144,31 +187,226 @@ fn connect_control(host: &str, port: u16) -> Result<TcpStream, String> {
 }
 
 /// M1: cookie AUTHENTICATE only. Never send bare AUTHENTICATE.
-fn authenticate_cookie_only(s: &mut TcpStream) -> Result<(), String> {
+///
+/// SAFECOOKIE handshake; see module docs for the trust argument.
+fn authenticate_cookie_only(
+    s: &mut TcpStream,
+    cookie_override: Option<&Path>,
+) -> Result<(), String> {
     let info = control_cmd(s, "PROTOCOLINFO 1")?;
-    let path = cookie_path_from_protocolinfo(&info).ok_or_else(|| {
+    if !protocolinfo_offers_safecookie(&info) {
+        return Err(
+            "Tor control: SAFECOOKIE not offered (fail-closed; refusing bare AUTHENTICATE)".into(),
+        );
+    }
+    let advertised = cookie_path_from_protocolinfo(&info).ok_or_else(|| {
         "Tor control: no COOKIEFILE in PROTOCOLINFO (fail-closed; refusing bare AUTHENTICATE)"
             .to_string()
     })?;
-    let raw = std::fs::read(&path).map_err(|_| {
-        format!("Tor control cookie unreadable (fail-closed)")
-    })?;
-    if raw.is_empty() {
-        return Err("Tor control cookie empty (fail-closed)".into());
+    let path = resolve_cookie_path(&advertised, cookie_override)?;
+    let mut cookie = read_tor_cookie(&path)?;
+
+    let mut client_nonce = [0u8; 32];
+    if getrandom::getrandom(&mut client_nonce).is_err() {
+        cookie.zeroize();
+        return Err("csprng failed".into());
     }
-    let hex: String = raw.iter().map(|b| format!("{b:02x}")).collect();
+    let result = safecookie_exchange(s, &cookie, &client_nonce);
+    cookie.zeroize();
+    result
+}
+
+fn safecookie_exchange(
+    s: &mut TcpStream,
+    cookie: &[u8; TOR_COOKIE_LEN],
+    client_nonce: &[u8; 32],
+) -> Result<(), String> {
+    let chal = control_cmd(
+        s,
+        &format!("AUTHCHALLENGE SAFECOOKIE {}", hex_lower(client_nonce)),
+    )?;
+    let (server_hash, server_nonce) = parse_authchallenge(&chal)
+        .ok_or_else(|| "Tor control: bad AUTHCHALLENGE reply (fail-closed)".to_string())?;
+
+    let mut expected = safecookie_hmac(SAFECOOKIE_SERVER_KEY, cookie, client_nonce, &server_nonce);
+    let ok: bool = expected.ct_eq(&server_hash).into();
+    expected.zeroize();
+    if !ok {
+        // The peer does not know the cookie: it is not our Tor. Send nothing more.
+        return Err("Tor control: ControlPort failed SAFECOOKIE proof (fail-closed)".into());
+    }
+
+    let mut client_hash =
+        safecookie_hmac(SAFECOOKIE_CLIENT_KEY, cookie, client_nonce, &server_nonce);
+    let mut hex = hex_lower(&client_hash);
+    client_hash.zeroize();
     // OPSEC: hex is sent to ControlPort only — never logged.
-    let resp = control_cmd(s, &format!("AUTHENTICATE {hex}"))?;
-    if resp.iter().any(|l| l.starts_with("250")) {
+    let resp = control_cmd(s, &format!("AUTHENTICATE {hex}"));
+    hex.zeroize();
+    let resp = resp?;
+    if resp.len() == 1 && resp[0] == "250 OK" {
         Ok(())
     } else {
         Err("Tor cookie authentication failed".into())
     }
 }
 
+/// HMAC-SHA256(key, cookie ‖ client_nonce ‖ server_nonce) per control-spec SAFECOOKIE.
+fn safecookie_hmac(
+    key: &[u8],
+    cookie: &[u8; TOR_COOKIE_LEN],
+    client_nonce: &[u8; 32],
+    server_nonce: &[u8; 32],
+) -> [u8; 32] {
+    let k = hmac::Key::new(hmac::HMAC_SHA256, key);
+    let mut ctx = hmac::Context::with_key(&k);
+    ctx.update(cookie);
+    ctx.update(client_nonce);
+    ctx.update(server_nonce);
+    let tag = ctx.sign();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(tag.as_ref());
+    out
+}
+
+fn hex_lower(b: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(b.len() * 2);
+    for &x in b {
+        s.push(HEX[(x >> 4) as usize] as char);
+        s.push(HEX[(x & 0x0f) as usize] as char);
+    }
+    s
+}
+
+fn hex32(s: &str) -> Option<[u8; 32]> {
+    let b = s.as_bytes();
+    if b.len() != 64 {
+        return None;
+    }
+    let nib = |c: u8| -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    };
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = (nib(b[2 * i])? << 4) | nib(b[2 * i + 1])?;
+    }
+    Some(out)
+}
+
+/// `250 AUTHCHALLENGE SERVERHASH=<64 hex> SERVERNONCE=<64 hex>` → (hash, nonce).
+fn parse_authchallenge(lines: &[String]) -> Option<([u8; 32], [u8; 32])> {
+    if lines.len() != 1 {
+        return None;
+    }
+    let rest = lines[0].strip_prefix("250 AUTHCHALLENGE ")?;
+    let mut hash = None;
+    let mut nonce = None;
+    for tok in rest.split_ascii_whitespace() {
+        if let Some(v) = tok.strip_prefix("SERVERHASH=") {
+            if hash.is_some() {
+                return None;
+            }
+            hash = Some(hex32(v)?);
+        } else if let Some(v) = tok.strip_prefix("SERVERNONCE=") {
+            if nonce.is_some() {
+                return None;
+            }
+            nonce = Some(hex32(v)?);
+        }
+    }
+    Some((hash?, nonce?))
+}
+
+/// True if the `250-AUTH METHODS=` list contains `SAFECOOKIE`.
+fn protocolinfo_offers_safecookie(lines: &[String]) -> bool {
+    lines.iter().any(|line| {
+        line.strip_prefix("250-AUTH ")
+            .and_then(|rest| {
+                rest.split_ascii_whitespace()
+                    .find_map(|t| t.strip_prefix("METHODS="))
+            })
+            .map(|m| m.split(',').any(|x| x == "SAFECOOKIE"))
+            .unwrap_or(false)
+    })
+}
+
+/// Accept the advertised cookie path only if it resolves to an allowed location.
+/// Errors never include the path.
+fn resolve_cookie_path(
+    advertised: &str,
+    cookie_override: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let refused = || {
+        format!(
+            "Tor control: COOKIEFILE not at an expected location (fail-closed; set {TOR_COOKIE_FILE_ENV})"
+        )
+    };
+    let adv = Path::new(advertised);
+    if !adv.is_absolute() {
+        return Err(refused());
+    }
+    let canon = std::fs::canonicalize(adv)
+        .map_err(|_| "Tor control cookie unreadable (fail-closed)".to_string())?;
+    let allowed: Vec<PathBuf> = match cookie_override {
+        Some(p) => {
+            if !p.is_absolute() {
+                return Err(format!("{TOR_COOKIE_FILE_ENV} must be an absolute path"));
+            }
+            vec![p.to_path_buf()]
+        }
+        None => DEFAULT_COOKIE_PATHS.iter().map(PathBuf::from).collect(),
+    };
+    for a in allowed {
+        if let Ok(ca) = std::fs::canonicalize(&a) {
+            if ca == canon {
+                return Ok(canon);
+            }
+        }
+    }
+    Err(refused())
+}
+
+/// Read a Tor cookie: regular file, exactly 32 bytes, no final-component symlink.
+fn read_tor_cookie(path: &Path) -> Result<[u8; TOR_COOKIE_LEN], String> {
+    let unreadable = || "Tor control cookie unreadable (fail-closed)".to_string();
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+    }
+    let f = opts.open(path).map_err(|_| unreadable())?;
+    let md = f.metadata().map_err(|_| unreadable())?;
+    if !md.is_file() || md.len() != TOR_COOKIE_LEN as u64 {
+        return Err("Tor control cookie malformed (fail-closed)".into());
+    }
+    let mut cookie = [0u8; TOR_COOKIE_LEN];
+    let mut f = f.take(TOR_COOKIE_LEN as u64 + 1);
+    if f.read_exact(&mut cookie).is_err() {
+        cookie.zeroize();
+        return Err(unreadable());
+    }
+    let mut extra = [0u8; 1];
+    if matches!(f.read(&mut extra), Ok(n) if n > 0) {
+        cookie.zeroize();
+        return Err("Tor control cookie malformed (fail-closed)".into());
+    }
+    Ok(cookie)
+}
+
 /// Parse `COOKIEFILE="…"` from PROTOCOLINFO lines (unit-tested).
 pub fn cookie_path_from_protocolinfo(lines: &[String]) -> Option<String> {
     for line in lines {
+        if !line.starts_with("250-AUTH ") {
+            continue;
+        }
         if let Some(idx) = line.find("COOKIEFILE=") {
             let rest = &line[idx + "COOKIEFILE=".len()..];
             let rest = rest.trim_start_matches('"');
@@ -188,12 +426,22 @@ fn add_onion(
     existing_key: Option<&str>,
 ) -> Result<(String, Vec<u8>), String> {
     let spec = match existing_key {
-        Some(k) if !k.trim().is_empty() => k.trim().to_string(),
+        Some(k) if !k.trim().is_empty() => {
+            let k = k.trim();
+            if !is_valid_onion_key_spec(k) {
+                return Err("stored onion key malformed (refused)".into());
+            }
+            k.to_string()
+        }
         _ => "NEW:ED25519-V3".to_string(),
     };
     // Intentionally no DiscardPK: we persist PrivateKey inside the wrapped blob (H2).
-    let cmd = format!("ADD_ONION {spec} Port=80,127.0.0.1:{local_port}");
-    let resp = control_cmd(s, &cmd)?;
+    let mut cmd = format!("ADD_ONION {spec} Port=80,127.0.0.1:{local_port}");
+    let mut spec = spec;
+    let resp = control_cmd(s, &cmd);
+    cmd.zeroize();
+    spec.zeroize();
+    let mut resp = resp?;
     let mut onion = None;
     let mut privkey = Vec::new();
     for line in &resp {
@@ -204,10 +452,14 @@ fn add_onion(
             privkey = pk.trim().as_bytes().to_vec();
         }
     }
+    let rejected = resp.iter().any(|l| l.starts_with('5'));
+    for l in resp.iter_mut() {
+        l.zeroize();
+    }
     match onion {
         Some(o) => Ok((o, privkey)),
         None => {
-            if resp.iter().any(|l| l.starts_with('5')) {
+            if rejected {
                 Err("ADD_ONION rejected by Tor".into())
             } else {
                 Err("ADD_ONION failed (no ServiceID)".into())
@@ -216,24 +468,64 @@ fn add_onion(
     }
 }
 
+/// `ED25519-V3:<base64>` only; no whitespace or control bytes can reach the command line.
+fn is_valid_onion_key_spec(k: &str) -> bool {
+    match k.strip_prefix("ED25519-V3:") {
+        Some(b64) => {
+            !b64.is_empty()
+                && b64.len() <= 128
+                && b64
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'+' || c == b'/' || c == b'=')
+        }
+        None => false,
+    }
+}
+
 fn control_cmd(s: &mut TcpStream, cmd: &str) -> Result<Vec<String>, String> {
     s.write_all(cmd.as_bytes())
         .map_err(|_| "control write failed".to_string())?;
     s.write_all(b"\r\n")
         .map_err(|_| "control write failed".to_string())?;
-    s.flush()
-        .map_err(|_| "control flush failed".to_string())?;
-    let mut reader = BufReader::new(s.try_clone().map_err(|_| "control clone failed".to_string())?);
+    s.flush().map_err(|_| "control flush failed".to_string())?;
+    let reader = BufReader::new(
+        s.try_clone()
+            .map_err(|_| "control clone failed".to_string())?,
+    );
+    read_control_reply(reader)
+}
+
+/// Read one control reply with bounded line length and count.
+fn read_control_reply<R: BufRead>(mut reader: R) -> Result<Vec<String>, String> {
     let mut lines = Vec::new();
     loop {
-        let mut line = String::new();
-        let n = reader
-            .read_line(&mut line)
+        if lines.len() >= MAX_CONTROL_LINES {
+            return Err("control reply too long".into());
+        }
+        let mut raw = Vec::new();
+        let n = (&mut reader)
+            .take(MAX_CONTROL_LINE as u64 + 1)
+            .read_until(b'\n', &mut raw)
             .map_err(|_| "control read failed".to_string())?;
         if n == 0 {
             break;
         }
-        let t = line.trim_end_matches(['\r', '\n']).to_string();
+        if raw.len() > MAX_CONTROL_LINE {
+            raw.zeroize();
+            return Err("control line too long".into());
+        }
+        let t = match String::from_utf8(raw) {
+            Ok(mut s) => {
+                let end = s.trim_end_matches(['\r', '\n']).len();
+                s.truncate(end);
+                s
+            }
+            Err(e) => {
+                let mut b = e.into_bytes();
+                b.zeroize();
+                return Err("control reply not UTF-8".into());
+            }
+        };
         let done = t.starts_with("250 ") || t.starts_with('5');
         lines.push(t);
         if done {
@@ -248,7 +540,307 @@ mod tests {
     use super::*;
     use crate::tor_socks::{read_framed_u16_max, write_framed_u16};
     use std::io::Write;
+    use std::path::PathBuf;
     use std::time::Duration;
+
+    // ---- SAFECOOKIE / cookie-path tests (local fake ControlPort, no Tor) ----
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let p = std::env::temp_dir().join(format!("hashchat-ctl-{tag}-{n}"));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum ServerMode {
+        /// Real Tor behaviour: knows the cookie.
+        Honest,
+        /// Impostor: does not know the cookie, sends a made-up SERVERHASH.
+        Impostor,
+    }
+
+    /// Minimal fake ControlPort. Returns (addr, handle yielding received command lines).
+    fn fake_control(
+        cookie_path: String,
+        cookie: [u8; 32],
+        methods: &'static str,
+        mode: ServerMode,
+    ) -> (std::net::SocketAddr, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let h = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut w = stream.try_clone().unwrap();
+            let mut r = BufReader::new(stream);
+            let mut got = Vec::new();
+            let mut client_nonce = [0u8; 32];
+            let server_nonce = [0x5au8; 32];
+            loop {
+                let mut line = String::new();
+                if r.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let line = line.trim_end().to_string();
+                got.push(line.clone());
+                if line == "PROTOCOLINFO 1" {
+                    write!(
+                        w,
+                        "250-PROTOCOLINFO 1\r\n250-AUTH METHODS={methods} COOKIEFILE=\"{cookie_path}\"\r\n250-VERSION Tor=\"0.4.8.0\"\r\n250 OK\r\n"
+                    )
+                    .unwrap();
+                } else if let Some(n) = line.strip_prefix("AUTHCHALLENGE SAFECOOKIE ") {
+                    client_nonce = hex32(n).unwrap();
+                    let sh = match mode {
+                        ServerMode::Honest => safecookie_hmac(
+                            SAFECOOKIE_SERVER_KEY,
+                            &cookie,
+                            &client_nonce,
+                            &server_nonce,
+                        ),
+                        ServerMode::Impostor => [0x11u8; 32],
+                    };
+                    write!(
+                        w,
+                        "250 AUTHCHALLENGE SERVERHASH={} SERVERNONCE={}\r\n",
+                        hex_lower(&sh),
+                        hex_lower(&server_nonce)
+                    )
+                    .unwrap();
+                } else if let Some((_, h)) = line.split_once(' ') {
+                    // Only other command the client sends: the SAFECOOKIE client hash.
+                    let want = safecookie_hmac(
+                        SAFECOOKIE_CLIENT_KEY,
+                        &cookie,
+                        &client_nonce,
+                        &server_nonce,
+                    );
+                    if hex32(h) == Some(want) {
+                        write!(w, "250 OK\r\n").unwrap();
+                    } else {
+                        write!(w, "515 Authentication failed\r\n").unwrap();
+                    }
+                } else {
+                    write!(w, "510 Unrecognized command\r\n").unwrap();
+                }
+                w.flush().unwrap();
+            }
+            got
+        });
+        (addr, h)
+    }
+
+    fn write_cookie(dir: &Path, bytes: &[u8]) -> PathBuf {
+        let p = dir.join("control_auth_cookie");
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    fn run_auth(addr: std::net::SocketAddr, cookie_override: Option<&Path>) -> Result<(), String> {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let r = authenticate_cookie_only(&mut s, cookie_override);
+        drop(s);
+        r
+    }
+
+    #[test]
+    fn safecookie_succeeds_with_honest_server_and_allowed_path() {
+        let dir = tmp_dir("ok");
+        let cookie = [0xA7u8; 32];
+        let path = write_cookie(&dir, &cookie);
+        let (addr, h) = fake_control(
+            path.to_string_lossy().into_owned(),
+            cookie,
+            "COOKIE,SAFECOOKIE",
+            ServerMode::Honest,
+        );
+        run_auth(addr, Some(&path)).unwrap();
+        let got = h.join().unwrap();
+        assert!(got
+            .iter()
+            .any(|l| l.starts_with("AUTHCHALLENGE SAFECOOKIE ")));
+        // Raw cookie hex is never sent.
+        let cookie_hex = hex_lower(&cookie);
+        assert!(got.iter().all(|l| !l.contains(&cookie_hex)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn impostor_server_gets_no_authenticate() {
+        let dir = tmp_dir("impostor");
+        let cookie = [0x42u8; 32];
+        let path = write_cookie(&dir, &cookie);
+        let (addr, h) = fake_control(
+            path.to_string_lossy().into_owned(),
+            cookie,
+            "COOKIE,SAFECOOKIE",
+            ServerMode::Impostor,
+        );
+        let err = run_auth(addr, Some(&path)).unwrap_err();
+        assert!(err.contains("SAFECOOKIE proof"), "{err}");
+        let got = h.join().unwrap();
+        // Only PROTOCOLINFO + AUTHCHALLENGE; nothing after the failed proof.
+        assert_eq!(got.len(), 2, "client must not answer an unproven server");
+        assert!(got[1].starts_with("AUTHCHALLENGE SAFECOOKIE "));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unexpected_cookiefile_path_refused_before_reading() {
+        let dir = tmp_dir("path");
+        let cookie = [0x33u8; 32];
+        let planted = write_cookie(&dir, &cookie);
+        let expected = dir.join("expected_cookie");
+        std::fs::write(&expected, [0u8; 32]).unwrap();
+        // Server names a file it controls; the user configured a different one.
+        let (addr, h) = fake_control(
+            planted.to_string_lossy().into_owned(),
+            cookie,
+            "COOKIE,SAFECOOKIE",
+            ServerMode::Honest,
+        );
+        let err = run_auth(addr, Some(&expected)).unwrap_err();
+        assert!(err.contains("expected location"), "{err}");
+        assert!(
+            !err.contains(dir.to_string_lossy().as_ref()),
+            "no path in errors"
+        );
+        let got = h.join().unwrap();
+        assert!(got.iter().all(|l| !l.starts_with("AUTH")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn default_allowlist_rejects_arbitrary_user_file() {
+        let dir = tmp_dir("default");
+        let p = write_cookie(&dir, &[1u8; 32]);
+        let err = resolve_cookie_path(p.to_str().unwrap(), None).unwrap_err();
+        assert!(err.contains("expected location"));
+        assert!(resolve_cookie_path("relative/cookie", None).is_err());
+        assert!(resolve_cookie_path(p.to_str().unwrap(), Some(Path::new("rel"))).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_safecookie_method_refused() {
+        let dir = tmp_dir("methods");
+        let cookie = [9u8; 32];
+        let path = write_cookie(&dir, &cookie);
+        let (addr, h) = fake_control(
+            path.to_string_lossy().into_owned(),
+            cookie,
+            "COOKIE",
+            ServerMode::Honest,
+        );
+        let err = run_auth(addr, Some(&path)).unwrap_err();
+        assert!(err.contains("SAFECOOKIE not offered"), "{err}");
+        let got = h.join().unwrap();
+        assert!(got.iter().all(|l| !l.starts_with("AUTH")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cookie_must_be_exactly_32_regular_bytes() {
+        let dir = tmp_dir("size");
+        for len in [0usize, 31, 33, 4096] {
+            let p = dir.join(format!("c{len}"));
+            std::fs::write(&p, vec![7u8; len]).unwrap();
+            assert!(read_tor_cookie(&p).is_err(), "len {len}");
+        }
+        let ok = dir.join("ok");
+        std::fs::write(&ok, [7u8; 32]).unwrap();
+        assert_eq!(read_tor_cookie(&ok).unwrap(), [7u8; 32]);
+        assert!(read_tor_cookie(&dir).is_err(), "directory refused");
+        #[cfg(unix)]
+        {
+            let link = dir.join("link");
+            std::os::unix::fs::symlink(&ok, &link).unwrap();
+            assert!(read_tor_cookie(&link).is_err(), "final symlink refused");
+            if Path::new("/dev/zero").exists() {
+                assert!(read_tor_cookie(Path::new("/dev/zero")).is_err());
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn safecookie_hmac_known_answer() {
+        // Reference values computed independently (HMAC-SHA256, constant string as key).
+        let (c, cn, sn) = ([1u8; 32], [2u8; 32], [3u8; 32]);
+        assert_eq!(
+            hex_lower(&safecookie_hmac(SAFECOOKIE_SERVER_KEY, &c, &cn, &sn)),
+            "1830d2de6e061e60adfa2c0c2a9257b7126e51b074f39bd4519d89229df08827"
+        );
+        assert_eq!(
+            hex_lower(&safecookie_hmac(SAFECOOKIE_CLIENT_KEY, &c, &cn, &sn)),
+            "8d81b806c8314911da68057896783b1f28f640a588c9a2cfe902d371806bbf1a"
+        );
+    }
+
+    #[test]
+    fn authchallenge_parser_is_strict() {
+        let h = "ab".repeat(32);
+        let n = "cd".repeat(32);
+        let good = vec![format!("250 AUTHCHALLENGE SERVERHASH={h} SERVERNONCE={n}")];
+        assert!(parse_authchallenge(&good).is_some());
+        for bad in [
+            format!("250 AUTHCHALLENGE SERVERHASH={h}"),
+            format!("250 AUTHCHALLENGE SERVERNONCE={n}"),
+            format!("250 AUTHCHALLENGE SERVERHASH={} SERVERNONCE={n}", &h[..62]),
+            format!("250 AUTHCHALLENGE SERVERHASH={h}zz SERVERNONCE={n}"),
+            format!("250 AUTHCHALLENGE SERVERHASH={h} SERVERHASH={h} SERVERNONCE={n}"),
+            format!("250 OK SERVERHASH={h} SERVERNONCE={n}"),
+            "515 nope".to_string(),
+        ] {
+            assert!(parse_authchallenge(&[bad.clone()]).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn safecookie_methods_parsed_from_auth_line_only() {
+        let yes = vec!["250-AUTH METHODS=COOKIE,SAFECOOKIE COOKIEFILE=\"/x\"".to_string()];
+        let no = vec!["250-AUTH METHODS=COOKIE COOKIEFILE=\"/x\"".to_string()];
+        let spoof = vec!["250-VERSION Tor=\"METHODS=SAFECOOKIE\"".to_string()];
+        assert!(protocolinfo_offers_safecookie(&yes));
+        assert!(!protocolinfo_offers_safecookie(&no));
+        assert!(!protocolinfo_offers_safecookie(&spoof));
+    }
+
+    #[test]
+    fn control_reply_bounded() {
+        let long = format!("250 {}\r\n", "a".repeat(MAX_CONTROL_LINE + 10));
+        assert!(read_control_reply(std::io::Cursor::new(long.into_bytes())).is_err());
+        let many = "250-x\r\n".repeat(MAX_CONTROL_LINES + 5);
+        assert!(read_control_reply(std::io::Cursor::new(many.into_bytes())).is_err());
+        let ok = "250-a\r\n250 OK\r\n";
+        assert_eq!(
+            read_control_reply(std::io::Cursor::new(ok.as_bytes().to_vec())).unwrap(),
+            vec!["250-a".to_string(), "250 OK".to_string()]
+        );
+    }
+
+    #[test]
+    fn stored_onion_key_spec_validated() {
+        let good = format!("ED25519-V3:{}", "A".repeat(86) + "==");
+        assert!(is_valid_onion_key_spec(&good));
+        for bad in [
+            "",
+            "ED25519-V3:",
+            "RSA1024:abc",
+            "ED25519-V3:abc def",
+            "ED25519-V3:abc\r\nGETINFO x",
+            "NEW:ED25519-V3",
+        ] {
+            assert!(!is_valid_onion_key_spec(bad), "{bad:?}");
+        }
+    }
 
     #[test]
     fn parses_cookiefile_quoted() {

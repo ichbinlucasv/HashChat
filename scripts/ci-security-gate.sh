@@ -165,6 +165,16 @@ if "${SEARCH[@]}" '"AUTHENTICATE[[:space:]]*"' src/rust 2>/dev/null | grep -q .;
 fi
 pass "no bare AUTHENTICATE command literals under src/rust"
 
+# ControlPort peer must prove cookie knowledge (SAFECOOKIE) before we authenticate,
+# and the advertised COOKIEFILE must resolve to an allowed location.
+"${SEARCH[@]}" 'AUTHCHALLENGE SAFECOOKIE' src/rust/hidden_service.rs >/dev/null \
+  || fail "SAFECOOKIE AUTHCHALLENGE missing from hidden_service.rs"
+"${SEARCH[@]}" 'ct_eq\(&server_hash\)' src/rust/hidden_service.rs >/dev/null \
+  || fail "constant-time SAFECOOKIE server hash check missing"
+"${SEARCH[@]}" 'fn resolve_cookie_path' src/rust/hidden_service.rs >/dev/null \
+  || fail "COOKIEFILE location allowlist missing"
+pass "SAFECOOKIE mutual proof + COOKIEFILE allowlist present"
+
 # HS accept path must keep bounded queue + strict inbound frame max (DoS backpressure).
 "${SEARCH[@]}" 'MAX_HS_INBOUND_FRAME' src/rust/hidden_service.rs >/dev/null \
   || fail "MAX_HS_INBOUND_FRAME missing from hidden_service.rs"
