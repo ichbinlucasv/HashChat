@@ -289,6 +289,11 @@ pub extern "C" fn rust_encrypt_with_key(
         };
         match crate::ratchet::encrypt_with_key(&key_arr, pt, aad_slice) {
             Ok(buf) => {
+                // *out_len is the caller's capacity on input (as in the other FFI calls).
+                if buf.len() > *out_len {
+                    *out_len = buf.len();
+                    return false;
+                }
                 std::ptr::copy_nonoverlapping(buf.as_ptr(), out, buf.len());
                 *out_len = buf.len();
                 true
@@ -326,9 +331,16 @@ pub extern "C" fn rust_decrypt_with_key(
             std::slice::from_raw_parts(aad, aad_len)
         };
         match crate::ratchet::decrypt_with_key(&key_arr, ct, aad_slice) {
-            Ok(plain) => {
+            Ok(mut plain) => {
+                // *out_len is the caller's capacity on input (as in the other FFI calls).
+                if plain.len() > *out_len {
+                    *out_len = plain.len();
+                    plain.zeroize();
+                    return false;
+                }
                 std::ptr::copy_nonoverlapping(plain.as_ptr(), out, plain.len());
                 *out_len = plain.len();
+                plain.zeroize();
                 true
             }
             Err(_) => false,
@@ -1607,5 +1619,74 @@ mod memlock_tests {
         let _ = rust_mlock(sample.as_ptr(), sample.len());
         let _ = rust_mlock(std::ptr::null(), 0);
         let _ = rust_mlock(std::ptr::null(), 1); // null+nonzero → false, no panic
+    }
+}
+
+#[cfg(test)]
+mod ffi_bounds_tests {
+    use super::{rust_decrypt_with_key, rust_encrypt_with_key};
+
+    #[test]
+    fn encrypt_decrypt_respect_output_capacity() {
+        let key = [7u8; 32];
+        let pt = [0x41u8; 100];
+        let aad = b"aad";
+
+        // Too small: refuse, report needed size, leave the buffer untouched.
+        let mut small = [0xEEu8; 64];
+        let mut cap = small.len();
+        let ok = rust_encrypt_with_key(
+            key.as_ptr(),
+            pt.as_ptr(),
+            pt.len(),
+            aad.as_ptr(),
+            aad.len(),
+            small.as_mut_ptr(),
+            &mut cap,
+        );
+        assert!(!ok);
+        assert!(cap > small.len());
+        assert!(small.iter().all(|&b| b == 0xEE));
+
+        // Exact capacity: succeeds.
+        let mut ct = vec![0u8; cap];
+        let mut ct_len = ct.len();
+        assert!(rust_encrypt_with_key(
+            key.as_ptr(),
+            pt.as_ptr(),
+            pt.len(),
+            aad.as_ptr(),
+            aad.len(),
+            ct.as_mut_ptr(),
+            &mut ct_len,
+        ));
+        ct.truncate(ct_len);
+
+        let mut tiny = [0xEEu8; 10];
+        let mut tiny_len = tiny.len();
+        assert!(!rust_decrypt_with_key(
+            key.as_ptr(),
+            ct.as_ptr(),
+            ct.len(),
+            aad.as_ptr(),
+            aad.len(),
+            tiny.as_mut_ptr(),
+            &mut tiny_len,
+        ));
+        assert_eq!(tiny_len, pt.len());
+        assert!(tiny.iter().all(|&b| b == 0xEE));
+
+        let mut out = vec![0u8; pt.len()];
+        let mut out_len = out.len();
+        assert!(rust_decrypt_with_key(
+            key.as_ptr(),
+            ct.as_ptr(),
+            ct.len(),
+            aad.as_ptr(),
+            aad.len(),
+            out.as_mut_ptr(),
+            &mut out_len,
+        ));
+        assert_eq!(&out[..out_len], &pt[..]);
     }
 }

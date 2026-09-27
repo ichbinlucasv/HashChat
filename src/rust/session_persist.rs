@@ -97,13 +97,22 @@ pub enum PersistMode {
 
 impl PersistMode {
     /// Resolve mode: insecure only when explicitly requested via flag or env.
+    /// The env var must be exactly `1`; empty, `0` or any other value keeps the
+    /// passphrase mode.
     pub fn from_flags(insecure_dev: bool) -> Self {
-        if insecure_dev || std::env::var_os("HASHCHAT_INSECURE_DEV_PERSIST").is_some() {
+        let env_opt_in = |v: std::ffi::OsString| insecure_env_value_enables(&v);
+        if insecure_dev || std::env::var_os("HASHCHAT_INSECURE_DEV_PERSIST").is_some_and(env_opt_in)
+        {
             PersistMode::InsecureDevMachineKey
         } else {
             PersistMode::Passphrase
         }
     }
+}
+
+/// Only the exact value `1` opts in to insecure-dev persistence.
+fn insecure_env_value_enables(v: &std::ffi::OsStr) -> bool {
+    v == "1"
 }
 
 /// Maximum Unicode scalar count for a contact display name (`:rename`).
@@ -1568,6 +1577,15 @@ mod tests {
         assert_eq!(loaded.seed, state.seed);
         assert_eq!(loaded.onion_key, b"keymat");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn insecure_env_requires_exact_one() {
+        use std::ffi::OsStr;
+        assert!(insecure_env_value_enables(OsStr::new("1")));
+        for v in ["", "0", "false", "no", "11", " 1", "1 ", "true", "yes"] {
+            assert!(!insecure_env_value_enables(OsStr::new(v)), "{v:?}");
+        }
     }
 
     #[test]
