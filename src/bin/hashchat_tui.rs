@@ -2168,8 +2168,12 @@ impl App {
             .map(|h| h.dropped_frame_count())
             .unwrap_or(self.hs_drops_seen);
         self.push_msg(format!(
-            "hs: listening={} · drops={drops}",
-            if listening { "yes" } else { "no" }
+            "hs: listening={} · drops={drops} · refused_conns={}",
+            if listening { "yes" } else { "no" },
+            self.hs
+                .as_ref()
+                .map(|h| h.refused_connection_count())
+                .unwrap_or(0)
         ));
         self.push_msg(
             "evidence: metadata only — not a proof of E2EE (see docs/TWO_PEER_VALIDATION.md)",

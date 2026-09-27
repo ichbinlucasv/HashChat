@@ -23,20 +23,33 @@
 //! When `ADD_ONION` returns `PrivateKey=`, callers must persist it only inside the
 //! passphrase-wrapped session blob (H2 `onion_key`).
 
-use crate::tor_socks::{is_loopback_host, read_framed_u16_max, MAX_SOCKS_FRAME};
+use crate::tor_socks::{is_loopback_host, MAX_SOCKS_FRAME};
 use ring::hmac;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
+/// Max wait for the next frame header on an open connection.
 const MAX_ACCEPT_IDLE_SECS: u64 = 30;
+
+/// Once a frame header has arrived, the whole body must arrive within this
+/// many seconds in total (not per read call), so trickled bytes cannot keep a
+/// connection busy indefinitely.
+const MAX_FRAME_BODY_SECS: u64 = 20;
+
+/// Hard cap on one inbound connection's lifetime.
+const MAX_CONN_LIFETIME_SECS: u64 = 120;
+
+/// Connections served concurrently (one thread each). Extra connections are
+/// closed at accept and counted; they never wait behind a slow peer.
+pub const HS_MAX_CONCURRENT_CONNS: usize = 16;
 
 /// Tor control cookies are exactly 32 bytes (control-spec, COOKIE / SAFECOOKIE).
 const TOR_COOKIE_LEN: usize = 32;
@@ -83,6 +96,8 @@ pub struct HiddenService {
     rx: Receiver<Vec<u8>>,
     /// Frames dropped because the inbound queue was full (no contents logged).
     drops: Arc<AtomicU64>,
+    /// Connections closed at accept because the concurrency cap was reached.
+    refused: Arc<AtomicU64>,
     /// Must stay open or Tor forgets a non-persisted onion.
     _control: TcpStream,
 }
@@ -95,6 +110,11 @@ impl HiddenService {
     /// Count of inbound frames dropped under backpressure (never includes bytes).
     pub fn dropped_frame_count(&self) -> u64 {
         self.drops.load(Ordering::Relaxed)
+    }
+
+    /// Count of inbound connections refused at the concurrency cap.
+    pub fn refused_connection_count(&self) -> u64 {
+        self.refused.load(Ordering::Relaxed)
     }
 }
 
@@ -127,10 +147,14 @@ pub fn start_hidden_service_with_key(
 
     let (tx, rx) = mpsc::sync_channel(HS_INBOUND_QUEUE_CAP);
     let drops = Arc::new(AtomicU64::new(0));
-    let drops_thread = Arc::clone(&drops);
+    let refused = Arc::new(AtomicU64::new(0));
+    let counters = HsCounters {
+        drops: Arc::clone(&drops),
+        refused: Arc::clone(&refused),
+    };
     thread::Builder::new()
         .name("hashchat-hs".into())
-        .spawn(move || accept_loop(listener, tx, drops_thread))
+        .spawn(move || accept_loop(listener, tx, counters, HsLimits::default()))
         .map_err(|_| "listener thread failed".to_string())?;
 
     Ok((
@@ -139,40 +163,171 @@ pub fn start_hidden_service_with_key(
             local_port,
             rx,
             drops,
+            refused,
             _control: control,
         },
         privkey,
     ))
 }
 
-fn accept_loop(listener: TcpListener, tx: SyncSender<Vec<u8>>, drops: Arc<AtomicU64>) {
-    for incoming in listener.incoming() {
-        let Ok(mut stream) = incoming else {
-            continue;
-        };
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(MAX_ACCEPT_IDLE_SECS)));
-        let mut frames_this_conn: u32 = 0;
-        loop {
-            if frames_this_conn >= MAX_FRAMES_PER_CONN {
-                // Soft per-connection budget exhausted — close stream.
-                break;
-            }
-            match read_framed_u16_max(&mut stream, MAX_HS_INBOUND_FRAME) {
-                Ok(frame) => {
-                    frames_this_conn = frames_this_conn.saturating_add(1);
-                    match tx.try_send(frame) {
-                        Ok(()) => {}
-                        Err(TrySendError::Full(_dropped)) => {
-                            // Backpressure: drop frame, never grow queue; no contents logged.
-                            drops.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(TrySendError::Disconnected(_dropped)) => return,
-                    }
-                }
-                Err(_) => break, // includes oversize / idle timeout / EOF → close stream
-            }
+/// Timing / concurrency limits for the inbound listener (tests shrink them).
+#[derive(Clone, Copy, Debug)]
+struct HsLimits {
+    idle: Duration,
+    frame_body: Duration,
+    conn_lifetime: Duration,
+    max_conns: usize,
+    max_frames_per_conn: u32,
+}
+
+impl Default for HsLimits {
+    fn default() -> Self {
+        Self {
+            idle: Duration::from_secs(MAX_ACCEPT_IDLE_SECS),
+            frame_body: Duration::from_secs(MAX_FRAME_BODY_SECS),
+            conn_lifetime: Duration::from_secs(MAX_CONN_LIFETIME_SECS),
+            max_conns: HS_MAX_CONCURRENT_CONNS,
+            max_frames_per_conn: MAX_FRAMES_PER_CONN,
         }
     }
+}
+
+#[derive(Clone)]
+struct HsCounters {
+    drops: Arc<AtomicU64>,
+    refused: Arc<AtomicU64>,
+}
+
+/// Decrements the live-connection count when a handler exits (incl. panic).
+struct ConnSlot(Arc<AtomicUsize>);
+
+impl Drop for ConnSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Reserve a connection slot, or `None` if `max` are already in use.
+fn try_reserve_slot(live: &Arc<AtomicUsize>, max: usize) -> Option<ConnSlot> {
+    let mut cur = live.load(Ordering::Acquire);
+    loop {
+        if cur >= max {
+            return None;
+        }
+        match live.compare_exchange_weak(cur, cur + 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return Some(ConnSlot(Arc::clone(live))),
+            Err(now) => cur = now,
+        }
+    }
+}
+
+fn accept_loop(
+    listener: TcpListener,
+    tx: SyncSender<Vec<u8>>,
+    counters: HsCounters,
+    limits: HsLimits,
+) {
+    let live = Arc::new(AtomicUsize::new(0));
+    for incoming in listener.incoming() {
+        let Ok(stream) = incoming else {
+            continue;
+        };
+        let Some(slot) = try_reserve_slot(&live, limits.max_conns) else {
+            // At capacity: close immediately rather than queue behind slow peers.
+            counters.refused.fetch_add(1, Ordering::Relaxed);
+            drop(stream);
+            continue;
+        };
+        let tx = tx.clone();
+        let drops = Arc::clone(&counters.drops);
+        let spawned = thread::Builder::new()
+            .name("hashchat-hs-conn".into())
+            .stack_size(128 * 1024)
+            .spawn(move || {
+                let _slot = slot;
+                serve_connection(stream, &tx, &drops, limits);
+            });
+        if spawned.is_err() {
+            // Thread spawn failed: the closure (stream + slot) was dropped.
+            counters.refused.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Read frames from one connection under idle, per-frame and lifetime deadlines.
+/// Returns when the peer closes, misbehaves, or a limit is hit.
+fn serve_connection(
+    mut stream: TcpStream,
+    tx: &SyncSender<Vec<u8>>,
+    drops: &AtomicU64,
+    limits: HsLimits,
+) {
+    let conn_deadline = Instant::now() + limits.conn_lifetime;
+    let mut frames: u32 = 0;
+    while frames < limits.max_frames_per_conn {
+        match read_frame_with_deadlines(&mut stream, MAX_HS_INBOUND_FRAME, &limits, conn_deadline) {
+            Ok(frame) => {
+                frames = frames.saturating_add(1);
+                match tx.try_send(frame) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(_dropped)) => {
+                        // Backpressure: drop frame, never grow queue; no contents logged.
+                        drops.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(TrySendError::Disconnected(_dropped)) => return,
+                }
+            }
+            Err(()) => return, // oversize / timeout / EOF → close stream
+        }
+    }
+}
+
+/// Fill `buf` completely before `deadline`. The socket read timeout is reset to
+/// the remaining time before each read, so the bound is on total time.
+fn read_exact_by(stream: &mut TcpStream, buf: &mut [u8], deadline: Instant) -> Result<(), ()> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(());
+        }
+        let remaining = (deadline - now).max(Duration::from_millis(1));
+        stream.set_read_timeout(Some(remaining)).map_err(|_| ())?;
+        match stream.read(&mut buf[filled..]) {
+            Ok(0) => return Err(()),
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return Err(()),
+        }
+    }
+    Ok(())
+}
+
+/// Same framing as [`crate::tor_socks::read_framed_u16_max`] (2-byte BE length + body), with
+/// deadlines: header within `idle`, body within `frame_body` of the header,
+/// everything within the connection deadline.
+fn read_frame_with_deadlines(
+    stream: &mut TcpStream,
+    max_len: usize,
+    limits: &HsLimits,
+    conn_deadline: Instant,
+) -> Result<Vec<u8>, ()> {
+    let cap = max_len.min(MAX_SOCKS_FRAME);
+    let header_deadline = (Instant::now() + limits.idle).min(conn_deadline);
+    let mut ln = [0u8; 2];
+    read_exact_by(stream, &mut ln, header_deadline)?;
+    let n = u16::from_be_bytes(ln) as usize;
+    if n == 0 || n > cap {
+        // Do not allocate or drain the claimed body — close the connection.
+        return Err(());
+    }
+    let body_deadline = (Instant::now() + limits.frame_body).min(conn_deadline);
+    let mut buf = vec![0u8; n];
+    if read_exact_by(stream, &mut buf, body_deadline).is_err() {
+        buf.zeroize();
+        return Err(());
+    }
+    Ok(buf)
 }
 
 fn connect_control(host: &str, port: u16) -> Result<TcpStream, String> {
@@ -889,8 +1044,11 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(HS_INBOUND_QUEUE_CAP);
         let drops = Arc::new(AtomicU64::new(0));
-        let drops_t = Arc::clone(&drops);
-        thread::spawn(move || accept_loop(listener, tx, drops_t));
+        let counters = HsCounters {
+            drops: Arc::clone(&drops),
+            refused: Arc::new(AtomicU64::new(0)),
+        };
+        thread::spawn(move || accept_loop(listener, tx, counters, HsLimits::default()));
 
         let mut s = TcpStream::connect(addr).unwrap();
         let over = ((MAX_HS_INBOUND_FRAME as u16).saturating_add(1)).to_be_bytes();
@@ -902,6 +1060,174 @@ mod tests {
         thread::sleep(Duration::from_millis(80));
         assert!(rx.try_recv().is_err(), "oversize frame must not be queued");
         assert_eq!(drops.load(Ordering::Relaxed), 0);
+    }
+
+    // ---- accept-loop concurrency / deadline tests (local TCP, short limits) ----
+
+    fn spawn_listener(
+        limits: HsLimits,
+        cap: usize,
+    ) -> (
+        std::net::SocketAddr,
+        Receiver<Vec<u8>>,
+        Arc<AtomicU64>,
+        Arc<AtomicU64>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(cap);
+        let drops = Arc::new(AtomicU64::new(0));
+        let refused = Arc::new(AtomicU64::new(0));
+        let counters = HsCounters {
+            drops: Arc::clone(&drops),
+            refused: Arc::clone(&refused),
+        };
+        thread::spawn(move || accept_loop(listener, tx, counters, limits));
+        (addr, rx, drops, refused)
+    }
+
+    fn short_limits() -> HsLimits {
+        HsLimits {
+            idle: Duration::from_millis(1500),
+            frame_body: Duration::from_millis(400),
+            conn_lifetime: Duration::from_secs(3),
+            max_conns: 4,
+            max_frames_per_conn: MAX_FRAMES_PER_CONN,
+        }
+    }
+
+    fn recv_within(rx: &Receiver<Vec<u8>>, ms: u64) -> Option<Vec<u8>> {
+        rx.recv_timeout(Duration::from_millis(ms)).ok()
+    }
+
+    /// True once the server has closed `s` (EOF or reset) within `ms`.
+    fn closed_within(s: &mut TcpStream, ms: u64) -> bool {
+        use std::io::Read;
+        s.set_read_timeout(Some(Duration::from_millis(ms))).unwrap();
+        let mut b = [0u8; 1];
+        match s.read(&mut b) {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(e) => !matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ),
+        }
+    }
+
+    #[test]
+    fn stalled_client_does_not_block_other_peers() {
+        let (addr, rx, _, _) = spawn_listener(short_limits(), 8);
+        // Slow peer: header promising 100 bytes, then nothing.
+        let mut slow = TcpStream::connect(addr).unwrap();
+        slow.write_all(&100u16.to_be_bytes()).unwrap();
+        slow.write_all(&[1u8; 3]).unwrap();
+        slow.flush().unwrap();
+        thread::sleep(Duration::from_millis(50));
+        // Honest peer is served immediately, not after the slow one times out.
+        let mut ok = TcpStream::connect(addr).unwrap();
+        write_framed_u16(&mut ok, b"hello").unwrap();
+        let got = recv_within(&rx, 300).expect("honest frame must not wait");
+        assert_eq!(got, b"hello");
+        drop(slow);
+    }
+
+    #[test]
+    fn trickled_body_hits_total_frame_deadline() {
+        let (addr, rx, _, _) = spawn_listener(short_limits(), 8);
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.write_all(&50u16.to_be_bytes()).unwrap();
+        // One byte every 100 ms: each read is quick, but the frame is not.
+        let start = Instant::now();
+        let mut closed = false;
+        for _ in 0..40 {
+            if s.write_all(&[7u8]).is_err() {
+                closed = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        if !closed {
+            closed = closed_within(&mut s, 500);
+        }
+        assert!(closed, "server must close a trickling connection");
+        assert!(start.elapsed() < Duration::from_secs(3));
+        assert!(rx.try_recv().is_err(), "partial frame must not be queued");
+    }
+
+    #[test]
+    fn idle_connection_closed_after_idle_limit() {
+        let (addr, _rx, _, _) = spawn_listener(short_limits(), 8);
+        let mut s = TcpStream::connect(addr).unwrap();
+        let start = Instant::now();
+        assert!(closed_within(&mut s, 3000));
+        let el = start.elapsed();
+        assert!(
+            el >= Duration::from_millis(1200) && el < Duration::from_millis(2800),
+            "{el:?}"
+        );
+    }
+
+    #[test]
+    fn connection_lifetime_is_capped() {
+        let mut lim = short_limits();
+        lim.idle = Duration::from_millis(900);
+        lim.conn_lifetime = Duration::from_millis(1500);
+        let (addr, rx, _, _) = spawn_listener(lim, 64);
+        let mut s = TcpStream::connect(addr).unwrap();
+        let start = Instant::now();
+        // Keep sending valid frames well inside the idle window.
+        let mut closed = false;
+        for i in 0..40u8 {
+            if write_framed_u16(&mut s, &[i]).is_err() {
+                closed = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        if !closed {
+            closed = closed_within(&mut s, 1000);
+        }
+        assert!(closed, "lifetime cap must close an active connection");
+        assert!(start.elapsed() < Duration::from_secs(5));
+        let mut n = 0;
+        while rx.try_recv().is_ok() {
+            n += 1;
+        }
+        assert!(n >= 1 && n < 40, "some frames served before cap: {n}");
+    }
+
+    #[test]
+    fn excess_connections_refused_and_slots_released() {
+        let (addr, rx, _, refused) = spawn_listener(short_limits(), 8);
+        // Fill all slots with idle connections.
+        let mut idle: Vec<TcpStream> = (0..4).map(|_| TcpStream::connect(addr).unwrap()).collect();
+        thread::sleep(Duration::from_millis(100));
+        let mut extra = TcpStream::connect(addr).unwrap();
+        assert!(
+            closed_within(&mut extra, 500),
+            "over-cap connection must be closed"
+        );
+        assert!(refused.load(Ordering::Relaxed) >= 1);
+        // Free the slots; a new peer is served again.
+        idle.clear();
+        thread::sleep(Duration::from_millis(200));
+        let mut ok = TcpStream::connect(addr).unwrap();
+        write_framed_u16(&mut ok, b"again").unwrap();
+        assert_eq!(recv_within(&rx, 500).as_deref(), Some(&b"again"[..]));
+    }
+
+    #[test]
+    fn slot_reservation_respects_cap() {
+        let live = Arc::new(AtomicUsize::new(0));
+        let a = try_reserve_slot(&live, 2).unwrap();
+        let b = try_reserve_slot(&live, 2).unwrap();
+        assert!(try_reserve_slot(&live, 2).is_none());
+        drop(a);
+        let c = try_reserve_slot(&live, 2).unwrap();
+        assert_eq!(live.load(Ordering::Relaxed), 2);
+        drop((b, c));
+        assert_eq!(live.load(Ordering::Relaxed), 0);
     }
 
     #[test]

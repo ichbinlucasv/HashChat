@@ -188,6 +188,14 @@ pass "HS_INBOUND_QUEUE_CAP present"
   || fail "bounded sync_channel missing from hidden_service.rs"
 pass "HS sync_channel (bounded inbound queue) present"
 
+# One slow peer must not stall others: per-connection threads under a cap, and
+# total-time (not per-read) frame deadlines.
+"${SEARCH[@]}" 'HS_MAX_CONCURRENT_CONNS' src/rust/hidden_service.rs >/dev/null \
+  || fail "HS_MAX_CONCURRENT_CONNS missing from hidden_service.rs"
+"${SEARCH[@]}" 'fn read_frame_with_deadlines' src/rust/hidden_service.rs >/dev/null \
+  || fail "deadline-bounded HS frame reader missing"
+pass "HS concurrent connection cap + frame deadlines present"
+
 
 # Best-effort memory lock: TUI must call mlockall after unlock (desktop anti-swap).
 "${SEARCH[@]}" 'mlockall_current' src/bin/hashchat_tui.rs >/dev/null \
