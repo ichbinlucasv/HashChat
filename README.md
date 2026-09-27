@@ -55,7 +55,7 @@ See [INSTALL.md](INSTALL.md) for Fedora / Ubuntu / Arch / Tails / Qubes walkthro
 
 **v0.2 Linux preview readiness (maintainers):** see [`docs/V0_2_PREVIEW_CHECKLIST.md`](docs/V0_2_PREVIEW_CHECKLIST.md).
 
-**Transport default:** Tor (fail-closed). Explicit modes live in Rust `net_mode` (`Tor` / `I2P` / `Clearnet`, DNS preference separate). Only Tor send/listen is implemented; I2P and clearnet return a clear refusal and do **not** open messenger sockets. Extreme posture locks Tor-only. TUI: `:mode` / env `HASHCHAT_NET_MODE`, `HASHCHAT_DNS`, `HASHCHAT_POSTURE` (in-memory for now — not yet in the session blob).
+**Transport default:** Tor (fail-closed). Explicit modes live in Rust `net_mode` (`Tor` / `I2P` / `Clearnet`, DNS preference separate). Only Tor send/listen is implemented; I2P and clearnet return a clear refusal and do **not** open messenger sockets. Extreme posture locks Tor-only. TUI: `:mode` / env `HASHCHAT_NET_MODE`, `HASHCHAT_DNS`, `HASHCHAT_POSTURE`. Prefs (mode / DNS / posture) persist inside the encrypted session blob (v3+); env applies at cold start / new identity, and the loaded blob wins after unlock. Under Extreme posture, contacts, ratchets, the pending queue, and block/mute/verify lists are deliberately **not** durably persisted.
 
 ---
 
