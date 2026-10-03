@@ -16,6 +16,9 @@
 //! - The cookie file must be a regular file of exactly 32 bytes, opened without
 //!   following a final symlink; size is checked before reading.
 //! - Control replies are bounded (line length and line count).
+//! - One `BufReader` is kept for the control connection's lifetime (L-11). A
+//!   fresh reader per command via `TcpStream::try_clone` can drop buffered
+//!   reply bytes and desync the protocol.
 //! - `ADD_ONION` (which carries the stored onion key) is only sent after the
 //!   above succeeds.
 //!
@@ -99,7 +102,8 @@ pub struct HiddenService {
     /// Connections closed at accept because the concurrency cap was reached.
     refused: Arc<AtomicU64>,
     /// Must stay open or Tor forgets a non-persisted onion.
-    _control: TcpStream,
+    /// Owns the shared control `BufReader` for the connection lifetime (L-11).
+    _control: ControlConn,
 }
 
 impl HiddenService {
@@ -139,7 +143,7 @@ pub fn start_hidden_service_with_key(
         .map_err(|_| "local addr failed".to_string())?
         .port();
 
-    let mut control = connect_control(control_host, control_port)?;
+    let mut control = ControlConn::new(connect_control(control_host, control_port)?);
     let cookie_override = std::env::var_os(TOR_COOKIE_FILE_ENV).map(PathBuf::from);
     authenticate_cookie_only(&mut control, cookie_override.as_deref())?;
     let existing_str = existing_key.and_then(|b| std::str::from_utf8(b).ok());
@@ -340,11 +344,27 @@ fn connect_control(host: &str, port: u16) -> Result<TcpStream, String> {
     Ok(s)
 }
 
+/// ControlPort I/O with **one** [`BufReader`] for the connection lifetime (L-11).
+///
+/// Writes go through [`BufReader::get_mut`]; reads reuse the same buffer so a
+/// follow-up reply that arrived in the same TCP read is not dropped.
+struct ControlConn {
+    reader: BufReader<TcpStream>,
+}
+
+impl ControlConn {
+    fn new(stream: TcpStream) -> Self {
+        Self {
+            reader: BufReader::new(stream),
+        }
+    }
+}
+
 /// M1: cookie AUTHENTICATE only. Never send bare AUTHENTICATE.
 ///
 /// SAFECOOKIE handshake; see module docs for the trust argument.
 fn authenticate_cookie_only(
-    s: &mut TcpStream,
+    s: &mut ControlConn,
     cookie_override: Option<&Path>,
 ) -> Result<(), String> {
     let info = control_cmd(s, "PROTOCOLINFO 1")?;
@@ -371,7 +391,7 @@ fn authenticate_cookie_only(
 }
 
 fn safecookie_exchange(
-    s: &mut TcpStream,
+    s: &mut ControlConn,
     cookie: &[u8; TOR_COOKIE_LEN],
     client_nonce: &[u8; 32],
 ) -> Result<(), String> {
@@ -575,7 +595,7 @@ pub fn cookie_path_from_protocolinfo(lines: &[String]) -> Option<String> {
 }
 
 fn add_onion(
-    s: &mut TcpStream,
+    s: &mut ControlConn,
     local_port: u16,
     existing_key: Option<&str>,
 ) -> Result<(String, Vec<u8>), String> {
@@ -636,28 +656,28 @@ fn is_valid_onion_key_spec(k: &str) -> bool {
     }
 }
 
-fn control_cmd(s: &mut TcpStream, cmd: &str) -> Result<Vec<String>, String> {
-    s.write_all(cmd.as_bytes())
-        .map_err(|_| "control write failed".to_string())?;
-    s.write_all(b"\r\n")
-        .map_err(|_| "control write failed".to_string())?;
-    s.flush().map_err(|_| "control flush failed".to_string())?;
-    let reader = BufReader::new(
-        s.try_clone()
-            .map_err(|_| "control clone failed".to_string())?,
-    );
-    read_control_reply(reader)
+fn control_cmd(conn: &mut ControlConn, cmd: &str) -> Result<Vec<String>, String> {
+    {
+        let s = conn.reader.get_mut();
+        s.write_all(cmd.as_bytes())
+            .map_err(|_| "control write failed".to_string())?;
+        s.write_all(b"\r\n")
+            .map_err(|_| "control write failed".to_string())?;
+        s.flush()
+            .map_err(|_| "control flush failed".to_string())?;
+    }
+    read_control_reply(&mut conn.reader)
 }
 
 /// Read one control reply with bounded line length and count.
-fn read_control_reply<R: BufRead>(mut reader: R) -> Result<Vec<String>, String> {
+fn read_control_reply(reader: &mut impl BufRead) -> Result<Vec<String>, String> {
     let mut lines = Vec::new();
     loop {
         if lines.len() >= MAX_CONTROL_LINES {
             return Err("control reply too long".into());
         }
         let mut raw = Vec::new();
-        let n = (&mut reader)
+        let n = reader
             .take(MAX_CONTROL_LINE as u64 + 1)
             .read_until(b'\n', &mut raw)
             .map_err(|_| "control read failed".to_string())?;
@@ -797,10 +817,11 @@ mod tests {
     }
 
     fn run_auth(addr: std::net::SocketAddr, cookie_override: Option<&Path>) -> Result<(), String> {
-        let mut s = TcpStream::connect(addr).unwrap();
+        let s = TcpStream::connect(addr).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let r = authenticate_cookie_only(&mut s, cookie_override);
-        drop(s);
+        let mut conn = ControlConn::new(s);
+        let r = authenticate_cookie_only(&mut conn, cookie_override);
+        drop(conn);
         r
     }
 
@@ -970,14 +991,54 @@ mod tests {
     #[test]
     fn control_reply_bounded() {
         let long = format!("250 {}\r\n", "a".repeat(MAX_CONTROL_LINE + 10));
-        assert!(read_control_reply(std::io::Cursor::new(long.into_bytes())).is_err());
+        assert!(read_control_reply(&mut std::io::Cursor::new(long.into_bytes())).is_err());
         let many = "250-x\r\n".repeat(MAX_CONTROL_LINES + 5);
-        assert!(read_control_reply(std::io::Cursor::new(many.into_bytes())).is_err());
+        assert!(read_control_reply(&mut std::io::Cursor::new(many.into_bytes())).is_err());
         let ok = "250-a\r\n250 OK\r\n";
         assert_eq!(
-            read_control_reply(std::io::Cursor::new(ok.as_bytes().to_vec())).unwrap(),
+            read_control_reply(&mut std::io::Cursor::new(ok.as_bytes().to_vec())).unwrap(),
             vec!["250-a".to_string(), "250 OK".to_string()]
         );
+    }
+
+    /// L-11: one shared BufReader must keep a follow-up reply that arrived in the
+    /// same TCP read as the previous reply. A per-command `try_clone` + new
+    /// BufReader would consume those bytes into a dropped buffer and hang.
+    #[test]
+    fn shared_control_reader_keeps_buffered_followup_reply() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut w = stream.try_clone().unwrap();
+            let mut r = BufReader::new(stream);
+            let mut line = String::new();
+            r.read_line(&mut line).unwrap();
+            assert_eq!(line.trim_end(), "CMD_A");
+            // Coalesce reply A and reply B so the client's BufReader over-reads.
+            write!(w, "250-mid\r\n250 OK\r\n250 OK\r\n").unwrap();
+            w.flush().unwrap();
+            line.clear();
+            r.read_line(&mut line).unwrap();
+            assert_eq!(line.trim_end(), "CMD_B");
+            // Reply B was already written with reply A — do not write again.
+        });
+
+        let s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut conn = ControlConn::new(s);
+        assert_eq!(
+            control_cmd(&mut conn, "CMD_A").unwrap(),
+            vec!["250-mid".to_string(), "250 OK".to_string()]
+        );
+        assert_eq!(
+            control_cmd(&mut conn, "CMD_B").unwrap(),
+            vec!["250 OK".to_string()]
+        );
+        server.join().unwrap();
     }
 
     #[test]
