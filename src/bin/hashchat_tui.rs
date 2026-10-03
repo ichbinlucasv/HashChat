@@ -28,7 +28,8 @@ use hashchat_rust::{
     sas_fingerprint, sas_for_signed, save_session_with_key, socks5_send,
     socks_isolation_for_contact, socks_isolation_for_onion, start_hidden_service_with_key,
     state_exists, take_terminate_signal, tor_probe, unframe_v2, unlock_backoff_delay_secs,
-    unlock_session, wipe_local_sensitive, DnsPreference, DoubleRatchet, DumpHardening,
+    take_zeroizing_vec, unlock_session, wipe_local_sensitive, DnsPreference, DoubleRatchet,
+    DumpHardening,
     HiddenService, IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode,
     PersistedContact, PostureProfile, SessionState, SocksIsolationCreds, StoreKey,
     UnlockBackoffPolicy, DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES,
@@ -40,7 +41,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Terminal;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 const DATA_DIR: &str = "hashchat_data";
 const GOLD: Color = Color::Rgb(255, 215, 0); // #FFD700
@@ -376,15 +377,16 @@ impl App {
             .ratchets
             .iter()
             .find(|(id, _)| id == contact_id)
-            .map(|(_, b)| b.clone())
+            .map(|(_, b)| Zeroizing::new(b.clone()))
         else {
             return;
         };
         let Ok(mut r) = DoubleRatchet::from_bytes(&bytes) else {
             return;
         };
+        drop(bytes);
         r.wipe_skipped_key(msg_number);
-        session.set_ratchet_bytes(contact_id, r.to_bytes());
+        session.set_ratchet_bytes(contact_id, take_zeroizing_vec(r.to_bytes()));
         if let Some(key) = self.store_key.as_deref() {
             let _ = save_session_with_key(Path::new(DATA_DIR), key, session);
         }
@@ -396,6 +398,12 @@ impl App {
             line.text.zeroize();
         }
         self.messages.clear();
+    }
+
+    /// Clear the draft/input buffer after scrubbing (L-2: `clear` alone leaves residues).
+    fn clear_input_secure(&mut self) {
+        self.input.zeroize();
+        self.input.clear();
     }
 
     /// Zeroize plaintext chat lines tagged with `contact_id` (via wipe_key).
@@ -451,7 +459,7 @@ impl App {
             }
         };
         self.pending_delete_contact = Some(id);
-        self.input.clear();
+        self.clear_input_secure();
         self.screen = Screen::ConfirmDeleteContact;
         self.status_msg =
             "DELETE CONTACT: type :delete-contact-confirm to wipe ratchet, or Esc to cancel."
@@ -562,7 +570,7 @@ impl App {
         self.passphrase.clear();
         self.passphrase_confirm.zeroize();
         self.passphrase_confirm.clear();
-        self.input.clear();
+        self.clear_input_secure();
         self.my_sas.clear();
         self.my_contact_link.clear();
         self.clear_transcript_secure();
@@ -593,8 +601,7 @@ impl App {
         self.passphrase.clear();
         self.passphrase_confirm.zeroize();
         self.passphrase_confirm.clear();
-        self.input.zeroize();
-        self.input.clear();
+        self.clear_input_secure();
         self.my_sas.zeroize();
         self.my_sas.clear();
         self.my_contact_link.zeroize();
@@ -1045,11 +1052,13 @@ impl App {
             self.status_msg = "Unlock a session first.".into();
             return;
         }
-        let existing = self
-            .session
-            .as_ref()
-            .map(|s| s.identity.onion_key.clone())
-            .unwrap_or_default();
+        // L-2: wrap onion private-key clone so it zeroizes when dropped.
+        let existing = Zeroizing::new(
+            self.session
+                .as_ref()
+                .map(|s| s.identity.onion_key.clone())
+                .unwrap_or_default(),
+        );
         let existing_ref = if existing.is_empty() {
             None
         } else {
@@ -1278,12 +1287,13 @@ impl App {
                 .ratchets
                 .iter()
                 .find(|(id, _)| id == &c.id)
-                .map(|(_, b)| b.clone());
+                .map(|(_, b)| Zeroizing::new(b.clone()));
             let Some(rb) = ratchet_bytes else {
                 continue;
             };
             let mut r =
                 DoubleRatchet::from_bytes(&rb).map_err(|_| "ratchet restore".to_string())?;
+            drop(rb);
             let aad = build_wire_aad(WIRE_VERSION_V2, &hint, step, &sender_dh);
             let remote = x25519_dalek::PublicKey::from(sender_dh);
             match r.try_recv_decrypt(&remote, &ct, &aad) {
@@ -1300,7 +1310,7 @@ impl App {
                     };
                     pt.zeroize();
                     let contact_id = c.id.clone();
-                    session.set_ratchet_bytes(&contact_id, r.to_bytes());
+                    session.set_ratchet_bytes(&contact_id, take_zeroizing_vec(r.to_bytes()));
                     let label = if c.display_name.is_empty() {
                         contact_id.clone()
                     } else {
@@ -1341,7 +1351,7 @@ impl App {
                         peer.ed25519,
                         &sas,
                     );
-                    session.set_ratchet_bytes(&up.id, ratchet.to_bytes());
+                    session.set_ratchet_bytes(&up.id, take_zeroizing_vec(ratchet.to_bytes()));
                     let idx = session.contacts.iter().position(|c| c.id == up.id);
                     (idx, up)
                 };
@@ -1525,7 +1535,7 @@ impl App {
             Path::new(DATA_DIR),
             key,
             &contact.id,
-            rbytes.clone(),
+            rbytes.to_vec(),
             &contact.onion,
             frame.clone(),
         )
@@ -1537,7 +1547,7 @@ impl App {
 
         // Mirror commit into in-memory session.
         if let Some(session) = self.session.as_mut() {
-            session.set_ratchet_bytes(&contact.id, rbytes);
+            session.set_ratchet_bytes(&contact.id, take_zeroizing_vec(rbytes));
             session.queue_pending(&contact.onion, frame.clone());
         }
 
@@ -2225,7 +2235,7 @@ impl App {
             ":wipe" => {
                 // Loud confirm: blank chat/status residue so the modal is not overlaid on plaintext.
                 self.clear_transcript_secure();
-                self.input.clear();
+                self.clear_input_secure();
                 self.screen = Screen::ConfirmWipe;
                 self.status_msg =
                     "NUCLEAR WIPE: type :wipe-confirm to erase local secrets, or Esc to cancel."
@@ -2243,7 +2253,7 @@ impl App {
                 self.passphrase.clear();
                 self.passphrase_confirm.zeroize();
                 self.passphrase_confirm.clear();
-                self.input.clear();
+                self.clear_input_secure();
                 self.my_sas.clear();
                 self.my_contact_link.clear();
                 self.clear_transcript_secure();
@@ -3004,7 +3014,7 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
             Screen::ConfirmWipe => match key.code {
                 KeyCode::Esc => {
                     app.screen = Screen::Main;
-                    app.input.clear();
+                    app.clear_input_secure();
                     app.status_msg = "Wipe cancelled.".into();
                     app.focus = Focus::Input;
                 }
@@ -3024,8 +3034,8 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
                     };
                 }
                 KeyCode::Enter => {
-                    let cmd = app.input.trim().to_string();
-                    app.input.clear();
+                    let mut cmd = app.input.trim().to_string();
+                    app.clear_input_secure();
                     if cmd == ":wipe-confirm" {
                         app.handle_command(&cmd);
                     } else {
@@ -3033,6 +3043,7 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
                         app.status_msg = "Wipe cancelled (expected :wipe-confirm).".into();
                         app.focus = Focus::Input;
                     }
+                    cmd.zeroize();
                 }
                 _ => {}
             },
@@ -3040,7 +3051,7 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
                 KeyCode::Esc => {
                     app.pending_delete_contact = None;
                     app.screen = Screen::Main;
-                    app.input.clear();
+                    app.clear_input_secure();
                     app.status_msg = "Contact delete cancelled.".into();
                     app.focus = Focus::Input;
                 }
@@ -3059,8 +3070,8 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
                     };
                 }
                 KeyCode::Enter => {
-                    let cmd = app.input.trim().to_string();
-                    app.input.clear();
+                    let mut cmd = app.input.trim().to_string();
+                    app.clear_input_secure();
                     if cmd == ":delete-contact-confirm" {
                         app.handle_command(&cmd);
                     } else {
@@ -3070,6 +3081,7 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
                             "Contact delete cancelled (expected :delete-contact-confirm).".into();
                         app.focus = Focus::Input;
                     }
+                    cmd.zeroize();
                 }
                 _ => {}
             },
@@ -3106,8 +3118,9 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
                     }
                 }
                 KeyCode::Enter if app.focus == Focus::Input || !app.input.is_empty() => {
-                    let cmd = std::mem::take(&mut app.input);
+                    let mut cmd = std::mem::take(&mut app.input);
                     app.handle_command(&cmd);
+                    cmd.zeroize();
                     if app.status_msg == "__QUIT__" {
                         break;
                     }
@@ -3120,7 +3133,7 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
                     app.input.push(ch);
                 }
                 KeyCode::Esc => {
-                    app.input.clear();
+                    app.clear_input_secure();
                     app.status_msg = "Input cleared.".into();
                 }
                 _ => {}

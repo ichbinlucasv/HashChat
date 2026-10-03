@@ -9,7 +9,7 @@ use hkdf::Hkdf;
 use ring::aead::{self, LessSafeKey, UnboundKey, Aad};
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 pub const RATCHET_KEY_LEN: usize = 32;
 #[allow(dead_code)]
@@ -270,8 +270,10 @@ impl DoubleRatchet {
         {
             return Err("invalid sender key");
         }
+        // L-2: snapshots are Zeroizing so full-state copies do not linger on drop.
         let snap = self.to_bytes();
         let mut scratch = DoubleRatchet::from_bytes(&snap)?;
+        drop(snap);
         let (mut key, step) = scratch.ratchet_recv(remote);
         let pt = match decrypt_with_key(&key, ciphertext, aad) {
             Ok(p) => p,
@@ -284,6 +286,7 @@ impl DoubleRatchet {
         // Commit scratch into self by replaying serialized state.
         let committed = scratch.to_bytes();
         let restored = DoubleRatchet::from_bytes(&committed)?;
+        drop(committed);
         *self = restored;
         Ok((pt, step))
     }
@@ -335,10 +338,24 @@ pub fn decrypt_with_key(
     let lsk = LessSafeKey::new(unbound);
     let nonce = aead::Nonce::assume_unique_for_key(nonce_bytes);
     let mut buf = ct[RATCHET_NONCE_LEN..].to_vec();
-    let pt = lsk
-        .open_in_place(nonce, Aad::from(aad), &mut buf)
-        .map_err(|_| "open")?;
-    Ok(pt.to_vec())
+    let out = match lsk.open_in_place(nonce, Aad::from(aad), &mut buf) {
+        Ok(pt) => pt.to_vec(),
+        Err(_) => {
+            buf.zeroize();
+            return Err("open");
+        }
+    };
+    // L-2: open_in_place left plaintext in `buf`; scrub after copying out.
+    buf.zeroize();
+    Ok(out)
+}
+
+
+/// Move the inner `Vec` out of a `Zeroizing` wrapper (L-2 call-site helper).
+/// The wrapper is left holding an empty `Vec` that zeroizes on drop.
+#[inline]
+pub fn take_zeroizing_vec(mut z: Zeroizing<Vec<u8>>) -> Vec<u8> {
+    std::mem::take(&mut *z)
 }
 
 // === Full Ratchet State Serialization for Encrypted Persistence ===
@@ -346,7 +363,8 @@ pub fn decrypt_with_key(
 impl DoubleRatchet {
     /// Serialize the COMPLETE ratchet state.
     /// The resulting blob MUST be encrypted (e.g. with Argon2id(passphrase) + AES-GCM) before writing to disk.
-    pub fn to_bytes(&self) -> Vec<u8> {
+    /// Returned as `Zeroizing` so transient full-state copies scrub on drop (L-2).
+    pub fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
         let mut out = Vec::new();
         out.push(2u8); // version (v2 adds sends_since_dh)
 
@@ -375,7 +393,7 @@ impl DoubleRatchet {
             out.extend_from_slice(key);
         }
 
-        out
+        Zeroizing::new(out)
     }
 
     /// Restore from a decrypted blob.
@@ -651,6 +669,15 @@ mod tests {
         assert_eq!(bytes[0], 2);
         let r2 = DoubleRatchet::from_bytes(&bytes).expect("v2");
         assert_eq!(r2.to_bytes(), bytes);
+    }
+
+    #[test]
+    fn to_bytes_returns_zeroizing_and_roundtrips() {
+        let mut r = DoubleRatchet::new();
+        r.init_symmetric(&[0xABu8; 32]);
+        let bytes: Zeroizing<Vec<u8>> = r.to_bytes();
+        let r2 = DoubleRatchet::from_bytes(&bytes).expect("restore");
+        assert_eq!(r2.to_bytes().as_slice(), bytes.as_slice());
     }
     #[test]
     fn wipe_skipped_key_zeroizes_and_removes() {

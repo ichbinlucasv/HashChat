@@ -50,7 +50,8 @@ pub use longterm_identity::{
 };
 pub use net_mode::{DnsPreference, NetConfig, NetModeError, NetworkMode, PostureProfile};
 pub use ratchet::{
-    build_wire_aad, decrypt_with_key, encrypt_with_key, DoubleRatchet, WIRE_VERSION_V2,
+    build_wire_aad, decrypt_with_key, encrypt_with_key, take_zeroizing_vec, DoubleRatchet,
+    WIRE_VERSION_V2,
 };
 pub use private_fs::MAX_PRIVATE_FILE_BYTES;
 pub use session_persist::{

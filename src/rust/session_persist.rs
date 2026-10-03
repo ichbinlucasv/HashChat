@@ -1335,7 +1335,7 @@ pub fn check_state_storage(data_dir: &Path) -> Result<(), &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ratchet::DoubleRatchet;
+    use crate::ratchet::{take_zeroizing_vec, DoubleRatchet};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn tmp_dir(tag: &str) -> PathBuf {
@@ -1773,7 +1773,7 @@ mod tests {
             x25519: [0xAAu8; 32],
             ed25519: [0xBBu8; 32],
         });
-        session.set_ratchet_bytes("alice", ratchet_bytes.clone());
+        session.set_ratchet_bytes("alice", take_zeroizing_vec(ratchet_bytes.clone()));
         session.queue_pending(
             "alicehashchatv3exampleaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion",
             vec![0xCCu8; 48],
@@ -1791,10 +1791,10 @@ mod tests {
         assert_eq!(loaded.contacts[0].x25519, [0xAAu8; 32]);
         assert_eq!(loaded.ratchets.len(), 1);
         assert_eq!(loaded.ratchets[0].0, "alice");
-        assert_eq!(loaded.ratchets[0].1, ratchet_bytes);
+        assert_eq!(loaded.ratchets[0].1.as_slice(), ratchet_bytes.as_slice());
         // Ratchet bytes must restore a working DoubleRatchet.
         let restored = DoubleRatchet::from_bytes(&loaded.ratchets[0].1).unwrap();
-        assert_eq!(restored.to_bytes(), ratchet_bytes);
+        assert_eq!(restored.to_bytes().as_slice(), ratchet_bytes.as_slice());
         assert_eq!(loaded.pending.len(), 1);
         assert_eq!(loaded.pending[0].1, vec![0xCCu8; 48]);
         let _ = fs::remove_dir_all(&dir);
@@ -1879,7 +1879,7 @@ mod tests {
             PersistMode::Passphrase,
             b"commit-pass",
             "peer",
-            bytes.clone(),
+            bytes.to_vec(),
             "peer.onion",
             vec![0x88u8; 24],
         )
@@ -1887,7 +1887,7 @@ mod tests {
 
         let loaded = load_session(&dir, PersistMode::Passphrase, b"commit-pass").unwrap();
         assert_eq!(loaded.ratchets.len(), 1);
-        assert_eq!(loaded.ratchets[0].1, bytes);
+        assert_eq!(loaded.ratchets[0].1.as_slice(), bytes.as_slice());
         assert_eq!(loaded.pending.len(), 1);
         assert_eq!(loaded.pending[0].0, "peer.onion");
         let _ = fs::remove_dir_all(&dir);
