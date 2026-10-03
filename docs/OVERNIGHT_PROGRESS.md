@@ -2,11 +2,11 @@
 
 **Snapshot:** 27 September 2026 (Europe/Zurich)  
 **Branch:** `codeberg-primary`  
-**Tip:** `90ee629`
+**Tip:** `53d1c5a`
 
 ## Executive summary
 
-HashChat now has a usable Rust two-peer TUI with fail-closed Tor transport, encrypted session blob v7, 184 passing library tests (183 without `tui`), and an offline CI security gate. Shipped controls include local disappearing TTL, Extreme minimal persistence, block/mute/delete with ratchet wipe, a SAS verification gate, idle/manual lock, unlock-attempt backoff, `:clear` transcript scrub, best-effort `mlock`, panic/signal secret scrubbing, and contact display-name rename (`:rename`). The Haskell desktop remains transitional and non-recommended; this is a hardened preview path, not a claim of production readiness.
+HashChat now has a usable Rust two-peer TUI with fail-closed Tor transport, encrypted session blob v7, 185 passing library tests (184 without `tui`), and an offline CI security gate. Shipped controls include local disappearing TTL, Extreme minimal persistence, block/mute/delete with ratchet wipe, a SAS verification gate, idle/manual lock, unlock-attempt backoff, `:clear` transcript scrub, best-effort `mlock`, panic/signal secret scrubbing, and contact display-name rename (`:rename`). The Haskell desktop remains transitional and non-recommended; this is a hardened preview path, not a claim of production readiness.
 
 ## Shipped since the previous checkpoint
 
@@ -24,7 +24,8 @@ HashChat now has a usable Rust two-peer TUI with fail-closed Tor transport, encr
   - **L-10 — `415181e`:** SOCKS proxy and ControlPort hosts are parsed as IP literals (`localhost` maps to 127.0.0.1) and must be loopback before any connect; names are never resolved. Short forms such as `127.1` are now refused.
   - **L-12 — `1803035`:** contact bootstrap (library and TUI) and speculative ratchet receive reject non-contributory (low-order) X25519 results. Honest keys are unaffected.
   - **L-7 — `90ee629`:** local pack/blob parsers cap `Vec` preallocation by the remaining input and use checked offsets. Formats unchanged.
-  - **Still open from the review:** M-1 (bootstrap handshake), M-2 (skipped-key handling), M-5 (FFI global ratchet store) — deliberately left for a protocol/API-level change. Lows not done: L-4 (Haskell depends on the current behaviour), L-8 (broad FFI signature changes), L-9 (hint-length strictness is wire-parsing; needs a sender audit first), L-11 (line/count bounds and onion-key validation landed with H-2; a fresh reader per control command remains), and the remaining L-2 copies (TUI ratchet-bytes clone, draft buffer, `to_bytes` snapshots in speculative receive). All Info items remain open.
+  - **L-2 (remaining copies) — `53d1c5a`:** `DoubleRatchet::to_bytes` returns `Zeroizing<Vec<u8>>` so speculative-receive snapshots scrub on drop; `decrypt_with_key` zeroizes the in-place open buffer after copying plaintext; TUI wraps ratchet-byte and onion-key clones in `Zeroizing`, scrubs the draft via `clear_input_secure`, and uses `take_zeroizing_vec` at store call sites. No wire/blob format change. Android duplicate tree untouched.
+  - **Still open from the review:** M-1 (bootstrap handshake), M-2 (skipped-key handling), M-5 (FFI global ratchet store) — deliberately left for a protocol/API-level change. Lows not done: L-4 (Haskell depends on the current behaviour), L-8 (broad FFI signature changes), L-9 (hint-length strictness is wire-parsing; needs a sender audit first), L-11 (line/count bounds and onion-key validation landed with H-2; a fresh reader per control command remains). Remaining L-2 copies from the review are closed. All Info items remain open.
   - **Flatpak `--filesystem=/run/tor:ro` — deferred, not committed:** with the line added, `flatpak-builder --show-manifest` parses and `flatpak-builder-lint manifest` reports no new findings. But the unchanged manifest already fails lint (`finish-args-arbitrary-dbus-access`, `finish-args-contains-both-x11-and-wayland`, `finish-args-home-filesystem-access`, `finish-args-x11-without-ipc`), and a real build needs the Nix-built prebuilts, so the "checks still pass" condition could not be met. Do not add `/var/lib/tor`.
 - **State file hygiene — `779e468`:** new `private_fs` module for `hashchat_data/`. The data dir must be a non-symlink directory owned by the current user; group/other bits are cleared to 0700 (existing 0755 dirs upgrade in place). `state.enc` / `machine.key` are opened `O_NOFOLLOW` and **refused** if they are symlinks, non-regular, foreign-owned, group/other-accessible, or over a 256 MiB cap. Writes are temp file (0600) + `fsync` + `rename`, so a crash cannot leave a truncated blob and a loose-mode file is replaced rather than rewritten in place. TUI runs `check_state_storage` before the KDF; a refusal shows a fixed, path-free reason and does not count toward unlock backoff. A malformed `machine.key` (insecure-dev only) is refused instead of regenerated. Residual: only the final dir component is checked (parent symlinks such as `/home -> /var/home` stay allowed); a symlinked `hashchat_data` is refused. **No blob or wire format change.**
 - **Max plaintext send size — `a1ef213`:** TUI refuses UTF-8 plaintext > **`MAX_PLAINTEXT_SEND_BYTES` (8 KiB)** via `check_plaintext_send_size` **before** ratchet encrypt; clear status, no body echo. Sized so AES-GCM + wire-v2 framing stays under `MAX_HS_INBOUND_FRAME` (16 KiB) (`MAX_FRAMED_SEND_BYTES` compile-time assert). Unit tests in `wire.rs`; `:help` one-liner. **Local UX / memory gate — not a wire-protocol version bump.**
@@ -74,7 +75,7 @@ cargo build --release --locked --bin hashchat-tui --features tui
 
 Unlock or create an identity, run `:listen`, exchange signed `hashchat://` contacts, compare SAS out of band, then `:verify` before sending. Use `:evidence` for posture metadata. Never copy Tor cookies, onion private material, passphrases, SAS values, or message bodies into evidence.
 
-Recorded validation at tip `90ee629`: `cargo test --lib` passed 183 tests (184 with `--features tui`), `cargo build --bin hashchat-tui --features tui` succeeded, and `./scripts/ci-security-gate.sh` passed offline.
+Recorded validation at tip `53d1c5a`: `cargo test --lib` passed 184 tests (185 with `--features tui`), `cargo build --bin hashchat-tui --features tui` succeeded, and `./scripts/ci-security-gate.sh` passed offline.
 
 ## When Lucas wakes
 
