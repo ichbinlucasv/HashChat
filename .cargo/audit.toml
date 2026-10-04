@@ -1,0 +1,18 @@
+# HashChat cargo-audit config (I-1).
+# Used by Forgejo CI (`cargo audit --deny warnings`) and the offline soft
+# check in scripts/ci-security-gate.sh.
+#
+# Ignore ONLY the known ratatui 0.29 transitive informational advisories.
+# Real vulnerabilities (non-informational) still fail the audit.
+# Revisit when upgrading ratatui past a release that drops paste <maintained
+# and lru <0.16.3 (see security review I-1).
+
+[advisories]
+ignore = [
+    # paste 1.0.15 — unmaintained; pulled in only via optional `tui` → ratatui 0.29.
+    "RUSTSEC-2024-0436",
+    # lru 0.12.5 IterMut Stacked Borrows; TUI-only transitive, not used on peer data paths.
+    "RUSTSEC-2026-0002",
+    # lru 0.12.5 LruCache::pop panic-safety UAF; same TUI-only transitive.
+    "RUSTSEC-2026-0253",
+]

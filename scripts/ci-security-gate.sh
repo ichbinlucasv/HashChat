@@ -38,7 +38,7 @@ echo "================================================================"
 # 1) Messenger transport: Clearnet/I2P must remain explicit refusals.
 #    Prefer policy anchors over fragile TcpStream greps (tests/bind use TCP).
 # ---------------------------------------------------------------------------
-echo "[1/5] NetMode fail-closed anchors (Clearnet/I2P + TUI gate)..."
+echo "[1/6] NetMode fail-closed anchors (Clearnet/I2P + TUI gate)..."
 
 "${SEARCH[@]}" 'ClearnetRefused' src/rust/net_mode.rs >/dev/null \
   || fail "NetModeError::ClearnetRefused missing from src/rust/net_mode.rs"
@@ -96,7 +96,7 @@ pass "no obvious clearnet TcpStream connect literals"
 # ---------------------------------------------------------------------------
 # 2) HASHCHAT_INSECURE_DEV_PERSIST must remain opt-in (never production default).
 # ---------------------------------------------------------------------------
-echo "[2/5] Insecure-dev persist remains opt-in..."
+echo "[2/6] Insecure-dev persist remains opt-in..."
 
 "${SEARCH[@]}" 'HASHCHAT_INSECURE_DEV_PERSIST' src/rust/session_persist.rs >/dev/null \
   || fail "HASHCHAT_INSECURE_DEV_PERSIST reference missing from session_persist.rs"
@@ -140,7 +140,7 @@ pass "insecure persist not force-enabled in Rust sources"
 # ---------------------------------------------------------------------------
 # 3) Tor ControlPort: cookie AUTHENTICATE only (refuse bare AUTHENTICATE).
 # ---------------------------------------------------------------------------
-echo "[3/5] Tor control cookie AUTHENTICATE fail-closed..."
+echo "[3/6] Tor control cookie AUTHENTICATE fail-closed..."
 
 "${SEARCH[@]}" 'fn authenticate_cookie_only' src/rust/hidden_service.rs >/dev/null \
   || fail "authenticate_cookie_only missing from hidden_service.rs"
@@ -252,9 +252,9 @@ pass "contact identity change resets SAS verification"
 pass "TUI sanitises peer text and transcript before render"
 
 # ---------------------------------------------------------------------------
-# 4) Workflow wires this script (self-check when present).
+# 4) Workflow wires this script + cargo audit (I-1).
 # ---------------------------------------------------------------------------
-echo "[4/5] Forgejo workflow wires this gate..."
+echo "[4/6] Forgejo workflow wires this gate + cargo audit..."
 
 WF=".forgejo/workflows/build.yml"
 if [[ ! -f "$WF" ]]; then
@@ -276,12 +276,89 @@ if ! grep -E -q 'hashchat-tui.*features tui|features tui.*hashchat-tui' "$WF"; t
   fi
 fi
 pass "required cargo test --lib + TUI build still present"
+
+# I-1: CI must run cargo audit; known ratatui transitive warnings live in .cargo/audit.toml.
+if ! grep -q 'cargo audit' "$WF"; then
+  fail "build.yml missing cargo audit (I-1 supply-chain gate)"
+fi
+pass "Forgejo build.yml invokes cargo audit"
+
+AUDIT_TOML=".cargo/audit.toml"
+if [[ ! -f "$AUDIT_TOML" ]]; then
+  fail "$AUDIT_TOML missing (I-1 known ratatui advisory ignores)"
+fi
+for id in RUSTSEC-2024-0436 RUSTSEC-2026-0002 RUSTSEC-2026-0253; do
+  if ! grep -q "$id" "$AUDIT_TOML"; then
+    fail "$AUDIT_TOML missing documented ignore $id"
+  fi
+done
+pass ".cargo/audit.toml documents ratatui transitive ignores (I-1)"
+
+# Soft cargo audit when the tool + advisory DB are already present (offline-friendly).
+# Missing tool/DB must NOT fail this offline gate — Forgejo installs/fetches them.
+if command -v cargo >/dev/null 2>&1 && cargo audit --version >/dev/null 2>&1; then
+  ADVISORY_DB="${CARGO_HOME:-$HOME/.cargo}/advisory-db"
+  if [[ -d "$ADVISORY_DB" ]]; then
+    if cargo audit --deny warnings --no-fetch --stale >/tmp/hashchat-cargo-audit.out 2>&1; then
+      pass "cargo audit --deny warnings clean (offline, ignores applied)"
+    else
+      echo "---- cargo audit output ----"
+      cat /tmp/hashchat-cargo-audit.out || true
+      fail "cargo audit found vulnerabilities or new denied warnings"
+    fi
+  else
+    pass "cargo-audit present but advisory DB missing — soft-skip (Forgejo fetches)"
+  fi
+else
+  pass "cargo-audit not installed locally — soft-skip (Forgejo installs)"
+fi
 # Do not require clippy — optional and must not introduce flaky failures.
 
 # ---------------------------------------------------------------------------
-# 5) Summary
+# 5) Quantum stub honesty (I-8): never claim production PQ in release notes.
 # ---------------------------------------------------------------------------
-echo "[5/5] Gate complete."
+echo "[5/6] Quantum stub must not be marketed as production PQ (I-8)..."
+
+RN="docs/RELEASE_NOTES_v0.2.md"
+RP="docs/RELEASE_PROCESS.md"
+if [[ ! -f "$RN" ]]; then
+  fail "$RN missing"
+fi
+# Positive anchors: release notes must keep the stub disclaimer.
+if ! grep -qi 'not production PQ' "$RN"; then
+  fail "$RN must keep an explicit 'not production PQ' disclaimer (I-8)"
+fi
+pass "RELEASE_NOTES keep 'not production PQ' disclaimer"
+
+if [[ -f "$RP" ]] && ! grep -qi 'not production PQ' "$RP"; then
+  fail "$RP must keep an explicit 'not production PQ' disclaimer (I-8)"
+fi
+pass "RELEASE_PROCESS keeps 'not production PQ' disclaimer"
+
+# Negative: refuse absolute PQ-secure marketing language without stub context.
+# Match lines that claim production/secure PQ without nearby stub/skeleton/not-yet wording.
+PQ_BAD="$("${SEARCH[@]}" -i 'post-quantum secure|PQ-secure|quantum[- ]resistant messenger|production PQ security' \
+  docs/RELEASE_NOTES_v0.2.md docs/RELEASE_PROCESS.md README.md SECURITY.md 2>/dev/null || true)"
+if [[ -n "${PQ_BAD}" ]]; then
+  # Allow if the same line also contains stub/skeleton/not
+  CLEANED="$(echo "$PQ_BAD" | grep -ivE 'stub|skeleton|not yet|not production|no production' || true)"
+  if [[ -n "${CLEANED}" ]]; then
+    echo "$CLEANED"
+    fail "release/docs claim production PQ without stub disclaimer (I-8)"
+  fi
+fi
+pass "no unguarded production-PQ marketing claims in release docs"
+
+# Feature must remain opt-in (empty quantum = [] in Cargo.toml).
+if ! grep -E -q '^quantum = \[\]' Cargo.toml; then
+  fail "Cargo.toml quantum feature must remain an empty opt-in gate (quantum = [])"
+fi
+pass "quantum Cargo feature remains empty opt-in stub gate"
+
+# ---------------------------------------------------------------------------
+# 6) Summary
+# ---------------------------------------------------------------------------
+echo "[6/6] Gate complete."
 echo ""
 echo "CI security gate PASSED (offline, deterministic)."
 exit 0

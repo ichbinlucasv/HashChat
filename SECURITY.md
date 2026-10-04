@@ -82,8 +82,13 @@ itself persists them; prefer `DiscardPK` / passphrase-wrapped copies in app stat
 
 **CI posture:** Forgejo `build` on push/PR runs `scripts/ci-security-gate.sh` (offline,
 fail-closed) before Rust tests/TUI build — asserts Clearnet/I2P refusals + TUI
-`require_messenger_transport`, insecure-dev persist opt-in only, and cookie-only Tor
-ControlPort AUTHENTICATE (no bare AUTHENTICATE). No Tor daemon or network required.
+`require_messenger_transport`, insecure-dev persist opt-in only, cookie-only Tor
+ControlPort AUTHENTICATE (no bare AUTHENTICATE), cargo-audit config presence (I-1),
+and release-notes honesty that the `quantum` feature is not production PQ (I-8).
+Forgejo then runs `cargo audit --deny warnings` with known ratatui 0.29 transitive
+informational advisories ignored in `.cargo/audit.toml`. The offline gate soft-skips
+audit when the tool or advisory DB is missing so local/offline runs stay deterministic.
+No Tor daemon required for the gate itself.
 
 Nuclear wipe (`wipe_local_sensitive` / TUI `:wipe` → `:wipe-confirm`) deletes
 `state.enc` (and thus contacts/ratchets/pending) along with other local data under
@@ -104,6 +109,28 @@ Message logs may still use separate Argon2id envelopes under profile dirs; the
 authoritative restart path for contacts/ratchets/pending is `state.enc`.
 
 **Disappearing messages (Rust TUI):** `:disappear` / `:ttl` sets a local TTL (persisted in `state.enc` blob v4). Expiry erases UI plaintext and attempts `wipe_skipped_key` on the contact ratchet when `msg_number` is known. **TTL is not on the wire** — peers are not forced to erase. Bodies are not durably logged beyond the in-memory transcript. Extreme defaults to 1h when TTL was off.
+
+## Unsafe inventory (I-5)
+
+`hashchat-tui` contains **no** `unsafe`. All `unsafe` lives in the Rust library and
+is intentional FFI / Linux hardening, not peer-facing parsers:
+
+| Location | Role | Notes |
+|---|---|---|
+| `src/rust/lib.rs` | FFI slice/pointer views, `static mut` ratchet store, `mlock`/`mlockall`/`madvise`, `setrlimit`/`prctl` | Covered by open review items M-4/M-5/L-8 for API contract; TUI path does not use the raw FFI store |
+| `src/rust/emergency_scrub.rs` | `libc::signal` for SIGINT/SIGTERM flag | Handler only stores an atomic; no secret access |
+| `src/rust/private_fs.rs` | `geteuid` ownership checks; test-only `mkfifo` | Production path is read-only uid check |
+
+Reducing further `unsafe` means finishing M-5 (mutex + generation IDs for the FFI
+store) and L-8 (`unsafe extern "C"` + null checks) — deliberately deferred as
+API-level work. Do not add new `unsafe` in the TUI.
+
+## Quantum feature (I-8)
+
+The optional Cargo feature `quantum` compiles `src/rust/quantum.rs`, which is a
+**stub**: every hybrid API returns an error. Enabling the feature does **not**
+provide post-quantum security. Release notes and `docs/RELEASE_PROCESS.md` must
+keep an explicit “not production PQ” disclaimer; the CI security gate checks this.
 
 ## Responsible Disclosure
 

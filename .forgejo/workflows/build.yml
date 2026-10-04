@@ -59,7 +59,9 @@ jobs:
           cargo test --lib
           cargo test --release
 
-          # Supply-chain: cargo-audit (blocking)
+          # Supply-chain: cargo-audit (blocking). Known ratatui 0.29 transitive
+          # informational advisories are ignored in .cargo/audit.toml (I-1);
+          # --deny warnings still fails on any *new* warning or real vuln.
           set -e
           cargo install cargo-binstall --locked
           cargo binstall cargo-audit --locked -y
@@ -67,9 +69,10 @@ jobs:
             echo ""
             echo "!!! CRITICAL: cargo audit found security advisories !!!"
             echo "The build is failing because of this. Review the output above."
+            echo "If this is a new ratatui-only informational warning, document it in .cargo/audit.toml."
             exit 1
           }
-          echo "cargo audit passed (no advisories)"
+          echo "cargo audit passed (vulns denied; known ratatui warnings ignored via .cargo/audit.toml)"
           set +e
 
         env:
