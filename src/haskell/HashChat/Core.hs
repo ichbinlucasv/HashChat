@@ -345,6 +345,8 @@ unframeFromWire bs
           v  = BS.head header
           hl = fromIntegral (BS.index header 1) :: Int
       in if v /= wireVersionV2 then Nothing else
+        -- Honest frameForWire uses BS.take 32; refuse oversize hintLen (L-9 parity).
+        if hl > 32 then Nothing else
         if BS.length rest1 < hl + 4 + 32 + 4 then Nothing else
           let (hint, rest2) = BS.splitAt hl rest1
               (stepBs, rest3) = BS.splitAt 4 rest2

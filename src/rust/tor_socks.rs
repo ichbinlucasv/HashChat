@@ -61,10 +61,14 @@ pub struct TorProbe {
     pub note: String,
 }
 
-/// Best-effort reachability probe (does not authenticate).
+/// Best-effort reachability probe (does not authenticate ControlPort).
+///
+/// SOCKS half performs a SOCKS5 no-auth greeting only (`\x05\x01\x00` →
+/// expect `\x05\x00`). No CONNECT and no onion destination are sent.
+/// ControlPort half remains TCP reachability (auth is the separate SAFECOOKIE path).
 pub fn probe(socks_host: &str, socks_port: u16, control_port: u16) -> TorProbe {
     let socks_ok = if is_loopback_host(socks_host) {
-        tcp_up(socks_host, socks_port, 400)
+        socks5_probe_ok(socks_host, socks_port, 400)
     } else {
         false
     };
@@ -74,9 +78,11 @@ pub fn probe(socks_host: &str, socks_port: u16, control_port: u16) -> TorProbe {
         false
     };
     let note = match (socks_ok, control_ok) {
-        (true, true) => "Tor SOCKS + ControlPort reachable".into(),
-        (true, false) => "SOCKS up; ControlPort down (send may work; :listen needs control)".into(),
-        (false, true) => "ControlPort up; SOCKS down".into(),
+        (true, true) => "Tor SOCKS5 greeting ok + ControlPort reachable".into(),
+        (true, false) => {
+            "SOCKS5 greeting ok; ControlPort down (send may work; :listen needs control)".into()
+        }
+        (false, true) => "ControlPort reachable; SOCKS5 greeting failed".into(),
         (false, false) => "Tor not reachable on loopback SOCKS/ControlPort".into(),
     };
     TorProbe {
@@ -92,6 +98,38 @@ fn tcp_up(host: &str, port: u16, ms: u64) -> bool {
         None => return false,
     };
     TcpStream::connect_timeout(&addr, Duration::from_millis(ms)).is_ok()
+}
+
+/// SOCKS5 greeting probe: connect, offer no-auth only, accept only `\x05\x00`.
+///
+/// Fail-closed: non-loopback, connect failure, short read, or any other reply
+/// ⇒ false. Never sends CONNECT or a destination onion.
+fn socks5_probe_ok(host: &str, port: u16, ms: u64) -> bool {
+    let addr = match loopback_socket_addr(host, port) {
+        Some(a) => a,
+        None => return false,
+    };
+    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(ms)) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let timeout = Duration::from_millis(ms);
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    socks5_greeting_ok(&mut stream)
+}
+
+/// Send SOCKS5 greeting offering no-auth only and accept only version 5 +
+/// method `0x00`. Shared by [`probe`] and unit tests (works with any `Read+Write`).
+pub fn socks5_greeting_ok<S: Read + Write>(stream: &mut S) -> bool {
+    if stream.write_all(&[0x05, 0x01, 0x00]).is_err() {
+        return false;
+    }
+    let mut reply = [0u8; 2];
+    if stream.read_exact(&mut reply).is_err() {
+        return false;
+    }
+    reply == [0x05, 0x00]
 }
 
 /// Opaque SOCKS5 RFC1929 tags for Tor `IsolateSOCKSAuth`.
@@ -680,5 +718,136 @@ mod tests {
         let stream = socks5_connect("127.0.0.1", addr.port(), onion, 80, None).unwrap();
         drop(stream);
         assert_eq!(handle.join().unwrap(), "ok");
+    }
+
+    #[test]
+    fn socks5_greeting_ok_accepts_no_auth_reply() {
+        use std::io::Cursor;
+        // Write into a sink; read a fixed SOCKS5 no-auth selection reply.
+        struct Rw {
+            reply: Cursor<Vec<u8>>,
+            written: Vec<u8>,
+        }
+        impl Read for Rw {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.reply.read(buf)
+            }
+        }
+        impl Write for Rw {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.written.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut rw = Rw {
+            reply: Cursor::new(vec![0x05, 0x00]),
+            written: Vec::new(),
+        };
+        assert!(socks5_greeting_ok(&mut rw));
+        assert_eq!(rw.written, [0x05, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn socks5_greeting_ok_rejects_garbage_and_short() {
+        struct Rw {
+            reply: Cursor<Vec<u8>>,
+        }
+        impl Read for Rw {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.reply.read(buf)
+            }
+        }
+        impl Write for Rw {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        use std::io::Cursor;
+        // Wrong method selected.
+        let mut bad_method = Rw {
+            reply: Cursor::new(vec![0x05, 0x02]),
+        };
+        assert!(!socks5_greeting_ok(&mut bad_method));
+        // Not SOCKS5.
+        let mut bad_ver = Rw {
+            reply: Cursor::new(vec![0x04, 0x00]),
+        };
+        assert!(!socks5_greeting_ok(&mut bad_ver));
+        // Short read (only one byte).
+        let mut short = Rw {
+            reply: Cursor::new(vec![0x05]),
+        };
+        assert!(!socks5_greeting_ok(&mut short));
+        // Empty / closed.
+        let mut empty = Rw {
+            reply: Cursor::new(vec![]),
+        };
+        assert!(!socks5_greeting_ok(&mut empty));
+    }
+
+    #[test]
+    fn probe_socks_ok_true_against_socks5_mock() {
+        use std::net::TcpListener;
+        use std::thread;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut client, _) = listener.accept().unwrap();
+            let mut greet = [0u8; 3];
+            client.read_exact(&mut greet).unwrap();
+            assert_eq!(greet, [0x05, 0x01, 0x00]);
+            client.write_all(&[0x05, 0x00]).unwrap();
+            // Must not receive CONNECT during probe.
+            let mut extra = [0u8; 1];
+            let _ = client.set_read_timeout(Some(Duration::from_millis(50)));
+            assert!(client.read_exact(&mut extra).is_err());
+        });
+        // Control port is unused / closed — only SOCKS half matters here.
+        let p = probe("127.0.0.1", addr.port(), 1);
+        assert!(p.socks_ok, "note={}", p.note);
+        assert!(!p.control_ok);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn probe_socks_ok_false_against_non_socks_listener() {
+        use std::net::TcpListener;
+        use std::thread;
+        // Accepts TCP but replies garbage (or closes) — bare TCP must not count.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut client, _) = listener.accept().unwrap();
+            let mut greet = [0u8; 3];
+            let _ = client.read_exact(&mut greet);
+            let _ = client.write_all(&[0xFF, 0xFF]);
+        });
+        let p = probe("127.0.0.1", addr.port(), 1);
+        assert!(!p.socks_ok, "bare/garbage listener must not pass SOCKS5 probe; note={}", p.note);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn probe_socks_ok_false_when_peer_closes() {
+        use std::net::TcpListener;
+        use std::thread;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut client, _) = listener.accept().unwrap();
+            let mut greet = [0u8; 3];
+            let _ = client.read_exact(&mut greet);
+            // Close without replying.
+            drop(client);
+        });
+        let p = probe("127.0.0.1", addr.port(), 1);
+        assert!(!p.socks_ok, "closed peer must fail; note={}", p.note);
+        handle.join().unwrap();
     }
 }

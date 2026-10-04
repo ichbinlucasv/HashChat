@@ -67,6 +67,11 @@ pub fn unframe_v2(bs: &[u8]) -> Result<(Vec<u8>, u32, [u8; 32], Vec<u8>), &'stat
         return Err("unsupported wire version");
     }
     let hl = bs[1] as usize;
+    // Honest frame_v2 truncates hints to 32; reject oversize hintLen so extra
+    // bytes cannot be accepted then dropped from AEAD AAD (L-9).
+    if hl > 32 {
+        return Err("hint too long");
+    }
     if bs.len() < 2 + hl + 4 + 32 + 4 {
         return Err("frame truncated");
     }
@@ -135,5 +140,48 @@ mod tests {
         let framed = frame_v2(&[0u8; 32], 1, &[0u8; 32], &vec![0u8; ct_len]);
         assert!(framed.len() <= MAX_HS_INBOUND_FRAME);
         assert_eq!(framed.len(), MAX_FRAMED_SEND_BYTES);
+    }
+
+    #[test]
+    fn unframe_rejects_hint_len_over_32() {
+        // Craft a frame advertising hintLen=33 with enough trailing bytes so
+        // a parser that only checked remaining length would accept it.
+        let dh = [9u8; 32];
+        let ct = b"ct-blob";
+        let mut framed = Vec::new();
+        framed.push(WIRE_VERSION_V2);
+        framed.push(33); // oversize hintLen
+        framed.extend_from_slice(&[b'h'; 33]);
+        framed.extend_from_slice(&3u32.to_be_bytes());
+        framed.extend_from_slice(&dh);
+        framed.extend_from_slice(&(ct.len() as u32).to_be_bytes());
+        framed.extend_from_slice(ct);
+        assert_eq!(unframe_v2(&framed).unwrap_err(), "hint too long");
+
+        // Mutate a valid frame's hintLen byte upward and pad the hint region.
+        let mut good = frame_v2(b"alice", 1, &dh, ct);
+        assert!(unframe_v2(&good).is_ok());
+        let orig_hl = good[1] as usize;
+        assert_eq!(orig_hl, 5);
+        good[1] = 33;
+        for _ in 0..(33 - orig_hl) {
+            good.insert(2 + orig_hl, b'X');
+        }
+        assert_eq!(unframe_v2(&good).unwrap_err(), "hint too long");
+    }
+
+    #[test]
+    fn unframe_accepts_hint_lens_0_through_32() {
+        let dh = [3u8; 32];
+        let ct = b"roundtrip-ct";
+        for hl in 0usize..=32 {
+            let hint: Vec<u8> = (0..hl).map(|i| (i as u8).wrapping_add(0x41)).collect();
+            let framed = frame_v2(&hint, hl as u32, &dh, ct);
+            let (h, step, d, out_ct) = unframe_v2(&framed).expect("valid hintLen must parse");
+            assert_eq!(h, hint);
+            assert_eq!(step, hl as u32);
+            assert_eq!(d, dh);
+            assert_eq!(out_ct, ct);
+        }
     }
 }
