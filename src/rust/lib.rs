@@ -426,10 +426,31 @@ pub extern "C" fn rust_ratchet_recv_decrypt(
     }
 }
 
-// === Encrypted Ratchet State Persistence FFI ===
+// === Raw Ratchet State Persistence FFI (transitional / fail-closed) ===
+//
+// DANGER / OPSEC: `rust_ratchet_to_bytes` / `rust_ratchet_from_bytes` export and
+// import **raw plaintext** Double Ratchet state. Production code (TUI, Android)
+// MUST use `rust_ratchet_export_encrypted` / `rust_ratchet_import_encrypted`
+// (Argon2id + AES-256-GCM). The raw path exists only for the transitional
+// Haskell desktop and is refuse-by-default: both exports require the exact env
+// `HASHCHAT_ALLOW_RAW_RATCHET_FFI=1` (same fail-closed pattern as
+// `HASHCHAT_INSECURE_DEV_PERSIST`). Any other value, empty, or unset → return
+// false without touching out buffers / the store.
+
+/// Env that opts in to raw plaintext ratchet FFI (exact value `1` only).
+const RAW_RATCHET_FFI_ENV: &str = "HASHCHAT_ALLOW_RAW_RATCHET_FFI";
+
+/// Only the exact value `1` opts in to raw ratchet export/import.
+fn raw_ratchet_ffi_allowed() -> bool {
+    std::env::var_os(RAW_RATCHET_FFI_ENV).is_some_and(|v| v == "1")
+}
 
 #[no_mangle]
 pub extern "C" fn rust_ratchet_to_bytes(state_id: u32, out: *mut u8, out_len: *mut usize) -> bool {
+    // Fail closed: refuse without reading the store or writing out buffers.
+    if !raw_ratchet_ffi_allowed() {
+        return false;
+    }
     unsafe {
         if let Some(r) = RATCHET_STORE.get(state_id as usize) {
             let bytes = r.to_bytes();
@@ -448,6 +469,10 @@ pub extern "C" fn rust_ratchet_to_bytes(state_id: u32, out: *mut u8, out_len: *m
 
 #[no_mangle]
 pub extern "C" fn rust_ratchet_from_bytes(state_id: u32, data: *const u8, len: usize) -> bool {
+    // Fail closed: refuse without touching the store.
+    if !raw_ratchet_ffi_allowed() {
+        return false;
+    }
     unsafe {
         let bytes = std::slice::from_raw_parts(data, len);
         match DoubleRatchet::from_bytes(bytes) {
@@ -1745,5 +1770,101 @@ mod ffi_bounds_tests {
             &mut out_len,
         ));
         assert_eq!(&out[..out_len], &pt[..]);
+    }
+}
+
+#[cfg(test)]
+mod raw_ratchet_ffi_gate_tests {
+    use super::{
+        raw_ratchet_ffi_allowed, rust_ratchet_export_encrypted, rust_ratchet_from_bytes,
+        rust_ratchet_import_encrypted, rust_ratchet_new, rust_ratchet_to_bytes,
+        RAW_RATCHET_FFI_ENV,
+    };
+
+    fn clear_raw_env() {
+        std::env::remove_var(RAW_RATCHET_FFI_ENV);
+    }
+
+    #[test]
+    fn raw_ratchet_ffi_refused_without_exact_env() {
+        clear_raw_env();
+        assert!(!raw_ratchet_ffi_allowed());
+
+        let id = rust_ratchet_new();
+        let mut out = vec![0xAAu8; 4096];
+        let mut out_len = out.len();
+        // Sentinel: must remain untouched when refused.
+        assert!(!rust_ratchet_to_bytes(id, out.as_mut_ptr(), &mut out_len));
+        assert!(out.iter().all(|&b| b == 0xAA));
+        assert_eq!(out_len, out.len());
+
+        // Non-exact values also refuse.
+        for bad in ["", "0", "true", "yes", "2", "1 "] {
+            std::env::set_var(RAW_RATCHET_FFI_ENV, bad);
+            assert!(
+                !raw_ratchet_ffi_allowed(),
+                "unexpected allow for {bad:?}"
+            );
+            let mut buf = [0xBBu8; 64];
+            let mut n = buf.len();
+            assert!(!rust_ratchet_to_bytes(id, buf.as_mut_ptr(), &mut n));
+            assert!(buf.iter().all(|&b| b == 0xBB));
+        }
+        clear_raw_env();
+
+        // from_bytes must also refuse without env (no store mutation).
+        let junk = [0u8; 8];
+        assert!(!rust_ratchet_from_bytes(id, junk.as_ptr(), junk.len()));
+        clear_raw_env();
+    }
+
+    #[test]
+    fn raw_ratchet_ffi_roundtrip_when_allowed_encrypted_still_works() {
+        clear_raw_env();
+        std::env::set_var(RAW_RATCHET_FFI_ENV, "1");
+        assert!(raw_ratchet_ffi_allowed());
+
+        let id = rust_ratchet_new();
+        let mut raw = vec![0u8; 4096];
+        let mut raw_len = raw.len();
+        assert!(rust_ratchet_to_bytes(id, raw.as_mut_ptr(), &mut raw_len));
+        assert!(raw_len > 0);
+        raw.truncate(raw_len);
+
+        // Encrypted path remains usable (preferred for production).
+        let pass = b"test-passphrase-raw-gate";
+        let mut enc = vec![0u8; 8192];
+        let mut enc_len = enc.len();
+        assert!(rust_ratchet_export_encrypted(
+            id,
+            pass.as_ptr(),
+            pass.len(),
+            enc.as_mut_ptr(),
+            &mut enc_len,
+        ));
+        enc.truncate(enc_len);
+        assert!(enc_len > raw_len, "encrypted envelope larger than raw");
+
+        // Fresh slot + raw import roundtrip.
+        let id2 = rust_ratchet_new();
+        assert!(rust_ratchet_from_bytes(id2, raw.as_ptr(), raw.len()));
+
+        // Encrypted import into another slot still works.
+        let id3 = rust_ratchet_new();
+        assert!(rust_ratchet_import_encrypted(
+            id3,
+            pass.as_ptr(),
+            pass.len(),
+            enc.as_ptr(),
+            enc.len(),
+        ));
+
+        clear_raw_env();
+        assert!(!raw_ratchet_ffi_allowed());
+        // After clear, raw path refuses again.
+        let mut again = vec![0xCCu8; 64];
+        let mut again_len = again.len();
+        assert!(!rust_ratchet_to_bytes(id, again.as_mut_ptr(), &mut again_len));
+        assert!(again.iter().all(|&b| b == 0xCC));
     }
 }

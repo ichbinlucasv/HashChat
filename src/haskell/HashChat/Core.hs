@@ -65,7 +65,7 @@ import Database.SQLite.Simple
 import Foreign.Ptr
 import Foreign.C.Types (CChar)
 import Foreign.C.String (withCString, CString)
-import System.Environment (lookupEnv)
+import System.Environment (lookupEnv, setEnv)
 import Foreign.Marshal.Alloc (malloc)
 import Foreign.Marshal.Array (withArray, peekArray, mallocArray, newArray)
 import Foreign.Storable (peek, poke)
@@ -953,8 +953,14 @@ commitOutgoingFrame dataDir insecureDev pass contactId ratchetBytes destOnion fr
                 onion
                 fp (BS.length frame)
 
+-- Transitional: raw ratchet FFI is fail-closed in Rust unless this exact env is set.
+-- Production must use exportEncryptedRatchet / importEncryptedRatchet instead.
+allowRawRatchetFfi :: IO ()
+allowRawRatchetFfi = setEnv "HASHCHAT_ALLOW_RAW_RATCHET_FFI" "1"
+
 ratchetToBytes :: Word32 -> IO (Maybe ByteString)
 ratchetToBytes rid = do
+  allowRawRatchetFfi
   let cap = 65536
   outPtr <- mallocArray cap
   outLenPtr <- malloc
@@ -968,7 +974,8 @@ ratchetToBytes rid = do
       pure (Just (pack bs))
 
 ratchetFromBytes :: Word32 -> ByteString -> IO Bool
-ratchetFromBytes rid blob =
+ratchetFromBytes rid blob = do
+  allowRawRatchetFfi
   withArray (unpack blob) $ \p ->
     rust_ratchet_from_bytes rid p (BS.length blob)
 

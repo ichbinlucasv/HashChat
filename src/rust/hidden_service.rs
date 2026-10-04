@@ -594,6 +594,15 @@ pub fn cookie_path_from_protocolinfo(lines: &[String]) -> Option<String> {
     None
 }
 
+/// Pure ADD_ONION command string (no Tor I/O). Includes MaxStreams backpressure
+/// aligned with [`HS_MAX_CONCURRENT_CONNS`].
+fn format_add_onion_cmd(spec: &str, local_port: u16) -> String {
+    format!(
+        "ADD_ONION {spec} Port=80,127.0.0.1:{local_port} MaxStreams={max} MaxStreamsCloseCircuit=1",
+        max = HS_MAX_CONCURRENT_CONNS
+    )
+}
+
 fn add_onion(
     s: &mut ControlConn,
     local_port: u16,
@@ -610,7 +619,9 @@ fn add_onion(
         _ => "NEW:ED25519-V3".to_string(),
     };
     // Intentionally no DiscardPK: we persist PrivateKey inside the wrapped blob (H2).
-    let mut cmd = format!("ADD_ONION {spec} Port=80,127.0.0.1:{local_port}");
+    // MaxStreams matches HS_MAX_CONCURRENT_CONNS; MaxStreamsCloseCircuit=1 closes the
+    // circuit when the cap is hit (Tor-level backpressure, M-3 residual).
+    let mut cmd = format_add_onion_cmd(&spec, local_port);
     let mut spec = spec;
     let resp = control_cmd(s, &cmd);
     cmd.zeroize();
@@ -823,6 +834,31 @@ mod tests {
         let r = authenticate_cookie_only(&mut conn, cookie_override);
         drop(conn);
         r
+    }
+
+    #[test]
+    fn add_onion_cmd_includes_maxstreams_backpressure() {
+        let cmd = format_add_onion_cmd("NEW:ED25519-V3", 9050);
+        assert!(cmd.starts_with("ADD_ONION NEW:ED25519-V3 Port=80,127.0.0.1:9050"));
+        assert!(
+            cmd.contains("MaxStreams=16"),
+            "missing MaxStreams=16: {cmd}"
+        );
+        assert!(
+            cmd.contains("MaxStreamsCloseCircuit=1"),
+            "missing MaxStreamsCloseCircuit=1: {cmd}"
+        );
+        assert_eq!(
+            cmd,
+            format!(
+                "ADD_ONION NEW:ED25519-V3 Port=80,127.0.0.1:9050 MaxStreams={} MaxStreamsCloseCircuit=1",
+                HS_MAX_CONCURRENT_CONNS
+            )
+        );
+        // Existing-key form also carries the tokens.
+        let with_key = format_add_onion_cmd("ED25519-V3:AAAA", 1234);
+        assert!(with_key.contains("MaxStreams=16"));
+        assert!(with_key.contains("MaxStreamsCloseCircuit=1"));
     }
 
     #[test]
