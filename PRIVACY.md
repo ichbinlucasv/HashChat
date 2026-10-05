@@ -10,7 +10,7 @@ Contact links contain an onion address and public keys. They are generated on yo
 
 ## What is stored on your machine
 
-Everything lives in `hashchat_data/` next to the program and in the Tor hidden service directory you configured. The main file, `state.enc`, holds your identity keys, contacts, message transcript and ratchet state, encrypted with a key derived from your passphrase (Argon2id, AES-256-GCM). Two optional small files exist if you turn those features on: `duress.enc` (a verifier for the duress passphrase) and `deadman` (a day count and the time of the last unlock, unencrypted). Nothing is sent anywhere.
+Everything lives in `hashchat_data/` next to the program and in the Tor hidden service directory you configured. The main file, `state.enc`, holds your identity keys, contacts, message transcript and ratchet state, encrypted with a key derived from your passphrase (Argon2id, AES-256-GCM). Three optional small files exist if you turn those features on: `duress.enc` (a verifier for the duress passphrase), `deadman` (a day count and the time of the last unlock, unencrypted) and `failwipe` (a failed-unlock limit and count, unencrypted). Nothing is sent anywhere.
 
 ## What other parties can see
 

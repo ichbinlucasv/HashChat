@@ -31,7 +31,8 @@ use hashchat_rust::{
     take_zeroizing_vec, unlock_session, wipe_local_sensitive, DnsPreference, DoubleRatchet,
     DumpHardening, ERR_QUEUE_FULL, FrameV3, clear_duress, duress_configured, set_duress_passphrase,
     wipe_if_duress, clear_deadman, deadman_config, set_deadman, touch_deadman, unix_now,
-    wipe_if_deadman_due, MAX_DEADMAN_DAYS,
+    wipe_if_deadman_due, MAX_DEADMAN_DAYS, attempt_failed, attempt_succeeded, begin_attempt,
+    clear_failwipe, failwipe_config, set_failwipe, Attempt, MAX_FAIL_LIMIT,
     HiddenService, IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode,
     PersistedContact, PostureProfile, SessionState, SocksIsolationCreds, StoreKey,
     UnlockBackoffPolicy, DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES,
@@ -509,6 +510,46 @@ impl App {
         }
     }
 
+    fn handle_wipe_after(&mut self, args: &str) {
+        let data_dir = Path::new(DATA_DIR);
+        let mut words = args.split_whitespace();
+        match (words.next(), words.next(), words.next()) {
+            (None, _, _) | (Some("status"), None, _) => {
+                self.status_msg = match failwipe_config(data_dir) {
+                    Some(cfg) => format!(
+                        "wipe after {} failed unlocks ({} used)",
+                        cfg.limit, cfg.count
+                    ),
+                    None => "wipe after failed unlocks: off".into(),
+                };
+            }
+            (Some("off"), None, _) => {
+                clear_failwipe(data_dir);
+                self.status_msg = "wipe after failed unlocks: off".into();
+            }
+            (Some("set"), Some(n), None) => {
+                if self.session.is_none() {
+                    self.status_msg = "Unlock first.".into();
+                    return;
+                }
+                self.status_msg = match n.parse::<u32>() {
+                    Ok(limit) => match set_failwipe(data_dir, limit) {
+                        Ok(()) => format!(
+                            "wipe after {limit} failed unlocks. The count survives restarts."
+                        ),
+                        Err(reason) => format!("Refused: {reason}."),
+                    },
+                    Err(_) => format!("Usage: :wipe-after set <3-{MAX_FAIL_LIMIT}>"),
+                };
+            }
+            _ => {
+                self.status_msg =
+                    format!("Usage: :wipe-after [status|off|set <3-{MAX_FAIL_LIMIT}>]");
+            }
+        }
+        self.push_msg(self.status_msg.clone());
+    }
+
     fn handle_deadman(&mut self, args: &str) {
         let data_dir = Path::new(DATA_DIR);
         let mut words = args.split_whitespace();
@@ -958,8 +999,18 @@ impl App {
                 self.passphrase.clear();
                 return;
             }
-            match unlock_session(Path::new(DATA_DIR), pass) {
+            let data_dir = Path::new(DATA_DIR);
+            let attempt = begin_attempt(data_dir);
+            let unlocked = if attempt == Attempt::WipeNow {
+                // The failure limit was already used up: wipe without trying.
+                wipe_local_sensitive();
+                Err("failure limit reached")
+            } else {
+                unlock_session(data_dir, pass)
+            };
+            match unlocked {
                 Ok((state, key)) => {
+                    attempt_succeeded(data_dir);
                     self.store_key = Some(Box::new(key));
                     touch_deadman(Path::new(DATA_DIR), unix_now());
                     self.unlock_fail_count = 0;
@@ -999,6 +1050,9 @@ impl App {
                 Err(_) => {
                     // A duress passphrase wipes and then looks like any other failure.
                     wipe_if_duress(Path::new(DATA_DIR), pass, wipe_local_sensitive);
+                    if attempt == Attempt::Allowed && attempt_failed(data_dir) {
+                        wipe_local_sensitive();
+                    }
                     self.unlock_fail_count = self.unlock_fail_count.saturating_add(1);
                     let policy = UnlockBackoffPolicy::for_extreme(self.net.is_extreme());
                     let delay = unlock_backoff_delay_secs(self.unlock_fail_count, &policy);
@@ -2545,6 +2599,7 @@ impl App {
                 );
                 self.push_msg("  :duress [set|clear]     passphrase that wipes instead of unlocking");
                 self.push_msg("  :deadman [set N|off]    wipe at start if not unlocked for N days");
+                self.push_msg("  :wipe-after [set N|off] wipe after N failed unlocks");
                 self.push_msg("  :wipe                   nuclear local wipe (confirm)");
                 self.push_msg("  :quit                   exit");
                 self.push_msg(
@@ -2647,6 +2702,10 @@ impl App {
                     other.strip_prefix(":delete-contact").unwrap_or("").trim()
                 };
                 self.handle_delete_contact_command(args);
+            }
+            other if other == ":wipe-after" || other.starts_with(":wipe-after ") => {
+                let args = other.strip_prefix(":wipe-after").unwrap_or("").trim();
+                self.handle_wipe_after(args);
             }
             other if other == ":deadman" || other.starts_with(":deadman ") => {
                 let args = other.strip_prefix(":deadman").unwrap_or("").trim();

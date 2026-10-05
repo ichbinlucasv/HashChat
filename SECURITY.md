@@ -94,6 +94,8 @@ A duress passphrase (`:duress set`) triggers the same wipe when typed at the unl
 
 The dead-man switch (`:deadman set N`) runs the same wipe at startup if the store has not been unlocked for N days. It only fires when HashChat is started; if the program is never run again, nothing happens.
 
+`:wipe-after set N` (3 to 100) wipes after N failed unlock attempts. The count is saved before each attempt is checked, so it survives restarts and killing the process mid-attempt. It limits guessing at this program, not offline attacks on a copied `state.enc`.
+
 Nuclear wipe (`wipe_local_sensitive` / TUI `:wipe` → `:wipe-confirm`) deletes
 `state.enc` (and thus contacts/ratchets/pending) along with other local data under
 `hashchat_data/` and Tor HS material under `tor/hidden_service/`. The TUI confirm

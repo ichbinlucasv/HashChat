@@ -7,8 +7,6 @@
 //! This hides message length from the network and from anyone who sees the
 //! frame, not the fact that a message was sent or when.
 
-use zeroize::Zeroize;
-
 /// Allowed padded plaintext sizes, smallest first. The last class holds the
 /// largest message the TUI will send (`MAX_PLAINTEXT_SEND_BYTES` plus the
 /// two length bytes).
@@ -17,6 +15,7 @@ pub const SIZE_CLASSES: [usize; 5] = [512, 1024, 2048, 4096, 8448];
 const LEN_PREFIX: usize = 2;
 
 /// Largest data length that fits in the biggest class.
+#[cfg(test)]
 pub const MAX_PADDED_DATA: usize = SIZE_CLASSES[SIZE_CLASSES.len() - 1] - LEN_PREFIX;
 
 /// Smallest class that holds `data_len` bytes plus the length prefix.
@@ -54,11 +53,6 @@ pub fn unpad(padded: &[u8]) -> Result<Vec<u8>, &'static str> {
         return Err("nonzero padding");
     }
     Ok(padded[LEN_PREFIX..LEN_PREFIX + len].to_vec())
-}
-
-/// Zeroize a padded buffer in place (convenience for call sites).
-pub fn scrub(buf: &mut Vec<u8>) {
-    buf.zeroize();
 }
 
 #[cfg(test)]

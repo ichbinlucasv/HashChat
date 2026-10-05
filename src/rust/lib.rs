@@ -12,6 +12,7 @@ mod disappearing;
 mod deadman;
 mod duress;
 mod emergency_scrub;
+mod failwipe;
 mod envelope;
 mod hidden_service;
 mod longterm_identity;
@@ -42,6 +43,10 @@ pub use deadman::{
     wipe_if_deadman_due, DeadmanConfig, MAX_DEADMAN_DAYS,
 };
 pub use padding::{pad as pad_message, unpad as unpad_message, SIZE_CLASSES};
+pub use failwipe::{
+    attempt_failed, attempt_succeeded, begin_attempt, clear_failwipe, failwipe_config,
+    set_failwipe, Attempt, MAX_FAIL_LIMIT,
+};
 pub use duress::{
     clear_duress, duress_configured, is_duress_passphrase, set_duress_passphrase, wipe_if_duress,
 };
