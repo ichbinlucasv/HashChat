@@ -2601,6 +2601,7 @@ impl App {
                 self.push_msg("  :deadman [set N|off]    wipe at start if not unlocked for N days");
                 self.push_msg("  :wipe-after [set N|off] wipe after N failed unlocks");
                 self.push_msg("  :wipe                   nuclear local wipe (confirm)");
+                self.push_msg("  Ctrl+\\                 panic: wipe and quit now, no prompt");
                 self.push_msg("  :quit                   exit");
                 self.push_msg(
                     "Keys: Tab focus · ↑↓ select contact · Enter select/send. Status never shows plaintext bodies.",
@@ -3250,6 +3251,13 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
             break;
         }
 
+        // Panic key: wipe local data and quit, from any screen, no prompt.
+        if key.code == KeyCode::Char('\\') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            app.emergency_scrub_fields();
+            wipe_local_sensitive();
+            break;
+        }
+
         // Any key while unlocked resets the idle auto-lock timer.
         if matches!(
             app.screen,
@@ -3462,6 +3470,13 @@ fn main() {
             "hashchat-tui: HASHCHAT_INSECURE_DEV_PERSIST is set; refusing to run (passphrase-only)."
         );
         std::process::exit(2);
+    }
+    // `--wipe`: erase local data and exit without starting the UI, for use from a
+    // script or another terminal. Run it from the directory that holds hashchat_data.
+    if std::env::args().skip(1).any(|a| a == "--wipe") {
+        wipe_local_sensitive();
+        println!("local data wiped");
+        return;
     }
     // First, before any secret exists: no core files, no same-uid ptrace.
     let dumps = disable_core_dumps_best_effort();
