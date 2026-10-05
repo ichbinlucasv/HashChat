@@ -1,3 +1,0 @@
-docs: shorten Extreme minimize SHA in OVERNIGHT shipped bullet
-
-Match prior short-SHA formatting. Tip header keeps full hash. No push.

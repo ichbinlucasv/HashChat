@@ -80,3 +80,6 @@ credentials.json
 
 # === Git LFS (if you ever use it) ===
 *.lfs
+
+# === Local working notes (not part of the project) ===
+notes/
