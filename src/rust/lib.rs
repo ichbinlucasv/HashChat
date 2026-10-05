@@ -2,7 +2,6 @@
 
 use ed25519_dalek::SigningKey;
 use ring::hmac;
-use std::fs;
 use std::os::raw::c_void;
 use std::ptr;
 use subtle::ConstantTimeEq; // OPSEC: audited constant-time comparison (replaces deprecated ring internal API)
@@ -19,6 +18,7 @@ mod net_mode;
 mod private_fs;
 mod ratchet;
 mod session_persist;
+mod shred;
 mod term_sanitize;
 mod tor_socks;
 mod unlock_backoff;
@@ -123,11 +123,11 @@ pub extern "C" fn rust_hmac_verify(msg: *const u8, len: usize) -> bool {
 /// Honest limits: does not defeat kernel implants, prior memory exfiltration,
 /// swap/core residues, or forensic copies already taken — see THREATMODEL.md.
 pub fn wipe_local_sensitive() {
-    let _ = fs::remove_dir_all("tor/hidden_service");
-    let _ = fs::remove_file("hashchat.db");
+    shred::shred_dir(std::path::Path::new("tor/hidden_service"));
+    shred::shred_file(std::path::Path::new("hashchat.db"));
     // H2/H3: wipe passphrase-wrapped session blob (identity, contacts, ratchets, pending)
     let _ = session_persist::wipe_disk(std::path::Path::new("hashchat_data"));
-    let _ = fs::remove_dir_all("hashchat_data");
+    shred::shred_dir(std::path::Path::new("hashchat_data"));
 }
 
 #[no_mangle]

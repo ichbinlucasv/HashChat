@@ -1339,8 +1339,8 @@ pub fn commit_outgoing_with_key(
 /// Clears contacts, ratchets, and pending because they live inside `state.enc` (H3).
 pub fn wipe_disk(data_dir: &Path) -> std::io::Result<()> {
     let (state_path, key_path) = data_paths(data_dir);
-    let _ = fs::remove_file(state_path);
-    let _ = fs::remove_file(key_path);
+    crate::shred::shred_file(&state_path);
+    crate::shred::shred_file(&key_path);
     private_fs::remove_stale_temps(data_dir, STATE_FILE);
     private_fs::remove_stale_temps(data_dir, MACHINE_KEY_FILE);
     crate::duress::clear_duress(data_dir);

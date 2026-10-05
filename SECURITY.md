@@ -98,6 +98,11 @@ Nuclear wipe (`wipe_local_sensitive` / TUI `:wipe` → `:wipe-confirm`) deletes
 path also zeroizes in-RAM passphrase, `onion_key`, ratchet maps, and pending frame
 bodies via `SessionState::wipe_memory_secure`.
 
+Before unlinking, the wipe overwrites each file under `hashchat_data/` and
+`tor/hidden_service/` once with random bytes and syncs it. That matters mostly for
+the Tor hidden service key, which Tor keeps unencrypted. On SSDs, copy-on-write
+filesystems and snapshots the overwrite may not reach the old blocks.
+
 **Honest limits:** wipe is a best-effort local erase. It does not defeat kernel
 implants, prior memory exfiltration, swap/core-dump residues, or forensic copies
 already taken. See THREATMODEL.md.
