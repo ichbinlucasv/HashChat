@@ -1781,12 +1781,22 @@ mod raw_ratchet_ffi_gate_tests {
         RAW_RATCHET_FFI_ENV,
     };
 
+    use std::sync::{Mutex, MutexGuard};
+
+    // Both tests change the same process-wide variable; run them one at a time.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_env() -> MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn clear_raw_env() {
         std::env::remove_var(RAW_RATCHET_FFI_ENV);
     }
 
     #[test]
     fn raw_ratchet_ffi_refused_without_exact_env() {
+        let _guard = lock_env();
         clear_raw_env();
         assert!(!raw_ratchet_ffi_allowed());
 
@@ -1820,6 +1830,7 @@ mod raw_ratchet_ffi_gate_tests {
 
     #[test]
     fn raw_ratchet_ffi_roundtrip_when_allowed_encrypted_still_works() {
+        let _guard = lock_env();
         clear_raw_env();
         std::env::set_var(RAW_RATCHET_FFI_ENV, "1");
         assert!(raw_ratchet_ffi_allowed());
