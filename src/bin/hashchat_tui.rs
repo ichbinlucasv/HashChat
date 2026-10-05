@@ -21,7 +21,7 @@ use hashchat_rust::{
     bootstrap_ratchet_from_signed_link, build_wire_aad_v3, check_new_passphrase,
     check_plaintext_send_size, check_state_storage, clear_scrub_callback, commit_outgoing_with_key,
     disable_core_dumps_best_effort, encrypt_with_key, extreme_default_lock_timeout,
-    extreme_default_ttl, format_lock_timeout, format_signed_contact_link, format_ttl, frame_v3, pad_message, unpad_message,
+    extreme_default_ttl, format_lock_timeout, format_bound_contact_link, format_ttl, frame_v3, pad_message, unpad_message,
     install_panic_scrub_hook, install_terminate_signal_flag, is_onion_destination,
     is_terminal_safe, mlockall_current, parse_lock_timeout_token, parse_signed_contact_link,
     parse_ttl_token, push_char_no_realloc, register_scrub_callback, sanitize_for_terminal,
@@ -299,10 +299,13 @@ impl App {
             &id.x25519_public_bytes(),
             &onion,
         );
-        match format_signed_contact_link(&id, &onion) {
+        let onion_key = Zeroizing::new(session.identity.onion_key.clone());
+        match format_bound_contact_link(&id, &onion, &onion_key) {
             Ok(link) => self.my_contact_link = link,
             Err(_) => {
-                self.my_contact_link = "(contact link unavailable — check onion address)".into();
+                self.my_contact_link =
+                    "(contact link unavailable — onion key missing or does not match the onion)"
+                        .into();
             }
         }
     }
@@ -1472,6 +1475,12 @@ impl App {
             (Ok((ratchet, sas)), Ok(peer)) => {
                 if !is_onion_destination(&peer.onion) {
                     self.status_msg = "Contact refused (onion not v3)".into();
+                    return;
+                }
+                if !peer.onion_bound {
+                    self.status_msg =
+                        "Contact refused: link does not prove control of its onion. Ask for a new link."
+                            .into();
                     return;
                 }
                 let onion_tail = Self::onion_tail(&peer.onion);

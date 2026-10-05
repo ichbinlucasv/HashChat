@@ -16,6 +16,7 @@ mod envelope;
 mod hidden_service;
 mod longterm_identity;
 mod net_mode;
+mod onion_binding;
 mod padding;
 mod private_fs;
 mod ratchet;
@@ -27,7 +28,7 @@ mod unlock_backoff;
 mod wire;
 
 pub use contact_link::{
-    bootstrap_ratchet_from_signed_link, canonical_payload, format_signed_contact_link,
+    bootstrap_ratchet_from_signed_link, canonical_payload, format_bound_contact_link, format_signed_contact_link,
     parse_signed_contact_link, parse_unsigned_contact_link_insecure, sas_fingerprint,
     sas_for_signed, ContactLinkError, SignedContact,
 };

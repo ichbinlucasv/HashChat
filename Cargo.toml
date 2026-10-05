@@ -15,7 +15,7 @@ required-features = ["tui"]
 [dependencies]
 ring = "0.17"
 zeroize = { version = "1.7", features = ["derive"] }
-ed25519-dalek = "2.1"
+ed25519-dalek = { version = "2.1", features = ["hazmat"] }
 rand = "0.8"
 getrandom = "0.2"
 hkdf = "0.12"

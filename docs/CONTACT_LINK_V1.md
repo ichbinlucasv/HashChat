@@ -13,6 +13,19 @@ hashchat://contact/v1/<onion>/<x25519-hex>/<ed25519-hex>/<sig-hex>
 - `<ed25519-hex>`: 64 hex chars — long-term identity verifying key (32 bytes)
 - `<sig-hex>`: 128 hex chars — Ed25519 signature (64 bytes)
 
+The Rust TUI also writes and requires a fifth field (audit I-6):
+
+```
+hashchat://contact/v1/<onion>/<x25519-hex>/<ed25519-hex>/<sig-hex>/<onion-sig-hex>
+```
+
+`<onion-sig-hex>` (128 hex chars) is the onion service key's Ed25519 signature over
+`"HashChat-onion-binding-v1" || onion public key || identity ed25519 || x25519`. The onion
+public key is the 32 bytes inside the onion hostname, so the receiver needs nothing else
+to check it. A link whose author does not control the onion cannot carry a valid fifth
+field. Four-field links still parse (the Haskell tools and the FFI write them) but are
+marked unbound, and the TUI refuses to add a contact from one.
+
 ## Canonical signed payload (exact bytes)
 
 ```

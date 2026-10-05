@@ -16,6 +16,11 @@
 //! No length prefixes, no separators beyond the literal ASCII `v1`.
 //! Signature = Ed25519.Sign(long-term ed25519 sk, payload) (detached).
 //!
+//! # Onion binding (v1 bound, audit I-6)
+//! A fifth field, `<hs-sig-hex>`, is the onion service key's signature over the
+//! identity and DH keys (see [`crate::onion_binding`]). A four-field link has no
+//! such proof and parses with `onion_bound = false`; the TUI refuses those.
+//!
 //! # Security model
 //! Bootstrap is **signed static-DH + SAS**, not X3DH. Verify the signature
 //! *before* computing DH / `init_symmetric`. Unsigned legacy links
@@ -35,6 +40,8 @@ pub struct SignedContact {
     pub x25519: [u8; 32],
     pub ed25519: [u8; 32],
     pub sig: [u8; 64],
+    /// True if the link carried a valid onion-key signature (I-6).
+    pub onion_bound: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +51,7 @@ pub enum ContactLinkError {
     BadLength,
     BadOnion,
     BadSignature,
+    BadOnionBinding,
     UnsignedRejected,
     DhFailed,
 }
@@ -56,6 +64,9 @@ impl std::fmt::Display for ContactLinkError {
             ContactLinkError::BadLength => write!(f, "unexpected field length"),
             ContactLinkError::BadOnion => write!(f, "onion looks invalid"),
             ContactLinkError::BadSignature => write!(f, "ed25519 signature verification failed"),
+            ContactLinkError::BadOnionBinding => {
+                write!(f, "onion key signature missing or does not match")
+            }
             ContactLinkError::UnsignedRejected => {
                 write!(f, "unsigned contact link rejected (TOFU-insecure); use signed v1 or :add-contact-insecure")
             }
@@ -146,6 +157,26 @@ pub fn format_signed_contact_link(id: &LongTermIdentity, onion: &str) -> Result<
     ))
 }
 
+/// Like [`format_signed_contact_link`] plus the onion key's signature, so the
+/// receiver can check that the sender controls the onion (I-6). `onion_key` is
+/// the stored `ED25519-V3:<base64>` Tor key; it must belong to `onion`.
+pub fn format_bound_contact_link(
+    id: &LongTermIdentity,
+    onion: &str,
+    onion_key: &[u8],
+) -> Result<String, ContactLinkError> {
+    let base = format_signed_contact_link(id, onion)?;
+    let (full, _) = normalize_onion_parts(onion)?;
+    let x = id.x25519_public_bytes();
+    let ed = id.ed25519_public_bytes();
+    let (hs_sig, pk) = crate::onion_binding::sign_binding(onion_key, &ed, &x)
+        .ok_or(ContactLinkError::BadOnionBinding)?;
+    if crate::onion_binding::onion_public_key(&full) != Some(pk) {
+        return Err(ContactLinkError::BadOnionBinding);
+    }
+    Ok(format!("{base}/{}", hex_encode(&hs_sig)))
+}
+
 /// Parse + verify a signed contact link. Rejects unsigned / tampered input.
 pub fn parse_signed_contact_link(raw: &str) -> Result<SignedContact, ContactLinkError> {
     let s = raw.trim();
@@ -157,7 +188,7 @@ pub fn parse_signed_contact_link(raw: &str) -> Result<SignedContact, ContactLink
     match parts.len() {
         // Legacy unsigned: <onion>/<len:hex>  → reject by default
         2 => Err(ContactLinkError::UnsignedRejected),
-        4 => {
+        4 | 5 => {
             let (full, bare) = normalize_onion_parts(parts[0])?;
             if parts[0] != bare && parts[0] != full {
                 // accept either bare or full in the path; we normalized
@@ -174,11 +205,21 @@ pub fn parse_signed_contact_link(raw: &str) -> Result<SignedContact, ContactLink
             if !LongTermIdentity::verify(&ed25519, &payload, &sig) {
                 return Err(ContactLinkError::BadSignature);
             }
+            let onion_bound = if parts.len() == 5 {
+                let hs_sig = hex_decode_fixed::<64>(parts[4])?;
+                if !crate::onion_binding::verify_binding(&full, &ed25519, &x25519, &hs_sig) {
+                    return Err(ContactLinkError::BadOnionBinding);
+                }
+                true
+            } else {
+                false
+            };
             Ok(SignedContact {
                 onion: full,
                 x25519,
                 ed25519,
                 sig,
+                onion_bound,
             })
         }
         _ => Err(ContactLinkError::BadFormat),
@@ -317,6 +358,71 @@ mod tests {
         let (o, k) = parse_unsigned_contact_link_insecure(&legacy).unwrap();
         assert!(o.ends_with(".onion"));
         assert_eq!(k, [0xABu8; 32]);
+    }
+
+    #[test]
+    fn bound_link_roundtrips_and_marks_the_onion_as_proven() {
+        use crate::onion_binding::test_support::onion_and_key;
+        let bob = LongTermIdentity::from_seed([0xB2; 32]);
+        let (onion, key) = onion_and_key(11);
+        let link = format_bound_contact_link(&bob, &onion, key.as_bytes()).unwrap();
+        let fields = link.strip_prefix(PREFIX).unwrap().split('/').count();
+        assert_eq!(fields, 5, "onion, x25519, ed25519, sig, onion sig");
+        let parsed = parse_signed_contact_link(&link).unwrap();
+        assert!(parsed.onion_bound);
+        assert_eq!(parsed.onion, format!("{onion}.onion"));
+    }
+
+    #[test]
+    fn four_field_link_parses_as_unbound() {
+        let bob = LongTermIdentity::from_seed([0xB2; 32]);
+        let link = format_signed_contact_link(&bob, demo_onion()).unwrap();
+        assert!(!parse_signed_contact_link(&link).unwrap().onion_bound);
+    }
+
+    #[test]
+    fn link_claiming_someone_elses_onion_is_refused() {
+        use crate::onion_binding::test_support::onion_and_key;
+        let victim = LongTermIdentity::from_seed([0xB2; 32]);
+        let attacker = LongTermIdentity::from_seed([0xE3; 32]);
+        let (onion, key) = onion_and_key(12);
+        let (_, attacker_onion_key) = onion_and_key(13);
+        let genuine = format_bound_contact_link(&victim, &onion, key.as_bytes()).unwrap();
+        let genuine_hs_sig = genuine.rsplit('/').next().unwrap().to_string();
+
+        // The attacker signs a link for the victim's onion with their own identity,
+        // then tries the victim's binding signature and one from their own onion key.
+        let forged_base = format_signed_contact_link(&attacker, &onion).unwrap();
+        let reused = format!("{forged_base}/{genuine_hs_sig}");
+        assert_eq!(
+            parse_signed_contact_link(&reused).unwrap_err(),
+            ContactLinkError::BadOnionBinding
+        );
+        let own_sig = {
+            let (own_onion, _) = onion_and_key(13);
+            let own = format_bound_contact_link(&attacker, &own_onion, attacker_onion_key.as_bytes())
+                .unwrap();
+            own.rsplit('/').next().unwrap().to_string()
+        };
+        let swapped = format!("{forged_base}/{own_sig}");
+        assert_eq!(
+            parse_signed_contact_link(&swapped).unwrap_err(),
+            ContactLinkError::BadOnionBinding
+        );
+        // Without any binding the same forged link still parses, but as unbound.
+        assert!(!parse_signed_contact_link(&forged_base).unwrap().onion_bound);
+    }
+
+    #[test]
+    fn format_bound_refuses_a_key_for_another_onion() {
+        use crate::onion_binding::test_support::onion_and_key;
+        let bob = LongTermIdentity::from_seed([0xB2; 32]);
+        let (onion, _) = onion_and_key(14);
+        let (_, other_key) = onion_and_key(15);
+        assert_eq!(
+            format_bound_contact_link(&bob, &onion, other_key.as_bytes()).unwrap_err(),
+            ContactLinkError::BadOnionBinding
+        );
     }
 
     /// Same flow as above on wire v3: padded plaintext, epoch_start in the header.
