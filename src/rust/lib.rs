@@ -58,7 +58,8 @@ pub use session_persist::{
     check_state_storage, commit_outgoing, commit_outgoing_with_key, load_disk, load_session,
     load_session_with_key, save_disk, save_session, save_session_with_key, unlock_session,
     state_exists, validate_display_name, wipe_disk, ContactUpsert, IdentityOnionState,
-    InboundDenyPolicy, PersistMode, PersistedContact, SessionState, MAX_DISPLAY_NAME_LEN,
+    InboundDenyPolicy, PersistMode, PersistedContact, SessionState, ERR_QUEUE_FULL,
+    MAX_DISPLAY_NAME_LEN, MAX_PENDING_FRAMES,
 };
 pub use term_sanitize::{is_terminal_safe, sanitize_for_terminal};
 pub use unlock_backoff::{unlock_backoff_delay_secs, UnlockBackoffPolicy};

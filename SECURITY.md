@@ -108,6 +108,8 @@ or reordered frames are tolerated: keys passed over are stored (at most
 frame opens with its stored key, which is then erased. Losing every frame of a
 whole DH epoch still breaks the session; fixing that needs the previous chain
 length in the header, which is planned with the bootstrap handshake change.
+The queue holds at most 64 frames. When it is full a send is refused before the
+ratchet advances, instead of being dropped after the fact; `:retry` frees space.
 Call sites that advance without commit risk losing forward-secrecy continuity
 across restart.
 

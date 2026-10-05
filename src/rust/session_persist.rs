@@ -118,6 +118,12 @@ fn insecure_env_value_enables(v: &std::ffi::OsStr) -> bool {
 /// Maximum Unicode scalar count for a contact display name (`:rename`).
 pub const MAX_DISPLAY_NAME_LEN: usize = 64;
 
+/// Upper bound on queued outbound frames kept in `state.enc`.
+pub const MAX_PENDING_FRAMES: usize = 64;
+
+/// Error text returned when a send is refused because the queue is full.
+pub const ERR_QUEUE_FULL: &str = "outgoing queue full";
+
 /// Validate a user-chosen contact display name.
 ///
 /// Rules (fail-closed): non-empty after trim, at most [`MAX_DISPLAY_NAME_LEN`] chars,
@@ -369,11 +375,16 @@ impl SessionState {
         }
     }
 
-    /// Append a pending frame (cap 64, matching audit session queue).
-    pub fn queue_pending(&mut self, onion: impl Into<String>, frame: Vec<u8>) {
-        if self.pending.len() < 64 {
-            self.pending.push((onion.into(), frame));
+    /// Append a pending frame. Returns false and zeroizes `frame` when the
+    /// queue already holds [`MAX_PENDING_FRAMES`]; callers must not treat the
+    /// message as committed in that case.
+    pub fn queue_pending(&mut self, onion: impl Into<String>, mut frame: Vec<u8>) -> bool {
+        if self.pending.len() >= MAX_PENDING_FRAMES {
+            frame.zeroize();
+            return false;
         }
+        self.pending.push((onion.into(), frame));
+        true
     }
 
     /// Remove one queued outbound frame after a successful SOCKS write (exact match).
@@ -1274,8 +1285,12 @@ pub fn commit_outgoing(
 ) -> Result<(), &'static str> {
     let mut session = load_session(data_dir, mode, passphrase)?;
     session.set_ratchet_bytes(contact_id, ratchet_bytes);
-    session.queue_pending(dest_onion, frame);
-    let r = save_session(data_dir, mode, passphrase, &session);
+    let queued = session.queue_pending(dest_onion, frame);
+    let r = if queued {
+        save_session(data_dir, mode, passphrase, &session)
+    } else {
+        Err(ERR_QUEUE_FULL)
+    };
     session.clear_pending_secure();
     session.clear_ratchets_secure();
     r
@@ -1292,8 +1307,12 @@ pub fn commit_outgoing_with_key(
 ) -> Result<(), &'static str> {
     let mut session = load_session_with_key(data_dir, key)?;
     session.set_ratchet_bytes(contact_id, ratchet_bytes);
-    session.queue_pending(dest_onion, frame);
-    let r = save_session_with_key(data_dir, key, &session);
+    let queued = session.queue_pending(dest_onion, frame);
+    let r = if queued {
+        save_session_with_key(data_dir, key, &session)
+    } else {
+        Err(ERR_QUEUE_FULL)
+    };
     session.clear_pending_secure();
     session.clear_ratchets_secure();
     r
@@ -1890,6 +1909,48 @@ mod tests {
         assert_eq!(loaded.ratchets[0].1.as_slice(), bytes.as_slice());
         assert_eq!(loaded.pending.len(), 1);
         assert_eq!(loaded.pending[0].0, "peer.onion");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn queue_pending_refuses_past_cap_and_zeroizes() {
+        let id = LongTermIdentity::from_seed([0x41u8; 32]);
+        let mut session =
+            SessionState::from_identity(IdentityOnionState::from_identity(&id, "me.onion", vec![]));
+        for i in 0..MAX_PENDING_FRAMES {
+            assert!(session.queue_pending("peer.onion", vec![i as u8; 4]));
+        }
+        assert!(!session.queue_pending("peer.onion", vec![0xEE; 4]));
+        assert_eq!(session.pending.len(), MAX_PENDING_FRAMES);
+    }
+
+    #[test]
+    fn commit_outgoing_fails_when_queue_full_and_leaves_disk_alone() {
+        let dir = tmp_dir("h3-queue-full");
+        let id = LongTermIdentity::from_seed([0x42u8; 32]);
+        let mut session =
+            SessionState::from_identity(IdentityOnionState::from_identity(&id, "me.onion", vec![]));
+        for _ in 0..MAX_PENDING_FRAMES {
+            assert!(session.queue_pending("peer.onion", vec![1u8; 8]));
+        }
+        save_session(&dir, PersistMode::Passphrase, b"full-pass", &session).unwrap();
+
+        let err = commit_outgoing(
+            &dir,
+            PersistMode::Passphrase,
+            b"full-pass",
+            "peer",
+            vec![9u8; 80],
+            "peer.onion",
+            vec![2u8; 8],
+        )
+        .unwrap_err();
+        assert_eq!(err, ERR_QUEUE_FULL);
+
+        // The ratchet update must not have been written without its frame.
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"full-pass").unwrap();
+        assert!(loaded.ratchets.is_empty());
+        assert_eq!(loaded.pending.len(), MAX_PENDING_FRAMES);
         let _ = fs::remove_dir_all(&dir);
     }
 

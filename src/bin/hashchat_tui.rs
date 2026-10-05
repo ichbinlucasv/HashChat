@@ -29,7 +29,7 @@ use hashchat_rust::{
     socks_isolation_for_contact, socks_isolation_for_onion, start_hidden_service_with_key,
     state_exists, take_terminate_signal, tor_probe, unframe_v2, unlock_backoff_delay_secs,
     take_zeroizing_vec, unlock_session, wipe_local_sensitive, DnsPreference, DoubleRatchet,
-    DumpHardening,
+    DumpHardening, ERR_QUEUE_FULL,
     HiddenService, IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode,
     PersistedContact, PostureProfile, SessionState, SocksIsolationCreds, StoreKey,
     UnlockBackoffPolicy, DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES,
@@ -1186,7 +1186,7 @@ impl App {
         }
         if let Some(session) = self.session.as_mut() {
             for (o, f) in remain {
-                session.queue_pending(o, f);
+                let _ = session.queue_pending(o, f);
             }
         }
         let _ = self.persist_session();
@@ -1531,24 +1531,29 @@ impl App {
             self.push_msg("Send aborted: session locked.");
             return;
         };
-        if commit_outgoing_with_key(
+        match commit_outgoing_with_key(
             Path::new(DATA_DIR),
             key,
             &contact.id,
             rbytes.to_vec(),
             &contact.onion,
             frame.clone(),
-        )
-        .is_err()
-        {
-            self.push_msg("Send aborted: durable commit failed.");
-            return;
+        ) {
+            Ok(()) => {}
+            Err(e) if e == ERR_QUEUE_FULL => {
+                self.push_msg("Send aborted: outgoing queue full. Run :retry once Tor is up.");
+                return;
+            }
+            Err(_) => {
+                self.push_msg("Send aborted: durable commit failed.");
+                return;
+            }
         }
 
         // Mirror commit into in-memory session.
         if let Some(session) = self.session.as_mut() {
             session.set_ratchet_bytes(&contact.id, take_zeroizing_vec(rbytes));
-            session.queue_pending(&contact.onion, frame.clone());
+            let _ = session.queue_pending(&contact.onion, frame.clone());
         }
 
         let isol = self.socks_isolation_creds_for(Some(&contact.id), &contact.onion);
