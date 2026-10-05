@@ -101,9 +101,15 @@ implants, prior memory exfiltration, swap/core-dump residues, or forensic copies
 already taken. See THREATMODEL.md.
 
 **Durable send (H3):** prefer encrypt → durable queue commit → Tor send. A crash
-after commit but before Tor ACK may resend on restart; peers should tolerate
-duplicates via skipped keys. Call sites that advance without commit risk losing
-forward-secrecy continuity across restart.
+after commit but before Tor ACK may resend on restart. The receiver refuses a
+frame for a step it has already consumed, so a resent duplicate is dropped. Lost
+or reordered frames are tolerated: keys passed over are stored (at most
+`MAX_SKIP` = 200 per frame, 1000 per contact, oldest dropped first) and a late
+frame opens with its stored key, which is then erased. Losing every frame of a
+whole DH epoch still breaks the session; fixing that needs the previous chain
+length in the header, which is planned with the bootstrap handshake change.
+Call sites that advance without commit risk losing forward-secrecy continuity
+across restart.
 
 Message logs may still use separate Argon2id envelopes under profile dirs; the
 authoritative restart path for contacts/ratchets/pending is `state.enc`.

@@ -5,6 +5,8 @@
 // - Hybrid X25519 + ML-KEM (or replace DH) for new sessions when an audited crate is ready
 // - Keep KDF domain separation and zeroize requirements if primitives change
 
+use std::collections::BTreeMap;
+
 use hkdf::Hkdf;
 use ring::aead::{self, LessSafeKey, UnboundKey, Aad};
 use sha2::Sha256;
@@ -22,6 +24,14 @@ pub const WIRE_VERSION_V2: u8 = 2;
 /// messages on the current sending chain. Both peers use the same N.
 pub const DH_SEND_EVERY: u32 = 5;
 
+/// Most message keys a single incoming frame may cause us to skip over and
+/// store. Bounds the work an out-of-range step can trigger.
+pub const MAX_SKIP: u32 = 200;
+
+/// Upper bound on stored skipped keys per contact. The oldest (lowest step)
+/// is dropped first.
+pub const MAX_SKIPPED_KEYS: usize = 1000;
+
 /// Per-contact Double Ratchet state.
 /// All sensitive fields are zeroized on drop.
 pub struct DoubleRatchet {
@@ -36,8 +46,9 @@ pub struct DoubleRatchet {
     /// Messages sent since the last send-side DH (or since init). Used with
     /// `DH_SEND_EVERY` so both peers agree when a header DH public will change.
     sends_since_dh: u32,
-    // Skipped message keys for out-of-order delivery (message_number -> key)
-    skipped_keys: std::collections::HashMap<u32, [u8; RATCHET_KEY_LEN]>,
+    /// Keys for frames we skipped over, by the sender's step. Steps come from
+    /// the sender's monotonic send counter, so they are unique across DH epochs.
+    skipped_keys: BTreeMap<u32, [u8; RATCHET_KEY_LEN]>,
 }
 
 impl Zeroize for DoubleRatchet {
@@ -45,7 +56,7 @@ impl Zeroize for DoubleRatchet {
         self.root_key.zeroize();
         self.chain_key_send.zeroize();
         self.chain_key_recv.zeroize();
-        for (_k, v) in self.skipped_keys.iter_mut() {
+        for v in self.skipped_keys.values_mut() {
             v.zeroize();
         }
         self.skipped_keys.clear();
@@ -75,7 +86,7 @@ impl DoubleRatchet {
             send_count: 0,
             recv_count: 0,
             sends_since_dh: 0,
-            skipped_keys: std::collections::HashMap::new(),
+            skipped_keys: BTreeMap::new(),
         }
     }
 
@@ -99,13 +110,20 @@ impl DoubleRatchet {
 
     /// Store a skipped message key (for out-of-order delivery)
     pub fn store_skipped_key(&mut self, msg_number: u32, key: [u8; RATCHET_KEY_LEN]) {
-        self.skipped_keys.insert(msg_number, key);
-        // Limit size to prevent DoS
-        if self.skipped_keys.len() > 1000 {
-            if let Some(oldest) = self.skipped_keys.keys().min().cloned() {
-                self.skipped_keys.remove(&oldest);
+        if let Some(mut old) = self.skipped_keys.insert(msg_number, key) {
+            old.zeroize();
+        }
+        while self.skipped_keys.len() > MAX_SKIPPED_KEYS {
+            match self.skipped_keys.pop_first() {
+                Some((_, mut k)) => k.zeroize(),
+                None => break,
             }
         }
+    }
+
+    /// Number of stored skipped keys.
+    pub fn skipped_key_count(&self) -> usize {
+        self.skipped_keys.len()
     }
 
     /// Try to get a skipped key (for out-of-order messages)
@@ -239,6 +257,11 @@ impl DoubleRatchet {
             Some(_) => {}
         }
 
+        self.next_recv_key()
+    }
+
+    /// Take the next key from the receiving chain.
+    fn next_recv_key(&mut self) -> ([u8; RATCHET_KEY_LEN], u32) {
         let hk = Hkdf::<Sha256>::new(None, &self.chain_key_recv);
         let mut new_chain = [0u8; RATCHET_KEY_LEN];
         let mut msg_key = [0u8; RATCHET_KEY_LEN];
@@ -247,22 +270,102 @@ impl DoubleRatchet {
         hk.expand(b"HashChat-v1-msg-key", &mut msg_key).expect("HKDF failed");
 
         self.chain_key_recv = new_chain;
+        new_chain.zeroize();
         let count = self.recv_count;
         self.recv_count = self.recv_count.saturating_add(1);
 
         (msg_key, count)
     }
 
-    /// C1 — Speculative receive: ratchet on a scratch copy, AEAD-open, commit only on success.
-    /// On AEAD failure the live ratchet is left unchanged (exportable bytes identical).
+    /// Advance the receiving chain to `until`, storing the keys passed over.
+    fn skip_recv_until(&mut self, until: u32) -> Result<(), &'static str> {
+        if until < self.recv_count {
+            return Err("stale or replayed frame");
+        }
+        if until - self.recv_count > MAX_SKIP {
+            return Err("too many skipped messages");
+        }
+        while self.recv_count < until {
+            let (mut key, n) = self.next_recv_key();
+            self.store_skipped_key(n, key);
+            key.zeroize();
+        }
+        Ok(())
+    }
+
+    /// Run `advance` on a scratch copy, take the next receive key and try to
+    /// open the frame. The live state is replaced only if the frame opens.
+    fn commit_if_opens<F>(
+        &mut self,
+        ciphertext: &[u8],
+        aad: &[u8],
+        advance: F,
+    ) -> Result<(Vec<u8>, u32), &'static str>
+    where
+        F: FnOnce(&mut DoubleRatchet) -> Result<(), &'static str>,
+    {
+        // L-2: snapshots are Zeroizing so full-state copies do not linger on drop.
+        let snap = self.to_bytes();
+        let mut scratch = DoubleRatchet::from_bytes(&snap)?;
+        drop(snap);
+        advance(&mut scratch)?;
+        let (mut key, step) = scratch.next_recv_key();
+        let opened = decrypt_with_key(&key, ciphertext, aad);
+        key.zeroize();
+        let pt = opened?;
+        *self = scratch;
+        Ok((pt, step))
+    }
+
+    /// Open a frame whose key was stored when an earlier gap was skipped.
+    /// The key is consumed only if the frame opens.
+    fn open_skipped(
+        &mut self,
+        step: u32,
+        ciphertext: &[u8],
+        aad: &[u8],
+    ) -> Result<(Vec<u8>, u32), &'static str> {
+        let key = self.skipped_keys.get(&step).ok_or("no skipped key")?;
+        let pt = decrypt_with_key(key, ciphertext, aad)?;
+        self.wipe_skipped_key(step);
+        Ok((pt, step))
+    }
+
+    /// In-order receive: like [`Self::try_recv_decrypt_at`] with the step we
+    /// expect next. Kept for callers that do not pass the header step.
     pub fn try_recv_decrypt(
         &mut self,
         remote: &PublicKey,
         ciphertext: &[u8],
         aad: &[u8],
     ) -> Result<(Vec<u8>, u32), &'static str> {
+        let step = self.recv_count;
+        self.try_recv_decrypt_at(remote, step, ciphertext, aad)
+    }
+
+    /// Speculative receive for a frame carrying header `step` from `remote`.
+    ///
+    /// Tolerates lost and reordered frames: keys passed over are stored (at
+    /// most `MAX_SKIP` per frame) and a late frame is opened with its stored
+    /// key. Work happens on a scratch copy; on any failure the live state is
+    /// left unchanged. A frame for a step that was already consumed is refused.
+    pub fn try_recv_decrypt_at(
+        &mut self,
+        remote: &PublicKey,
+        step: u32,
+        ciphertext: &[u8],
+        aad: &[u8],
+    ) -> Result<(Vec<u8>, u32), &'static str> {
+        if self.skipped_keys.contains_key(&step) {
+            return self.open_skipped(step, ciphertext, aad);
+        }
         if self.recv_count == u32::MAX {
             return Err("receive counter exhausted");
+        }
+        // Our own frames reflected back would otherwise open while both sides
+        // still share the bootstrap chain, and would teach us our own public.
+        if *remote == self.dh_public {
+            return Err("reflected frame");
         }
         // Refuse non-contributory (low-order) sender keys before any state use.
         if self.remote_dh.as_ref() != Some(remote)
@@ -270,25 +373,44 @@ impl DoubleRatchet {
         {
             return Err("invalid sender key");
         }
-        // L-2: snapshots are Zeroizing so full-state copies do not linger on drop.
-        let snap = self.to_bytes();
-        let mut scratch = DoubleRatchet::from_bytes(&snap)?;
-        drop(snap);
-        let (mut key, step) = scratch.ratchet_recv(remote);
-        let pt = match decrypt_with_key(&key, ciphertext, aad) {
-            Ok(p) => p,
-            Err(e) => {
-                key.zeroize();
-                return Err(e);
+        if step < self.recv_count {
+            return Err("stale or replayed frame");
+        }
+
+        let same_chain = self.remote_dh.is_none_or(|r| r == *remote);
+        if same_chain {
+            return self.commit_if_opens(ciphertext, aad, |s| {
+                s.skip_recv_until(step)?;
+                if s.remote_dh.is_none() {
+                    s.remote_dh = Some(*remote);
+                }
+                Ok(())
+            });
+        }
+
+        // New sender DH public. The header does not say where the previous
+        // chain ended, but the sender rotates every DH_SEND_EVERY messages, so
+        // this frame is at most DH_SEND_EVERY - 1 messages into the new chain.
+        // Try each position; only the right one opens.
+        let mut last_err = "open";
+        for k in 0..DH_SEND_EVERY {
+            let Some(first) = step.checked_sub(k) else {
+                break;
+            };
+            if first < self.recv_count {
+                break;
             }
-        };
-        key.zeroize();
-        // Commit scratch into self by replaying serialized state.
-        let committed = scratch.to_bytes();
-        let restored = DoubleRatchet::from_bytes(&committed)?;
-        drop(committed);
-        *self = restored;
-        Ok((pt, step))
+            let attempt = self.commit_if_opens(ciphertext, aad, |s| {
+                s.skip_recv_until(first)?;
+                s.dh_ratchet_recv(remote);
+                s.skip_recv_until(step)
+            });
+            match attempt {
+                Ok(v) => return Ok(v),
+                Err(e) => last_err = e,
+            }
+        }
+        Err(last_err)
     }
 }
 
@@ -443,7 +565,7 @@ impl DoubleRatchet {
         let sk_len = u32::from_be_bytes(data.get(pos..pos + 4).ok_or("bad sklen")?.try_into().map_err(|_| "bad sklen")?) as usize;
         pos += 4;
 
-        let mut skipped = std::collections::HashMap::new();
+        let mut skipped = BTreeMap::new();
         for _ in 0..sk_len {
             let num = u32::from_be_bytes(data.get(pos..pos + 4).ok_or("bad snum")?.try_into().map_err(|_| "bad snum")?);
             pos += 4;
@@ -730,5 +852,148 @@ mod tests {
             Err("invalid sender key")
         );
         assert_eq!(r.to_bytes(), before);
+    }
+
+    fn bootstrapped_pair(seed: u8) -> (DoubleRatchet, DoubleRatchet) {
+        let shared = [seed; 32];
+        let mut a = DoubleRatchet::new();
+        let mut b = DoubleRatchet::new();
+        a.init_symmetric(&shared);
+        b.init_symmetric(&shared);
+        (a, b)
+    }
+
+    fn open_at(
+        r: &mut DoubleRatchet,
+        frame: &(Vec<u8>, [u8; 32], u32, Vec<u8>),
+    ) -> Result<(Vec<u8>, u32), &'static str> {
+        let (ct, dh, step, aad) = frame;
+        r.try_recv_decrypt_at(&PublicKey::from(*dh), *step, ct, aad)
+    }
+
+    #[test]
+    fn lost_and_reordered_frames_in_one_chain() {
+        let (mut a, mut b) = bootstrapped_pair(0x31);
+        let h = [5u8; 32];
+        let f0 = seal(&mut a, &h, b"m0");
+        let f1 = seal(&mut a, &h, b"m1");
+        let f2 = seal(&mut a, &h, b"m2");
+        let f3 = seal(&mut a, &h, b"m3");
+
+        assert_eq!(open_at(&mut b, &f2).expect("m2").0, b"m2");
+        assert_eq!(b.skipped_key_count(), 2);
+        assert_eq!(open_at(&mut b, &f0).expect("m0 late").0, b"m0");
+        assert_eq!(open_at(&mut b, &f3).expect("m3").0, b"m3");
+        assert_eq!(open_at(&mut b, &f1).expect("m1 late").0, b"m1");
+        assert_eq!(b.skipped_key_count(), 0);
+
+        // Replays are refused and leave the state alone.
+        let before = b.to_bytes();
+        assert!(open_at(&mut b, &f2).is_err());
+        assert!(open_at(&mut b, &f0).is_err());
+        assert_eq!(b.to_bytes(), before);
+    }
+
+    #[test]
+    fn garbage_at_a_skipped_step_does_not_burn_the_key() {
+        let (mut a, mut b) = bootstrapped_pair(0x32);
+        let h = [6u8; 32];
+        let f0 = seal(&mut a, &h, b"m0");
+        let f1 = seal(&mut a, &h, b"m1");
+        open_at(&mut b, &f1).expect("m1");
+
+        let mut bad = f0.clone();
+        let last = bad.0.len() - 1;
+        bad.0[last] ^= 0x01;
+        assert!(open_at(&mut b, &bad).is_err());
+        assert_eq!(open_at(&mut b, &f0).expect("m0").0, b"m0");
+    }
+
+    #[test]
+    fn gap_larger_than_max_skip_is_refused() {
+        let (mut a, mut b) = bootstrapped_pair(0x33);
+        let h = [7u8; 32];
+        for _ in 0..=MAX_SKIP {
+            let _ = a.ratchet_send();
+        }
+        let far = seal(&mut a, &h, b"far");
+        let before = b.to_bytes();
+        assert_eq!(open_at(&mut b, &far), Err("too many skipped messages"));
+        assert_eq!(b.to_bytes(), before);
+    }
+
+    #[test]
+    fn lost_frames_across_a_dh_rotation() {
+        let (mut a, mut b) = bootstrapped_pair(0x34);
+        let ha = [8u8; 32];
+        let hb = [9u8; 32];
+
+        // Learn each other's DH publics so periodic rotation starts.
+        open_at(&mut b, &seal(&mut a, &ha, b"a0")).expect("a0");
+        open_at(&mut a, &seal(&mut b, &hb, b"b0")).expect("b0");
+
+        let mut old_chain = Vec::new();
+        for i in 1..DH_SEND_EVERY {
+            old_chain.push(seal(&mut a, &ha, format!("a{i}").as_bytes()));
+        }
+        let rot0 = seal(&mut a, &ha, b"rot0");
+        let rot1 = seal(&mut a, &ha, b"rot1");
+        let rot2 = seal(&mut a, &ha, b"rot2");
+        assert_ne!(rot0.1, old_chain[0].1, "sender must have rotated");
+        assert_eq!(rot0.1, rot2.1);
+
+        // Deliver only the first old-chain frame, then jump into the new chain.
+        open_at(&mut b, &old_chain[0]).expect("a1");
+        assert_eq!(open_at(&mut b, &rot2).expect("rot2").0, b"rot2");
+
+        // Everything that was skipped still opens, in any order.
+        assert_eq!(open_at(&mut b, &rot0).expect("rot0").0, b"rot0");
+        for f in old_chain.iter().skip(1).rev() {
+            open_at(&mut b, f).expect("late old-chain frame");
+        }
+        assert_eq!(open_at(&mut b, &rot1).expect("rot1").0, b"rot1");
+        assert_eq!(b.skipped_key_count(), 0);
+
+        // The conversation carries on in both directions.
+        open_at(&mut b, &seal(&mut a, &ha, b"next")).expect("next");
+        open_at(&mut a, &seal(&mut b, &hb, b"reply")).expect("reply");
+    }
+
+    #[test]
+    fn reflected_own_frame_is_refused() {
+        let (mut a, _b) = bootstrapped_pair(0x35);
+        let h = [1u8; 32];
+        let own = seal(&mut a, &h, b"mine");
+        let before = a.to_bytes();
+        assert_eq!(open_at(&mut a, &own), Err("reflected frame"));
+        assert_eq!(a.to_bytes(), before);
+    }
+
+    #[test]
+    fn skipped_keys_are_capped_oldest_first() {
+        let mut r = DoubleRatchet::new();
+        r.init_symmetric(&[0x36u8; 32]);
+        for n in 0..(MAX_SKIPPED_KEYS as u32 + 10) {
+            r.store_skipped_key(n, [n as u8; RATCHET_KEY_LEN]);
+        }
+        assert_eq!(r.skipped_key_count(), MAX_SKIPPED_KEYS);
+        assert!(r.get_skipped_key(9).is_none());
+        assert!(r.get_skipped_key(10).is_some());
+    }
+
+    #[test]
+    fn skipped_keys_survive_serialization() {
+        let (mut a, mut b) = bootstrapped_pair(0x37);
+        let h = [2u8; 32];
+        let f0 = seal(&mut a, &h, b"m0");
+        let f1 = seal(&mut a, &h, b"m1");
+        let f2 = seal(&mut a, &h, b"m2");
+        open_at(&mut b, &f2).expect("m2");
+
+        let bytes = b.to_bytes();
+        let mut restored = DoubleRatchet::from_bytes(&bytes).expect("restore");
+        assert_eq!(restored.to_bytes(), bytes, "serialization must be stable");
+        assert_eq!(open_at(&mut restored, &f1).expect("m1").0, b"m1");
+        assert_eq!(open_at(&mut restored, &f0).expect("m0").0, b"m0");
     }
 }

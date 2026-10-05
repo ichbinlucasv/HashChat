@@ -1296,7 +1296,7 @@ impl App {
             drop(rb);
             let aad = build_wire_aad(WIRE_VERSION_V2, &hint, step, &sender_dh);
             let remote = x25519_dalek::PublicKey::from(sender_dh);
-            match r.try_recv_decrypt(&remote, &ct, &aad) {
+            match r.try_recv_decrypt_at(&remote, step, &ct, &aad) {
                 Ok((mut pt, step)) => {
                     // Neutralise terminal control / bidi characters before the text
                     // can reach any widget; zeroize intermediate copies.
