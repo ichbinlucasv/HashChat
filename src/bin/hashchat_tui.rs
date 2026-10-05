@@ -36,7 +36,8 @@ use hashchat_rust::{
     HiddenService, IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode,
     PersistedContact, PostureProfile, SessionState, SocksIsolationCreds, StoreKey,
     UnlockBackoffPolicy, DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES,
-    MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME, 
+    MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME, format_jitter, parse_jitter_token,
+    sample_send_delay,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -96,6 +97,22 @@ enum Screen {
 enum Focus {
     Contacts,
     Input,
+}
+
+/// A committed frame waiting out its send jitter. The plaintext is not kept;
+/// the frame is also in the durable queue, so dropping this only delays it.
+struct HeldSend {
+    due: Instant,
+    contact_id: String,
+    onion: String,
+    frame: Vec<u8>,
+    peer_label: String,
+}
+
+impl Drop for HeldSend {
+    fn drop(&mut self) {
+        self.frame.zeroize();
+    }
 }
 
 /// In-memory transcript line. Chat bodies may carry a local TTL; system notes do not.
@@ -191,6 +208,10 @@ struct App {
     disappear_ttl_secs: u32,
     /// Idle auto-lock timeout seconds (0 = off). Synced into session blob v7+.
     lock_timeout_secs: u32,
+    /// Maximum random send delay in seconds (0 = off). Synced into session blob v8+.
+    send_jitter_secs: u32,
+    /// Frames committed but not yet handed to Tor because of send jitter.
+    held_sends: Vec<HeldSend>,
     /// Last user input Instant (Main / confirm screens). Used for idle auto-lock.
     last_input_at: Instant,
     /// Pending contact id for `:delete-contact-confirm` (cleared on Esc / success).
@@ -270,6 +291,8 @@ impl App {
             net: NetConfig::from_env(),
             disappear_ttl_secs: 0,
             lock_timeout_secs: DEFAULT_LOCK_TIMEOUT_SECS,
+            send_jitter_secs: 0,
+            held_sends: Vec::new(),
             last_input_at: Instant::now(),
             pending_delete_contact: None,
             unlock_fail_count: 0,
@@ -322,6 +345,7 @@ impl App {
         session.net = self.net.clone();
         session.disappear_ttl_secs = self.disappear_ttl_secs;
         session.lock_timeout_secs = self.lock_timeout_secs;
+        session.send_jitter_secs = self.send_jitter_secs;
         save_session_with_key(Path::new(DATA_DIR), key, session)
     }
 
@@ -720,6 +744,8 @@ impl App {
             let _ = self.persist_session();
         }
         touch_deadman(Path::new(DATA_DIR), unix_now());
+        // Held frames stay in state.enc and go out with :retry after unlock.
+        self.held_sends.clear();
         self.store_key = None;
         // Drop HS: stops accept thread + closes ControlPort (onion key stays in state.enc).
         self.hs = None;
@@ -752,6 +778,7 @@ impl App {
     /// chat lines, SAS / contact-link display strings, and the draft input.
     /// Does **not** touch disk — not a substitute for `:wipe`.
     fn emergency_scrub_fields(&mut self) {
+        self.held_sends.clear();
         self.hs = None;
         self.hs_drops_seen = 0;
         if let Some(mut s) = self.session.take() {
@@ -771,6 +798,36 @@ impl App {
         self.pending_delete_contact = None;
         self.contacts_state = ListState::default();
         self.selected_contact = None;
+    }
+
+    fn handle_jitter(&mut self, args: &str) {
+        let args = args.trim();
+        if args.is_empty() || args == "status" || args == "show" {
+            let line = format!(
+                "jitter={} (random delay before each send; blurs timing, not cover traffic)",
+                format_jitter(self.send_jitter_secs)
+            );
+            self.status_msg = line.clone();
+            self.push_msg(line);
+            return;
+        }
+        let secs = match parse_jitter_token(args) {
+            Ok(s) => s,
+            Err(e) => {
+                self.status_msg = e.into();
+                self.push_msg(e);
+                return;
+            }
+        };
+        self.send_jitter_secs = secs;
+        let saved = self.session.is_none() || self.persist_session().is_ok();
+        let line = format!(
+            "Send jitter set to {} ({})",
+            format_jitter(secs),
+            if saved { "saved" } else { "memory only" }
+        );
+        self.status_msg = line.clone();
+        self.push_msg(line);
     }
 
     fn handle_lock_timeout(&mut self, args: &str) {
@@ -968,6 +1025,7 @@ impl App {
                             self.session = Some(state);
                             self.disappear_ttl_secs = 0;
                             self.lock_timeout_secs = DEFAULT_LOCK_TIMEOUT_SECS;
+                            self.send_jitter_secs = 0;
                             self.apply_extreme_ttl_default();
                             self.apply_extreme_lock_default();
                             let _ = self.persist_session();
@@ -1021,6 +1079,7 @@ impl App {
                     self.net = state.net.clone();
                     self.disappear_ttl_secs = state.disappear_ttl_secs;
                     self.lock_timeout_secs = state.lock_timeout_secs;
+                    self.send_jitter_secs = state.send_jitter_secs;
                     self.session = Some(state);
                     self.apply_extreme_ttl_default();
                     self.apply_extreme_lock_default();
@@ -1314,6 +1373,69 @@ impl App {
         socks_isolation_for_onion(onion).ok()
     }
 
+    fn is_held_until_later(&self, onion: &str, frame: &[u8], now: Instant) -> bool {
+        self.held_sends
+            .iter()
+            .any(|h| h.due > now && h.onion == onion && h.frame.as_slice() == frame)
+    }
+
+    /// Hand frames whose jitter has run out to Tor. A frame no longer in the
+    /// durable queue was already delivered (`:retry`) or its contact was
+    /// deleted, so it is dropped. If Tor is down the frame stays queued.
+    fn flush_held_sends(&mut self) {
+        if self.held_sends.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let (due, later): (Vec<HeldSend>, Vec<HeldSend>) =
+            self.held_sends.drain(..).partition(|h| h.due <= now);
+        self.held_sends = later;
+        if due.is_empty() {
+            return;
+        }
+        let transport_ok = self.net.require_messenger_transport().is_ok()
+            && self.tor_status == TorStatus::Available;
+        let mut changed = false;
+        for held in due {
+            let queued = self
+                .session
+                .as_ref()
+                .map(|s| s.pending.iter().any(|(o, f)| *o == held.onion && *f == held.frame))
+                .unwrap_or(false);
+            if !queued {
+                continue;
+            }
+            if !transport_ok {
+                self.push_msg(format!("[{}] queued offline (Tor unavailable)", held.peer_label));
+                self.status_msg = "Queued: Tor unavailable (frame committed)".into();
+                continue;
+            }
+            let isol = self.socks_isolation_creds_for(Some(&held.contact_id), &held.onion);
+            let sent = socks5_send(
+                SOCKS_HOST,
+                self.socks_port,
+                &held.onion,
+                80,
+                &held.frame,
+                isol.as_ref(),
+            )
+            .is_ok();
+            if sent {
+                if let Some(session) = self.session.as_mut() {
+                    session.ack_pending_frame(&held.onion, &held.frame);
+                }
+                changed = true;
+                self.status_msg = format!("Sent {} B via SOCKS after jitter", held.frame.len());
+            } else {
+                self.push_msg(format!("[{}] queued offline (SOCKS send failed)", held.peer_label));
+                self.status_msg = "Queued: SOCKS send failed (frame committed)".into();
+            }
+        }
+        if changed {
+            let _ = self.persist_session();
+        }
+    }
+
     /// Flush pending outbound frames. `report_empty` is true for explicit `:retry`
     /// (listen auto-flush must not clobber the listening status when the queue is empty).
     fn retry_pending(&mut self, report_empty: bool) {
@@ -1340,6 +1462,22 @@ impl App {
             }
             session.pending.drain(..).collect()
         };
+        let now = Instant::now();
+        let (held, waiting): (Vec<_>, Vec<_>) = waiting
+            .into_iter()
+            .partition(|(o, f)| self.is_held_until_later(o, f, now));
+        let n_held = held.len();
+        if let Some(session) = self.session.as_mut() {
+            for (o, f) in held {
+                let _ = session.queue_pending(o, f);
+            }
+        }
+        if waiting.is_empty() {
+            if report_empty {
+                self.status_msg = format!("{n_held} frame(s) still waiting out send jitter");
+            }
+            return;
+        }
         let mut fail = 0usize;
         let mut ok = 0usize;
         let mut remain = Vec::new();
@@ -1759,6 +1897,27 @@ impl App {
         if let Some(session) = self.session.as_mut() {
             session.set_ratchet_bytes(&contact.id, take_zeroizing_vec(rbytes));
             let _ = session.queue_pending(&contact.onion, frame.clone());
+        }
+
+        if self.send_jitter_secs > 0 {
+            let due = Instant::now() + sample_send_delay(self.send_jitter_secs);
+            self.push_chat(
+                format!("[{peer_label}] you: {text}  (held, random delay before send)"),
+                &contact.id,
+                msg_number,
+            );
+            self.held_sends.push(HeldSend {
+                due,
+                contact_id: contact.id.clone(),
+                onion: contact.onion.clone(),
+                frame,
+                peer_label,
+            });
+            self.status_msg = format!(
+                "Held for jitter ({}); committed to queue",
+                format_jitter(self.send_jitter_secs)
+            );
+            return;
         }
 
         let isol = self.socks_isolation_creds_for(Some(&contact.id), &contact.onion);
@@ -2360,9 +2519,10 @@ impl App {
             self.net.posture.as_str()
         ));
         self.push_msg(format!(
-            "disappear={} · lock-timeout={}",
+            "disappear={} · lock-timeout={} · jitter={}",
             format_ttl(self.disappear_ttl_secs),
-            format_lock_timeout(self.lock_timeout_secs)
+            format_lock_timeout(self.lock_timeout_secs),
+            format_jitter(self.send_jitter_secs)
         ));
 
         let (contacts, blocked, muted, unverified) = match self.session.as_ref() {
@@ -2452,6 +2612,7 @@ impl App {
                         .into();
             }
             ":wipe-confirm" => {
+                self.held_sends.clear();
                 self.hs = None;
                 self.hs_drops_seen = 0;
                 wipe_local_sensitive();
@@ -2470,6 +2631,7 @@ impl App {
                 self.pending_delete_contact = None;
                 self.disappear_ttl_secs = 0;
                 self.lock_timeout_secs = DEFAULT_LOCK_TIMEOUT_SECS;
+                self.send_jitter_secs = 0;
                 self.net = NetConfig::from_env();
                 self.contacts_state = ListState::default();
                 self.selected_contact = None;
@@ -2578,6 +2740,7 @@ impl App {
                 );
                 self.push_msg("  :lock                   lock UI now (clear RAM; disk untouched)");
                 self.push_msg("  :lock-timeout [off|…]   idle auto-lock (default 5m; Extreme→1m)");
+                self.push_msg("  :jitter [off|30s|2m]    random delay before each send (default off)");
                 self.push_msg("  :block / :unblock [id]  refuse send + drop inbound (fail-closed)");
                 self.push_msg("  :mute / :unmute [id]    suppress inbound UI (decrypt for sync)");
                 self.push_msg("  :blocked                list blocked + muted ids");
@@ -2722,6 +2885,10 @@ impl App {
                 } else {
                     self.lock_ui();
                 }
+            }
+            other if other == ":jitter" || other.starts_with(":jitter ") => {
+                let args = other.strip_prefix(":jitter").unwrap_or("").trim();
+                self.handle_jitter(args);
             }
             other if other == ":lock-timeout" || other.starts_with(":lock-timeout ") => {
                 let args = other.strip_prefix(":lock-timeout").unwrap_or("").trim();
@@ -3217,6 +3384,7 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
         }
         app.check_tor(false);
         app.drain_incoming();
+        app.flush_held_sends();
         app.expire_messages();
         if app.idle_should_lock() {
             app.lock_ui();

@@ -33,7 +33,8 @@
 //! v5 = + blocked / muted contact-id string lists (deny list; Standard durable).
 //! v6 = + verified contact-id string list (SAS out-of-band trust gate; Standard durable).
 //! v7 = + idle auto-lock timeout seconds (u32 BE; 0 = off; default 300 = 5m on missing).
-//! Load accepts v1–v7; save always writes v7. Older blobs load empty deny lists;
+//! v8 = + maximum send jitter seconds (u32 BE; 0 = off, the default on missing).
+//! Load accepts v1–v8; save always writes v8. Older blobs load empty deny lists;
 //! pre-v6 contacts are treated as **verified** for continuity (new `:add-contact`
 //! entries start unverified). Pre-v7 loads default idle lock to 5 minutes.
 //!
@@ -47,8 +48,8 @@
 //! ## Extreme disk policy (honest, fail-closed)
 //! When [`crate::net_mode::PostureProfile::Extreme`] is set on the session's
 //! [`NetConfig`], [`save_session`] persists **identity + onion + net prefs +
-//! disappear TTL + idle lock timeout only**. Contacts, ratchets, pending frames, blocked/muted, and
-//! verified lists are written as empty vectors (blob stays v7). Trade-off: smaller
+//! disappear TTL + idle lock timeout + send jitter only**. Contacts, ratchets, pending frames, blocked/muted, and
+//! verified lists are written as empty vectors (blob stays v8). Trade-off: smaller
 //! at-rest footprint and no multi-session contact/deny/verify continuity — the user
 //! must re-add contacts (and re-block / re-verify if needed) after restart. Tor 1:1
 //! messaging for the **current** process session is unchanged (in-memory
@@ -66,6 +67,7 @@
 //! verified (continuity); missing idle lock on v1–v6 loads as 300 seconds (5m).
 
 use crate::disappearing::DEFAULT_LOCK_TIMEOUT_SECS;
+use crate::send_jitter::MAX_SEND_JITTER_SECS;
 use crate::envelope::{self, StoreKey};
 use crate::longterm_identity::LongTermIdentity;
 use crate::net_mode::NetConfig;
@@ -80,12 +82,14 @@ const STATE_AAD: &[u8] = b"HashChat-v1-identity-onion-state";
 
 /// On-disk plaintext blob versions (inside the outer wrap).
 const BLOB_VERSION_V1: u8 = 1;
+#[cfg(test)]
 const BLOB_VERSION_V2: u8 = 2;
 const BLOB_VERSION_V3: u8 = 3;
 const BLOB_VERSION_V4: u8 = 4;
 const BLOB_VERSION_V5: u8 = 5;
 const BLOB_VERSION_V6: u8 = 6;
 const BLOB_VERSION_V7: u8 = 7;
+const BLOB_VERSION_V8: u8 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PersistMode {
@@ -234,6 +238,9 @@ pub struct SessionState {
     /// Missing on pre-v7 load → [`DEFAULT_LOCK_TIMEOUT_SECS`] (5 minutes).
     #[zeroize(skip)]
     pub lock_timeout_secs: u32,
+    /// Upper bound of the random delay before a send, in seconds (`0` = off). v8+.
+    #[zeroize(skip)]
+    pub send_jitter_secs: u32,
 }
 
 impl SessionState {
@@ -249,6 +256,7 @@ impl SessionState {
             muted_ids: Vec::new(),
             verified_ids: Vec::new(),
             lock_timeout_secs: DEFAULT_LOCK_TIMEOUT_SECS,
+            send_jitter_secs: 0,
         }
     }
 
@@ -265,6 +273,7 @@ impl SessionState {
             muted_ids: Vec::new(),
             verified_ids: Vec::new(),
             lock_timeout_secs: DEFAULT_LOCK_TIMEOUT_SECS,
+            send_jitter_secs: 0,
         }
     }
 
@@ -736,6 +745,7 @@ impl SessionState {
             muted_ids: Vec::new(),
             verified_ids: Vec::new(),
             lock_timeout_secs: self.lock_timeout_secs,
+            send_jitter_secs: self.send_jitter_secs,
         }
     }
 
@@ -759,6 +769,7 @@ impl SessionState {
         self.net = NetConfig::default();
         self.disappear_ttl_secs = 0;
         self.lock_timeout_secs = 0;
+        self.send_jitter_secs = 0;
     }
 }
 
@@ -832,7 +843,7 @@ fn read_string_list(buf: &[u8], pos: &mut usize) -> Result<Vec<String>, &'static
 
 fn serialize_blob(state: &SessionState) -> Vec<u8> {
     let mut plain = Vec::new();
-    plain.push(BLOB_VERSION_V7);
+    plain.push(BLOB_VERSION_V8);
     plain.extend_from_slice(&state.identity.seed);
     write_len_str(&mut plain, &state.identity.onion);
     write_len_bytes(&mut plain, &state.identity.onion_key);
@@ -878,6 +889,9 @@ fn serialize_blob(state: &SessionState) -> Vec<u8> {
     // idle auto-lock timeout (v7+)
     plain.extend_from_slice(&state.lock_timeout_secs.to_be_bytes());
 
+    // send jitter (v8+)
+    plain.extend_from_slice(&state.send_jitter_secs.to_be_bytes());
+
     plain
 }
 
@@ -886,14 +900,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         return Err("empty state blob");
     }
     let ver = plain[0];
-    if ver != BLOB_VERSION_V1
-        && ver != BLOB_VERSION_V2
-        && ver != BLOB_VERSION_V3
-        && ver != BLOB_VERSION_V4
-        && ver != BLOB_VERSION_V5
-        && ver != BLOB_VERSION_V6
-        && ver != BLOB_VERSION_V7
-    {
+    if !(BLOB_VERSION_V1..=BLOB_VERSION_V8).contains(&ver) {
         return Err("bad state blob version");
     }
     if plain.len() < 33 {
@@ -971,12 +978,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         pending.push((onion, frame));
     }
 
-    let net = if ver == BLOB_VERSION_V3
-        || ver == BLOB_VERSION_V4
-        || ver == BLOB_VERSION_V5
-        || ver == BLOB_VERSION_V6
-        || ver == BLOB_VERSION_V7
-    {
+    let net = if ver >= BLOB_VERSION_V3 {
         let prefs = read_len_bytes(plain, &mut pos)?;
         NetConfig::from_persist_bytes(&prefs).map_err(|_| "bad net prefs")?
     } else {
@@ -984,11 +986,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         NetConfig::default()
     };
 
-    let disappear_ttl_secs = if ver == BLOB_VERSION_V4
-        || ver == BLOB_VERSION_V5
-        || ver == BLOB_VERSION_V6
-        || ver == BLOB_VERSION_V7
-    {
+    let disappear_ttl_secs = if ver >= BLOB_VERSION_V4 {
         if pos + 4 > plain.len() {
             return Err("truncated disappear ttl");
         }
@@ -999,10 +997,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         0
     };
 
-    let (blocked_ids, muted_ids) = if ver == BLOB_VERSION_V5
-        || ver == BLOB_VERSION_V6
-        || ver == BLOB_VERSION_V7
-    {
+    let (blocked_ids, muted_ids) = if ver >= BLOB_VERSION_V5 {
         let blocked = read_string_list(plain, &mut pos)?;
         let muted = read_string_list(plain, &mut pos)?;
         (blocked, muted)
@@ -1012,14 +1007,14 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
 
     // v6+: explicit verified set. Pre-v6: treat all loaded contacts as verified
     // so existing sessions are not suddenly blocked from sending.
-    let verified_ids = if ver == BLOB_VERSION_V6 || ver == BLOB_VERSION_V7 {
+    let verified_ids = if ver >= BLOB_VERSION_V6 {
         read_string_list(plain, &mut pos)?
     } else {
         contacts.iter().map(|c| c.id.clone()).collect()
     };
 
     // v7: idle lock timeout. Pre-v7: default 5 minutes (enable auto-lock for upgrades).
-    let lock_timeout_secs = if ver == BLOB_VERSION_V7 {
+    let lock_timeout_secs = if ver >= BLOB_VERSION_V7 {
         if pos + 4 > plain.len() {
             return Err("truncated lock timeout");
         }
@@ -1028,6 +1023,18 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         secs
     } else {
         DEFAULT_LOCK_TIMEOUT_SECS
+    };
+
+    // v8: send jitter. Older blobs start with it off.
+    let send_jitter_secs = if ver >= BLOB_VERSION_V8 {
+        if pos + 4 > plain.len() {
+            return Err("truncated send jitter");
+        }
+        let secs = u32::from_be_bytes(plain[pos..pos + 4].try_into().unwrap());
+        pos += 4;
+        secs.min(MAX_SEND_JITTER_SECS)
+    } else {
+        0
     };
 
     if pos != plain.len() {
@@ -1045,6 +1052,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         muted_ids,
         verified_ids,
         lock_timeout_secs,
+        send_jitter_secs,
     })
 }
 
@@ -2629,6 +2637,80 @@ mod tests {
         let disk = extreme.for_disk();
         assert_eq!(disk.lock_timeout_secs, 60);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn v7_blob_bytes(identity: &IdentityOnionState, lock_secs: u32) -> Vec<u8> {
+        let mut plain = Vec::new();
+        plain.push(BLOB_VERSION_V7);
+        plain.extend_from_slice(&identity.seed);
+        write_len_str(&mut plain, &identity.onion);
+        write_len_bytes(&mut plain, &identity.onion_key);
+        plain.extend_from_slice(&0u32.to_be_bytes()); // contacts
+        plain.extend_from_slice(&0u32.to_be_bytes()); // ratchets
+        plain.extend_from_slice(&0u32.to_be_bytes()); // pending
+        write_len_bytes(&mut plain, &NetConfig::default().to_persist_bytes());
+        plain.extend_from_slice(&0u32.to_be_bytes()); // ttl
+        write_string_list(&mut plain, &[]); // blocked
+        write_string_list(&mut plain, &[]); // muted
+        write_string_list(&mut plain, &[]); // verified
+        plain.extend_from_slice(&lock_secs.to_be_bytes());
+        plain
+    }
+
+    #[test]
+    fn v8_send_jitter_roundtrip() {
+        let dir = tmp_dir("v8_jitter");
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &LongTermIdentity::generate().unwrap(),
+            "jitter.onion",
+            vec![],
+        ));
+        assert_eq!(session.send_jitter_secs, 0);
+        session.send_jitter_secs = 30;
+        save_session(&dir, PersistMode::Passphrase, b"jitter-pass", &session).unwrap();
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"jitter-pass").unwrap();
+        assert_eq!(loaded.send_jitter_secs, 30);
+        assert_eq!(loaded.lock_timeout_secs, DEFAULT_LOCK_TIMEOUT_SECS);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v7_blob_loads_with_jitter_off() {
+        let id = LongTermIdentity::from_seed([0x77u8; 32]);
+        let identity = IdentityOnionState::from_identity(&id, "oldv7.onion", b"k".to_vec());
+        let loaded = deserialize_blob(&v7_blob_bytes(&identity, 900)).unwrap();
+        assert_eq!(loaded.lock_timeout_secs, 900);
+        assert_eq!(loaded.send_jitter_secs, 0);
+    }
+
+    #[test]
+    fn v8_blob_clamps_jitter_and_rejects_truncation() {
+        let id = LongTermIdentity::from_seed([0x78u8; 32]);
+        let identity = IdentityOnionState::from_identity(&id, "v8.onion", b"k".to_vec());
+        let mut plain = v7_blob_bytes(&identity, 300);
+        plain[0] = BLOB_VERSION_V8;
+        assert!(deserialize_blob(&plain).is_err());
+        plain.extend_from_slice(&100_000u32.to_be_bytes());
+        let loaded = deserialize_blob(&plain).unwrap();
+        assert_eq!(loaded.send_jitter_secs, MAX_SEND_JITTER_SECS);
+        plain.push(0);
+        assert!(deserialize_blob(&plain).is_err());
+    }
+
+    #[test]
+    fn extreme_for_disk_keeps_send_jitter() {
+        use crate::net_mode::PostureProfile;
+        let id = LongTermIdentity::from_seed([0x79u8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "extj.onion",
+            vec![],
+        ));
+        session.net.set_posture(PostureProfile::Extreme);
+        session.send_jitter_secs = 45;
+        assert_eq!(session.for_disk().send_jitter_secs, 45);
+        session.wipe_memory_secure();
+        assert_eq!(session.send_jitter_secs, 0);
     }
 
     #[test]

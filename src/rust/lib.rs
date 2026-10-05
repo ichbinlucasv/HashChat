@@ -21,6 +21,7 @@ mod onion_binding;
 mod padding;
 mod private_fs;
 mod ratchet;
+mod send_jitter;
 mod session_persist;
 mod shred;
 mod term_sanitize;
@@ -41,6 +42,9 @@ pub use disappearing::{
 pub use deadman::{
     clear_deadman, deadman_config, deadman_present, set_deadman, touch_deadman, unix_now,
     wipe_if_deadman_due, DeadmanConfig, MAX_DEADMAN_DAYS,
+};
+pub use send_jitter::{
+    format_jitter, parse_jitter_token, sample_send_delay, MAX_SEND_JITTER_SECS,
 };
 pub use padding::{pad as pad_message, unpad as unpad_message, SIZE_CLASSES};
 pub use failwipe::{
@@ -1481,6 +1485,7 @@ pub extern "C" fn rust_session_state_save(
             muted_ids: Vec::new(),
             verified_ids: Vec::new(),
             lock_timeout_secs: crate::disappearing::DEFAULT_LOCK_TIMEOUT_SECS,
+            send_jitter_secs: 0,
         };
         let mode = PersistMode::from_flags(insecure_dev != 0);
         save_session(Path::new(dir), mode, pass, &state).is_ok()
