@@ -29,7 +29,8 @@ use hashchat_rust::{
     socks_isolation_for_contact, socks_isolation_for_onion, start_hidden_service_with_key,
     state_exists, take_terminate_signal, tor_probe, unframe_v2, unlock_backoff_delay_secs,
     take_zeroizing_vec, unlock_session, wipe_local_sensitive, DnsPreference, DoubleRatchet,
-    DumpHardening, ERR_QUEUE_FULL,
+    DumpHardening, ERR_QUEUE_FULL, clear_duress, duress_configured, set_duress_passphrase,
+    wipe_if_duress,
     HiddenService, IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode,
     PersistedContact, PostureProfile, SessionState, SocksIsolationCreds, StoreKey,
     UnlockBackoffPolicy, DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES,
@@ -85,6 +86,8 @@ enum Screen {
     ConfirmWipe,
     /// Two-step `:delete-contact` confirm (OPSEC; not a remote wipe).
     ConfirmDeleteContact,
+    /// Masked two-step entry for the duress passphrase (`:duress set`).
+    SetDuress,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -466,6 +469,75 @@ impl App {
                 .into();
     }
 
+    fn handle_duress(&mut self, args: &str) {
+        let data_dir = Path::new(DATA_DIR);
+        match args.trim() {
+            "" | "status" => {
+                self.status_msg = if duress_configured(data_dir) {
+                    "duress passphrase: set".into()
+                } else {
+                    "duress passphrase: not set".into()
+                };
+                self.push_msg(self.status_msg.clone());
+            }
+            "set" => {
+                if self.session.is_none() {
+                    self.status_msg = "Unlock first.".into();
+                    return;
+                }
+                self.clear_input_secure();
+                self.passphrase.zeroize();
+                self.passphrase.clear();
+                self.passphrase_confirm.zeroize();
+                self.passphrase_confirm.clear();
+                self.unlock_step = UnlockStep::EnterPass;
+                self.screen = Screen::SetDuress;
+                self.status_msg = "Enter the duress passphrase.".into();
+            }
+            "clear" => {
+                clear_duress(data_dir);
+                self.status_msg = "duress passphrase removed".into();
+                self.push_msg(self.status_msg.clone());
+            }
+            _ => {
+                self.status_msg = "Usage: :duress [status|set|clear]".into();
+            }
+        }
+    }
+
+    fn cancel_duress_entry(&mut self) {
+        self.passphrase.zeroize();
+        self.passphrase.clear();
+        self.passphrase_confirm.zeroize();
+        self.passphrase_confirm.clear();
+        self.unlock_step = UnlockStep::EnterPass;
+        self.screen = Screen::Main;
+        self.focus = Focus::Input;
+    }
+
+    fn submit_duress_entry(&mut self) {
+        if self.passphrase.is_empty() {
+            self.status_msg = "Passphrase required.".into();
+            return;
+        }
+        if self.unlock_step == UnlockStep::EnterPass {
+            self.unlock_step = UnlockStep::ConfirmPass;
+            self.status_msg = "Confirm the duress passphrase.".into();
+            return;
+        }
+        let result = if self.passphrase == self.passphrase_confirm {
+            set_duress_passphrase(Path::new(DATA_DIR), self.passphrase.as_bytes())
+        } else {
+            Err("passphrases do not match")
+        };
+        self.cancel_duress_entry();
+        self.status_msg = match result {
+            Ok(()) => "duress passphrase set".into(),
+            Err(reason) => format!("Duress passphrase refused: {reason}."),
+        };
+        self.push_msg(self.status_msg.clone());
+    }
+
     fn handle_delete_contact_confirm(&mut self) {
         let Some(id) = self.pending_delete_contact.take() else {
             self.screen = Screen::Main;
@@ -542,7 +614,7 @@ impl App {
         }
         if !matches!(
             self.screen,
-            Screen::Main | Screen::ConfirmWipe | Screen::ConfirmDeleteContact
+            Screen::Main | Screen::ConfirmWipe | Screen::ConfirmDeleteContact | Screen::SetDuress
         ) {
             return false;
         }
@@ -876,6 +948,8 @@ impl App {
                     self.apply_mlock_best_effort();
                 }
                 Err(_) => {
+                    // A duress passphrase wipes and then looks like any other failure.
+                    wipe_if_duress(Path::new(DATA_DIR), pass, wipe_local_sensitive);
                     self.unlock_fail_count = self.unlock_fail_count.saturating_add(1);
                     let policy = UnlockBackoffPolicy::for_extreme(self.net.is_extreme());
                     let delay = unlock_backoff_delay_secs(self.unlock_fail_count, &policy);
@@ -2392,6 +2466,7 @@ impl App {
                 self.push_msg(
                     "  :evidence / :audit-status  OPSEC posture dump (counts/tokens only)",
                 );
+                self.push_msg("  :duress [set|clear]     passphrase that wipes instead of unlocking");
                 self.push_msg("  :wipe                   nuclear local wipe (confirm)");
                 self.push_msg("  :quit                   exit");
                 self.push_msg(
@@ -2495,6 +2570,10 @@ impl App {
                 };
                 self.handle_delete_contact_command(args);
             }
+            other if other == ":duress" || other.starts_with(":duress ") => {
+                let args = other.strip_prefix(":duress").unwrap_or("").trim();
+                self.handle_duress(args);
+            }
             ":lock" => {
                 if self.session.is_none() {
                     self.status_msg = "Already locked (or no session).".into();
@@ -2565,6 +2644,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
         // Full-screen confirm: never render chat/contacts under the wipe prompt.
         Screen::ConfirmWipe => draw_wipe_modal(f, app, area),
         Screen::ConfirmDeleteContact => draw_delete_contact_modal(f, app, area),
+        Screen::SetDuress => draw_duress_entry(f, app, area),
     }
 }
 
@@ -2863,6 +2943,54 @@ fn draw_wipe_modal(f: &mut ratatui::Frame, app: &App, area: Rect) {
     f.render_widget(body, rect);
 }
 
+fn draw_duress_entry(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    f.render_widget(Clear, area);
+    f.render_widget(Block::default().style(Style::default().bg(BG)), area);
+
+    let w = area.width.min(72).max(48);
+    let h = 11u16.min(area.height.saturating_sub(2)).max(9);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let rect = Rect::new(x, y, w, h);
+    f.render_widget(Clear, rect);
+    let (prompt, len) = if app.unlock_step == UnlockStep::ConfirmPass {
+        ("Confirm:", app.passphrase_confirm.chars().count())
+    } else {
+        ("Duress passphrase:", app.passphrase.chars().count())
+    };
+    let body = Paragraph::new(vec![
+        Line::from(Span::styled(
+            "Entering this at the unlock prompt wipes local data.",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(Span::styled(
+            "It must differ from the normal passphrase.",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(prompt, Style::default().fg(GOLD)),
+            Span::raw(" "),
+            Span::styled("*".repeat(len), Style::default().fg(TEXT)),
+            Span::styled("▌", Style::default().fg(GOLD)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            sanitize_for_terminal(&app.status_msg),
+            Style::default().fg(DIM),
+        )),
+        Line::from(Span::styled("Enter accept · Esc cancel", Style::default().fg(DIM))),
+    ])
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(" duress passphrase ", gold_style()))
+            .border_style(Style::default().fg(GOLD))
+            .style(Style::default().bg(PANEL)),
+    );
+    f.render_widget(body, rect);
+}
+
 fn draw_delete_contact_modal(f: &mut ratatui::Frame, app: &App, area: Rect) {
     f.render_widget(Clear, area);
     f.render_widget(Block::default().style(Style::default().bg(BG)), area);
@@ -2982,7 +3110,7 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
         // Any key while unlocked resets the idle auto-lock timer.
         if matches!(
             app.screen,
-            Screen::Main | Screen::ConfirmWipe | Screen::ConfirmDeleteContact
+            Screen::Main | Screen::ConfirmWipe | Screen::ConfirmDeleteContact | Screen::SetDuress
         ) {
             app.touch_input();
         }
@@ -2997,6 +3125,31 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
                     app.unlock_step = UnlockStep::EnterPass;
                 }
                 KeyCode::Enter => app.try_unlock(),
+                KeyCode::Backspace => {
+                    if app.unlock_step == UnlockStep::ConfirmPass {
+                        app.passphrase_confirm.pop();
+                    } else {
+                        app.passphrase.pop();
+                    }
+                }
+                KeyCode::Char(ch) => {
+                    let buf = if app.unlock_step == UnlockStep::ConfirmPass {
+                        &mut app.passphrase_confirm
+                    } else {
+                        &mut app.passphrase
+                    };
+                    if !push_secret_char(buf, ch) {
+                        app.status_msg = "Passphrase too long.".into();
+                    }
+                }
+                _ => {}
+            },
+            Screen::SetDuress => match key.code {
+                KeyCode::Esc => {
+                    app.cancel_duress_entry();
+                    app.status_msg = "Duress setup cancelled.".into();
+                }
+                KeyCode::Enter => app.submit_duress_entry(),
                 KeyCode::Backspace => {
                     if app.unlock_step == UnlockStep::ConfirmPass {
                         app.passphrase_confirm.pop();

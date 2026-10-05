@@ -64,6 +64,16 @@ pub fn is_duress_passphrase(data_dir: &Path, pass: &[u8]) -> bool {
     }
 }
 
+/// Called after a failed unlock: if `pass` is the duress passphrase, run
+/// `wipe` and return true. Does nothing when no verifier is configured.
+pub fn wipe_if_duress(data_dir: &Path, pass: &[u8], wipe: impl FnOnce()) -> bool {
+    if !duress_configured(data_dir) || !is_duress_passphrase(data_dir, pass) {
+        return false;
+    }
+    wipe();
+    true
+}
+
 /// Remove the verifier. Missing file is fine.
 pub fn clear_duress(data_dir: &Path) {
     let _ = fs::remove_file(data_dir.join(DURESS_FILE));
@@ -129,6 +139,23 @@ mod tests {
         assert!(!is_duress_passphrase(&dir, b"anything"));
         private_fs::write_private_file(&dir, DURESS_FILE, &[0u8; 64]).unwrap();
         assert!(!is_duress_passphrase(&dir, b"anything"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wipe_runs_only_for_the_duress_passphrase() {
+        let dir = tmp_dir("trigger");
+        store_with(&dir, b"real passphrase one");
+
+        let mut ran = false;
+        assert!(!wipe_if_duress(&dir, b"under duress two", || ran = true));
+        assert!(!ran, "no verifier configured");
+
+        set_duress_passphrase(&dir, b"under duress two").unwrap();
+        assert!(!wipe_if_duress(&dir, b"wrong guess", || ran = true));
+        assert!(!ran);
+        assert!(wipe_if_duress(&dir, b"under duress two", || ran = true));
+        assert!(ran);
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -90,6 +90,8 @@ informational advisories ignored in `.cargo/audit.toml`. The offline gate soft-s
 audit when the tool or advisory DB is missing so local/offline runs stay deterministic.
 No Tor daemon required for the gate itself.
 
+A duress passphrase (`:duress set`) triggers the same wipe when typed at the unlock prompt; see THREATMODEL.md for what that does and does not cover.
+
 Nuclear wipe (`wipe_local_sensitive` / TUI `:wipe` → `:wipe-confirm`) deletes
 `state.enc` (and thus contacts/ratchets/pending) along with other local data under
 `hashchat_data/` and Tor HS material under `tor/hidden_service/`. The TUI confirm
