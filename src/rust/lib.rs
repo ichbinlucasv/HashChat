@@ -10,6 +10,7 @@ use zeroize::Zeroize;
 
 mod contact_link;
 mod disappearing;
+mod duress;
 mod emergency_scrub;
 mod envelope;
 mod hidden_service;
@@ -33,6 +34,7 @@ pub use disappearing::{
     parse_lock_timeout_token, parse_ttl_token, DEFAULT_LOCK_TIMEOUT_SECS,
     EXTREME_DEFAULT_LOCK_TIMEOUT_SECS, EXTREME_DEFAULT_TTL_SECS,
 };
+pub use duress::{clear_duress, duress_configured, is_duress_passphrase, set_duress_passphrase};
 pub use emergency_scrub::{
     clear_scrub_callback, emergency_scrub, install_panic_scrub_hook, install_terminate_signal_flag,
     register_scrub_callback, scrub_bytes, take_terminate_signal, terminate_signal_pending,

@@ -1152,6 +1152,23 @@ fn save_session_wrapped(
     Ok(())
 }
 
+/// True if `passphrase` opens the current `state.enc`. One Argon2id run.
+pub(crate) fn passphrase_opens_state(data_dir: &Path, passphrase: &[u8]) -> bool {
+    let Ok(env) = read_state_envelope(data_dir) else {
+        return false;
+    };
+    let Ok(key) = StoreKey::derive_for_envelope(passphrase, &env) else {
+        return false;
+    };
+    match envelope::open_with_key(&key, &env) {
+        Ok(mut plain) => {
+            plain.zeroize();
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 fn read_state_envelope(data_dir: &Path) -> Result<Vec<u8>, &'static str> {
     private_fs::read_private_file(data_dir, STATE_FILE, MAX_PRIVATE_FILE_BYTES)
         .map_err(PrivateFsError::as_str)
@@ -1326,6 +1343,7 @@ pub fn wipe_disk(data_dir: &Path) -> std::io::Result<()> {
     let _ = fs::remove_file(key_path);
     private_fs::remove_stale_temps(data_dir, STATE_FILE);
     private_fs::remove_stale_temps(data_dir, MACHINE_KEY_FILE);
+    crate::duress::clear_duress(data_dir);
     Ok(())
 }
 
