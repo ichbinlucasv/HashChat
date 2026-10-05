@@ -84,6 +84,22 @@ Contributions are very welcome — especially in the remaining polish areas abov
 
 ---
 
+## Planned features, in order
+
+This is the order we intend to work in. Earlier items are not blocked on later ones, but security work comes before anything that adds surface.
+
+1. **Duress passphrase and nuclear wipe.** Done so far: `:wipe`, a duress passphrase that wipes at the unlock prompt, and a single random overwrite before unlink for the state file and the Tor hidden service key. Still to do: an option to open a decoy profile instead of wiping, a wipe-after-N-failures setting that survives restarts, and a way to trigger the wipe from outside the TUI.
+2. **Metadata minimisation.** Pad frames to fixed size classes, add optional send-time jitter, and add a sealed-sender envelope so a relay or an onion service operator cannot read the sender hint. The wire change goes together with the bootstrap handshake work (M-1) so the format changes once.
+3. **Deniable storage.** A second profile inside a padded container that cannot be told apart from free space without its passphrase. Needs a careful design note first; the duress passphrase is not a substitute and does not provide deniability.
+4. **Tor bridges and I2P.** Pluggable-transport bridge configuration for Tor, then a real I2P send and listen path. Until then non-Tor modes keep refusing.
+5. **Self-hosted relay.** A small Rust store-and-forward relay people can run themselves, reachable only over Tor, holding ciphertext for offline peers. No accounts, no logs, no plaintext.
+6. **Offline and air-gapped mode.** Contact exchange and message transfer by QR codes and removable media, with no network code path active.
+7. **Reproducible, signed builds.** Bit-for-bit builds of the Linux binary and Android libraries, signed tags and signed release artifacts, and a documented verification procedure.
+8. **Payments for paid builds.** Monero and Lightning for the 100 EUR lifetime licence on non-Linux platforms, with no account and no licence server. Linux and Linux phones stay free.
+9. **Groups and community features.** Moderation tools for group admins, invite links that expire, and optional public-room support on top of the relay.
+
+**Licence for paid builds.** The source stays under the AGPL, and the AGPL does not allow restricting who may use the source. The paid non-Linux builds are sold under a separate purchase licence, and that licence does not permit sale to governments or government bodies. The limit is stated plainly: the purchase terms can refuse a sale and bind the buyer, but they cannot stop a government from building the AGPL source itself or from buying through a third party who lies about who they are.
+
 ## Transport Expansion (Wave 7+)
 
 Major ongoing work to give users strong anonymity flexibility:
