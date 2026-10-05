@@ -7,7 +7,7 @@
 //! cannot balloon memory or Tor frames before ratchet encrypt (local UX limit).
 
 use crate::hidden_service::MAX_HS_INBOUND_FRAME;
-use crate::ratchet::WIRE_VERSION_V2;
+use crate::ratchet::{WIRE_VERSION_V2, WIRE_VERSION_V3};
 
 /// AES-256-GCM ciphertext blob overhead on the wire: nonce(12) ‖ ciphertext ‖ tag(16).
 const AEAD_CIPHERTEXT_OVERHEAD: usize = 12 + 16;
@@ -90,6 +90,89 @@ pub fn unframe_v2(bs: &[u8]) -> Result<(Vec<u8>, u32, [u8; 32], Vec<u8>), &'stat
     }
     let ct = bs[pos..].to_vec();
     Ok((hint, step, dh, ct))
+}
+
+/// Wire frame v3 header fields. Differs from v2 by one field: `epoch_start`,
+/// the step of the first message under the sender's current DH key, which
+/// lets the receiver skip exactly the unseen tail of the previous chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameV3 {
+    pub hint: Vec<u8>,
+    pub step: u32,
+    pub epoch_start: u32,
+    pub sender_dh: [u8; 32],
+    pub ciphertext: Vec<u8>,
+}
+
+/// Largest v3 frame: header with a 32-byte hint plus the biggest padded class sealed.
+pub const MAX_FRAMED_V3_BYTES: usize = 1 + 1 + 32 + 4 + 4 + 32 + 4
+    + crate::padding::SIZE_CLASSES[crate::padding::SIZE_CLASSES.len() - 1]
+    + AEAD_CIPHERTEXT_OVERHEAD;
+
+const _: () = assert!(MAX_FRAMED_V3_BYTES <= MAX_HS_INBOUND_FRAME);
+
+/// Encode a v3 wire frame: `3 | hintLen | hint | step | epoch_start | sender_dh | ctLen | ct`.
+pub fn frame_v3(
+    hint: &[u8],
+    step: u32,
+    epoch_start: u32,
+    sender_dh: &[u8; 32],
+    ciphertext: &[u8],
+) -> Vec<u8> {
+    let hint = if hint.len() > 32 { &hint[..32] } else { hint };
+    let mut out = Vec::with_capacity(2 + hint.len() + 8 + 32 + 4 + ciphertext.len());
+    out.push(WIRE_VERSION_V3);
+    out.push(hint.len() as u8);
+    out.extend_from_slice(hint);
+    out.extend_from_slice(&step.to_be_bytes());
+    out.extend_from_slice(&epoch_start.to_be_bytes());
+    out.extend_from_slice(sender_dh);
+    out.extend_from_slice(&(ciphertext.len() as u32).to_be_bytes());
+    out.extend_from_slice(ciphertext);
+    out
+}
+
+/// Parse a v3 wire frame. Rejects other versions, long hints, bad lengths and
+/// an `epoch_start` after `step`.
+pub fn unframe_v3(bs: &[u8]) -> Result<FrameV3, &'static str> {
+    if bs.len() < 2 + 8 + 32 + 4 {
+        return Err("frame too short");
+    }
+    if bs[0] != WIRE_VERSION_V3 {
+        return Err("unsupported wire version");
+    }
+    let hl = bs[1] as usize;
+    if hl > 32 {
+        return Err("hint too long");
+    }
+    if bs.len() < 2 + hl + 8 + 32 + 4 {
+        return Err("frame truncated");
+    }
+    let mut pos = 2;
+    let hint = bs[pos..pos + hl].to_vec();
+    pos += hl;
+    let step = u32::from_be_bytes(bs[pos..pos + 4].try_into().map_err(|_| "step")?);
+    pos += 4;
+    let epoch_start = u32::from_be_bytes(bs[pos..pos + 4].try_into().map_err(|_| "epoch")?);
+    pos += 4;
+    if epoch_start > step {
+        return Err("epoch after step");
+    }
+    let mut sender_dh = [0u8; 32];
+    sender_dh.copy_from_slice(&bs[pos..pos + 32]);
+    pos += 32;
+    let cl = u32::from_be_bytes(bs[pos..pos + 4].try_into().map_err(|_| "ctlen")?) as usize;
+    pos += 4;
+    if bs.len() != pos + cl {
+        return Err("ciphertext length mismatch");
+    }
+    Ok(FrameV3 {
+        hint,
+        step,
+        epoch_start,
+        sender_dh,
+        ciphertext: bs[pos..].to_vec(),
+    })
 }
 
 #[cfg(test)]
@@ -183,5 +266,39 @@ mod tests {
             assert_eq!(d, dh);
             assert_eq!(out_ct, ct);
         }
+    }
+
+    #[test]
+    fn v3_roundtrip_and_limits() {
+        let dh = [5u8; 32];
+        let framed = frame_v3(b"alice", 9, 5, &dh, b"ct-blob");
+        let f = unframe_v3(&framed).unwrap();
+        assert_eq!(f.hint, b"alice");
+        assert_eq!((f.step, f.epoch_start), (9, 5));
+        assert_eq!(f.sender_dh, dh);
+        assert_eq!(f.ciphertext, b"ct-blob");
+        // v2 and v3 frames are not interchangeable.
+        assert!(unframe_v3(&frame_v2(b"a", 1, &dh, b"ct")).is_err());
+        assert!(unframe_v2(&framed).is_err());
+    }
+
+    #[test]
+    fn v3_rejects_epoch_after_step_and_trailing_bytes() {
+        let dh = [5u8; 32];
+        assert_eq!(
+            unframe_v3(&frame_v3(b"a", 3, 4, &dh, b"ct")).unwrap_err(),
+            "epoch after step"
+        );
+        let mut framed = frame_v3(b"a", 3, 3, &dh, b"ct");
+        framed.push(0);
+        assert!(unframe_v3(&framed).is_err());
+    }
+
+    #[test]
+    fn v3_largest_frame_fits_inbound_cap() {
+        let ct = vec![0u8; crate::padding::SIZE_CLASSES[4] + AEAD_CIPHERTEXT_OVERHEAD];
+        let framed = frame_v3(&[0u8; 32], 1, 0, &[0u8; 32], &ct);
+        assert_eq!(framed.len(), MAX_FRAMED_V3_BYTES);
+        assert!(framed.len() <= MAX_HS_INBOUND_FRAME);
     }
 }

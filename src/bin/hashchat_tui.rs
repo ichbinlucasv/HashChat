@@ -18,24 +18,24 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use hashchat_rust::{
-    bootstrap_ratchet_from_signed_link, build_wire_aad, check_new_passphrase,
+    bootstrap_ratchet_from_signed_link, build_wire_aad_v3, check_new_passphrase,
     check_plaintext_send_size, check_state_storage, clear_scrub_callback, commit_outgoing_with_key,
     disable_core_dumps_best_effort, encrypt_with_key, extreme_default_lock_timeout,
-    extreme_default_ttl, format_lock_timeout, format_signed_contact_link, format_ttl, frame_v2,
+    extreme_default_ttl, format_lock_timeout, format_signed_contact_link, format_ttl, frame_v3, pad_message, unpad_message,
     install_panic_scrub_hook, install_terminate_signal_flag, is_onion_destination,
     is_terminal_safe, mlockall_current, parse_lock_timeout_token, parse_signed_contact_link,
     parse_ttl_token, push_char_no_realloc, register_scrub_callback, sanitize_for_terminal,
     sas_fingerprint, sas_for_signed, save_session_with_key, socks5_send,
     socks_isolation_for_contact, socks_isolation_for_onion, start_hidden_service_with_key,
-    state_exists, take_terminate_signal, tor_probe, unframe_v2, unlock_backoff_delay_secs,
+    state_exists, take_terminate_signal, tor_probe, unframe_v3, unlock_backoff_delay_secs,
     take_zeroizing_vec, unlock_session, wipe_local_sensitive, DnsPreference, DoubleRatchet,
-    DumpHardening, ERR_QUEUE_FULL, clear_duress, duress_configured, set_duress_passphrase,
+    DumpHardening, ERR_QUEUE_FULL, FrameV3, clear_duress, duress_configured, set_duress_passphrase,
     wipe_if_duress, clear_deadman, deadman_config, set_deadman, touch_deadman, unix_now,
     wipe_if_deadman_due, MAX_DEADMAN_DAYS,
     HiddenService, IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode,
     PersistedContact, PostureProfile, SessionState, SocksIsolationCreds, StoreKey,
     UnlockBackoffPolicy, DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES,
-    MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME, WIRE_VERSION_V2,
+    MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME, 
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -1371,8 +1371,13 @@ impl App {
         &mut self,
         transport_frame: &[u8],
     ) -> Result<(String, String, String, u32, bool), String> {
-        let (hint, step, sender_dh, ct) =
-            unframe_v2(transport_frame).map_err(|_| "malformed wire frame".to_string())?;
+        let FrameV3 {
+            hint,
+            step,
+            epoch_start,
+            sender_dh,
+            ciphertext: ct,
+        } = unframe_v3(transport_frame).map_err(|_| "malformed wire frame".to_string())?;
         let net = self.net.clone();
         let session = self
             .session
@@ -1414,10 +1419,17 @@ impl App {
             let mut r =
                 DoubleRatchet::from_bytes(&rb).map_err(|_| "ratchet restore".to_string())?;
             drop(rb);
-            let aad = build_wire_aad(WIRE_VERSION_V2, &hint, step, &sender_dh);
+            let aad = build_wire_aad_v3(&hint, step, epoch_start, &sender_dh);
             let remote = x25519_dalek::PublicKey::from(sender_dh);
-            match r.try_recv_decrypt_at(&remote, step, &ct, &aad) {
-                Ok((mut pt, step)) => {
+            match r.try_recv_decrypt_epoch(&remote, step, epoch_start, &ct, &aad) {
+                Ok((mut padded, step)) => {
+                    // Opened, so the sender used this contact's chain; a bad
+                    // padding layout is a protocol error, not a wrong contact.
+                    let unpadded = unpad_message(&padded);
+                    padded.zeroize();
+                    let Ok(mut pt) = unpadded else {
+                        return Err("bad padding".into());
+                    };
                     // Neutralise terminal control / bidi characters before the text
                     // can reach any widget; zeroize intermediate copies.
                     let text = {
@@ -1620,7 +1632,7 @@ impl App {
                     }
                 };
                 let mut r = DoubleRatchet::new();
-                r.init_symmetric(&shared);
+                r.init_directional(&shared, &local.x25519_public_bytes(), &contact.x25519);
                 shared.zeroize();
                 r
             } else {
@@ -1631,17 +1643,27 @@ impl App {
             let hint = local.x25519_public_bytes();
             let (mut msg_key, step) = ratchet.ratchet_send();
             let sender_dh = ratchet.public_key().to_bytes();
-            let aad = build_wire_aad(WIRE_VERSION_V2, &hint, step, &sender_dh);
-            let ct = match encrypt_with_key(&msg_key, text.as_bytes(), &aad) {
-                Ok(c) => c,
+            let epoch_start = ratchet.epoch_start();
+            let aad = build_wire_aad_v3(&hint, step, epoch_start, &sender_dh);
+            let mut padded = match pad_message(text.as_bytes()) {
+                Ok(p) => p,
                 Err(_) => {
                     msg_key.zeroize();
+                    self.push_msg("Send refused: message too long.");
+                    return;
+                }
+            };
+            let sealed = encrypt_with_key(&msg_key, &padded, &aad);
+            padded.zeroize();
+            msg_key.zeroize();
+            let ct = match sealed {
+                Ok(c) => c,
+                Err(_) => {
                     self.push_msg("Encrypt failed.");
                     return;
                 }
             };
-            msg_key.zeroize();
-            let frame = frame_v2(&hint, step, &sender_dh, &ct);
+            let frame = frame_v3(&hint, step, epoch_start, &sender_dh, &ct);
             let rbytes = ratchet.to_bytes();
             (frame, rbytes, step)
         };

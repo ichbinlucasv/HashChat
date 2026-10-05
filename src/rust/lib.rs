@@ -16,6 +16,7 @@ mod envelope;
 mod hidden_service;
 mod longterm_identity;
 mod net_mode;
+mod padding;
 mod private_fs;
 mod ratchet;
 mod session_persist;
@@ -39,6 +40,7 @@ pub use deadman::{
     clear_deadman, deadman_config, deadman_present, set_deadman, touch_deadman, unix_now,
     wipe_if_deadman_due, DeadmanConfig, MAX_DEADMAN_DAYS,
 };
+pub use padding::{pad as pad_message, unpad as unpad_message, SIZE_CLASSES};
 pub use duress::{
     clear_duress, duress_configured, is_duress_passphrase, set_duress_passphrase, wipe_if_duress,
 };
@@ -59,8 +61,8 @@ pub use longterm_identity::{
 };
 pub use net_mode::{DnsPreference, NetConfig, NetModeError, NetworkMode, PostureProfile};
 pub use ratchet::{
-    build_wire_aad, decrypt_with_key, encrypt_with_key, take_zeroizing_vec, DoubleRatchet,
-    WIRE_VERSION_V2,
+    build_wire_aad, build_wire_aad_v3, decrypt_with_key, encrypt_with_key, take_zeroizing_vec,
+    DoubleRatchet, WIRE_VERSION_V2, WIRE_VERSION_V3,
 };
 pub use private_fs::MAX_PRIVATE_FILE_BYTES;
 pub use session_persist::{
@@ -79,7 +81,8 @@ pub use tor_socks::{
     TorProbe, MAX_SOCKS_FRAME,
 };
 pub use wire::{
-    check_plaintext_send_size, frame_v2, unframe_v2, MAX_FRAMED_SEND_BYTES,
+    check_plaintext_send_size, frame_v2, frame_v3, unframe_v2, unframe_v3, FrameV3,
+    MAX_FRAMED_SEND_BYTES, MAX_FRAMED_V3_BYTES,
     MAX_PLAINTEXT_SEND_BYTES,
 };
 

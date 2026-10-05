@@ -20,6 +20,9 @@ pub const RATCHET_NONCE_LEN: usize = ring::aead::NONCE_LEN;
 /// Wire protocol version bound into AEAD AAD (frame v2).
 pub const WIRE_VERSION_V2: u8 = 2;
 
+/// Wire protocol version for frame v3: padded plaintext and `epoch_start` in the header.
+pub const WIRE_VERSION_V3: u8 = 3;
+
 /// After mutual DH publics are known, perform a send-side DH ratchet every N
 /// messages on the current sending chain. Both peers use the same N.
 pub const DH_SEND_EVERY: u32 = 5;
@@ -166,6 +169,58 @@ impl DoubleRatchet {
         self.send_count = 0;
         self.recv_count = 0;
         self.sends_since_dh = 0;
+    }
+
+    /// Bootstrap with a separate chain for each direction (audit M-1).
+    ///
+    /// The root binds both static public keys, sorted so each side computes
+    /// the same value. The peer with the lower static key sends on the
+    /// "low" chain and receives on the "high" one; the other peer does the
+    /// reverse. A frame reflected back to its sender therefore cannot open.
+    pub fn init_directional(
+        &mut self,
+        shared: &[u8; 32],
+        local_static: &[u8; 32],
+        remote_static: &[u8; 32],
+    ) {
+        let (lo, hi) = if local_static <= remote_static {
+            (local_static, remote_static)
+        } else {
+            (remote_static, local_static)
+        };
+        let mut info = Vec::with_capacity(32 + 64);
+        info.extend_from_slice(b"HashChat-v3-root");
+        info.extend_from_slice(lo);
+        info.extend_from_slice(hi);
+        let hk = Hkdf::<Sha256>::new(None, shared);
+        hk.expand(&info, &mut self.root_key).expect("HKDF failed");
+
+        let hk = Hkdf::<Sha256>::new(None, &self.root_key);
+        let mut low_chain = [0u8; RATCHET_KEY_LEN];
+        let mut high_chain = [0u8; RATCHET_KEY_LEN];
+        hk.expand(b"HashChat-v3-chain-low-to-high", &mut low_chain)
+            .expect("HKDF failed");
+        hk.expand(b"HashChat-v3-chain-high-to-low", &mut high_chain)
+            .expect("HKDF failed");
+        if local_static <= remote_static {
+            self.chain_key_send = low_chain;
+            self.chain_key_recv = high_chain;
+        } else {
+            self.chain_key_send = high_chain;
+            self.chain_key_recv = low_chain;
+        }
+        low_chain.zeroize();
+        high_chain.zeroize();
+        self.remote_dh = None;
+        self.send_count = 0;
+        self.recv_count = 0;
+        self.sends_since_dh = 0;
+    }
+
+    /// Step of the first message under the current sending DH key. Call right
+    /// after [`Self::ratchet_send`]; the previous chain ended just before it.
+    pub fn epoch_start(&self) -> u32 {
+        self.send_count.saturating_sub(self.sends_since_dh)
     }
 
     /// HKDF root + one directional chain from a DH shared secret.
@@ -356,6 +411,35 @@ impl DoubleRatchet {
         ciphertext: &[u8],
         aad: &[u8],
     ) -> Result<(Vec<u8>, u32), &'static str> {
+        self.recv_inner(remote, step, None, ciphertext, aad)
+    }
+
+    /// Like [`Self::try_recv_decrypt_at`] for frames that carry `epoch_start`.
+    /// When the sender's DH key is new, the unseen tail of the previous chain
+    /// is skipped exactly (up to `epoch_start`), so losing a whole epoch no
+    /// longer breaks the session. `epoch_start` must be covered by the AAD.
+    pub fn try_recv_decrypt_epoch(
+        &mut self,
+        remote: &PublicKey,
+        step: u32,
+        epoch_start: u32,
+        ciphertext: &[u8],
+        aad: &[u8],
+    ) -> Result<(Vec<u8>, u32), &'static str> {
+        if epoch_start > step {
+            return Err("epoch after step");
+        }
+        self.recv_inner(remote, step, Some(epoch_start), ciphertext, aad)
+    }
+
+    fn recv_inner(
+        &mut self,
+        remote: &PublicKey,
+        step: u32,
+        epoch_start: Option<u32>,
+        ciphertext: &[u8],
+        aad: &[u8],
+    ) -> Result<(Vec<u8>, u32), &'static str> {
         if self.skipped_keys.contains_key(&step) {
             return self.open_skipped(step, ciphertext, aad);
         }
@@ -388,7 +472,18 @@ impl DoubleRatchet {
             });
         }
 
-        // New sender DH public. The header does not say where the previous
+        if let Some(first) = epoch_start {
+            if first < self.recv_count {
+                return Err("stale or replayed frame");
+            }
+            return self.commit_if_opens(ciphertext, aad, |s| {
+                s.skip_recv_until(first)?;
+                s.dh_ratchet_recv(remote);
+                s.skip_recv_until(step)
+            });
+        }
+
+        // New sender DH public. Without epoch_start the header does not say where the previous
         // chain ended, but the sender rotates every DH_SEND_EVERY messages, so
         // this frame is at most DH_SEND_EVERY - 1 messages into the new chain.
         // Try each position; only the right one opens.
@@ -421,6 +516,19 @@ pub fn build_wire_aad(version: u8, hint: &[u8], step: u32, sender_dh: &[u8; 32])
     aad.push(version);
     aad.extend_from_slice(hint);
     aad.extend_from_slice(&step.to_be_bytes());
+    aad.extend_from_slice(sender_dh);
+    aad
+}
+
+/// Canonical wire AAD for frame v3:
+/// version || hint || step(be32) || epoch_start(be32) || sender_dh(32).
+pub fn build_wire_aad_v3(hint: &[u8], step: u32, epoch_start: u32, sender_dh: &[u8; 32]) -> Vec<u8> {
+    let hint = if hint.len() > 32 { &hint[..32] } else { hint };
+    let mut aad = Vec::with_capacity(1 + hint.len() + 8 + 32);
+    aad.push(WIRE_VERSION_V3);
+    aad.extend_from_slice(hint);
+    aad.extend_from_slice(&step.to_be_bytes());
+    aad.extend_from_slice(&epoch_start.to_be_bytes());
     aad.extend_from_slice(sender_dh);
     aad
 }
@@ -995,5 +1103,108 @@ mod tests {
         assert_eq!(restored.to_bytes(), bytes, "serialization must be stable");
         assert_eq!(open_at(&mut restored, &f1).expect("m1").0, b"m1");
         assert_eq!(open_at(&mut restored, &f0).expect("m0").0, b"m0");
+    }
+
+    fn directional_pair(seed: u8) -> (DoubleRatchet, DoubleRatchet) {
+        let shared = [seed; 32];
+        let (pa, pb) = ([0x10u8; 32], [0x20u8; 32]);
+        let mut a = DoubleRatchet::new();
+        let mut b = DoubleRatchet::new();
+        a.init_directional(&shared, &pa, &pb);
+        b.init_directional(&shared, &pb, &pa);
+        (a, b)
+    }
+
+    fn seal_v3(s: &mut DoubleRatchet, pt: &[u8]) -> (Vec<u8>, [u8; 32], u32, u32, Vec<u8>) {
+        let (mut key, step) = s.ratchet_send();
+        let epoch = s.epoch_start();
+        let dh = s.public_key().to_bytes();
+        let aad = build_wire_aad_v3(b"hint", step, epoch, &dh);
+        let ct = encrypt_with_key(&key, pt, &aad).unwrap();
+        key.zeroize();
+        (aad, dh, step, epoch, ct)
+    }
+
+    fn open_v3(
+        r: &mut DoubleRatchet,
+        f: &(Vec<u8>, [u8; 32], u32, u32, Vec<u8>),
+    ) -> Result<Vec<u8>, &'static str> {
+        // Rebuild the AAD from the header fields, as a real receiver does.
+        let aad = build_wire_aad_v3(b"hint", f.2, f.3, &f.1);
+        r.try_recv_decrypt_epoch(&PublicKey::from(f.1), f.2, f.3, &f.4, &aad)
+            .map(|(pt, _)| pt)
+    }
+
+    #[test]
+    fn directional_chains_differ_and_roundtrip() {
+        let (mut a, mut b) = directional_pair(0x61);
+        let f = seal_v3(&mut a, b"to bob");
+        assert_eq!(open_v3(&mut b, &f).unwrap(), b"to bob");
+        let g = seal_v3(&mut b, b"to alice");
+        assert_eq!(open_v3(&mut a, &g).unwrap(), b"to alice");
+    }
+
+    #[test]
+    fn directional_chains_refuse_a_reflected_frame() {
+        let (mut a, _b) = directional_pair(0x62);
+        let (mut a2, _) = directional_pair(0x62);
+        let f = seal_v3(&mut a, b"mine");
+        // Same state as the sender receiving its own frame: wrong chain.
+        assert!(open_v3(&mut a2, &f).is_err());
+    }
+
+    #[test]
+    fn directional_root_binds_the_static_keys() {
+        let shared = [0x63u8; 32];
+        let mut a = DoubleRatchet::new();
+        let mut c = DoubleRatchet::new();
+        a.init_directional(&shared, &[1u8; 32], &[2u8; 32]);
+        c.init_directional(&shared, &[2u8; 32], &[3u8; 32]);
+        let f = seal_v3(&mut a, b"x");
+        assert!(open_v3(&mut c, &f).is_err());
+    }
+
+    #[test]
+    fn whole_epoch_loss_is_recovered_with_epoch_start() {
+        let (mut a, mut b) = directional_pair(0x64);
+        // Teach both sides the other's DH key first.
+        let f0 = seal_v3(&mut a, b"hello");
+        open_v3(&mut b, &f0).unwrap();
+        let g0 = seal_v3(&mut b, b"hi");
+        open_v3(&mut a, &g0).unwrap();
+        // A sends through a full epoch and into the next; the whole first
+        // epoch (all but the last frame) never arrives.
+        let mut frames = Vec::new();
+        for i in 0..(DH_SEND_EVERY + 2) {
+            frames.push(seal_v3(&mut a, format!("m{i}").as_bytes()));
+        }
+        let last = frames.last().unwrap();
+        assert!(last.3 > 0, "last frame belongs to a later epoch");
+        assert_eq!(open_v3(&mut b, last).unwrap(), format!("m{}", DH_SEND_EVERY + 1).as_bytes());
+        // The lost frames are still readable if they turn up late.
+        assert_eq!(open_v3(&mut b, &frames[1]).unwrap(), b"m1");
+        // And the session keeps working both ways.
+        let h = seal_v3(&mut a, b"after");
+        assert_eq!(open_v3(&mut b, &h).unwrap(), b"after");
+        let r = seal_v3(&mut b, b"reply");
+        assert_eq!(open_v3(&mut a, &r).unwrap(), b"reply");
+    }
+
+    #[test]
+    fn forged_epoch_start_fails_the_aad() {
+        let (mut a, mut b) = directional_pair(0x66);
+        let first = seal_v3(&mut a, b"x");
+        open_v3(&mut b, &first).unwrap();
+        let back = seal_v3(&mut b, b"y");
+        open_v3(&mut a, &back).unwrap();
+        for _ in 0..DH_SEND_EVERY {
+            let _ = seal_v3(&mut a, b"skip");
+        }
+        let late = seal_v3(&mut a, b"late");
+        assert!(late.3 > 0);
+        let mut bad = late.clone();
+        bad.3 = late.3 - 1;
+        assert!(open_v3(&mut b, &bad).is_err());
+        assert_eq!(open_v3(&mut b, &late).unwrap(), b"late");
     }
 }

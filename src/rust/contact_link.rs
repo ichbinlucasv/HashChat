@@ -213,7 +213,7 @@ pub fn parse_unsigned_contact_link_insecure(
     Ok((full, key))
 }
 
-/// Verify signature, static-DH, then `init_symmetric` on a fresh ratchet.
+/// Verify signature, static-DH, then `init_directional` on a fresh ratchet.
 /// Returns (ratchet, SAS string). Never DH before verify.
 pub fn bootstrap_ratchet_from_signed_link(
     local: &LongTermIdentity,
@@ -225,7 +225,7 @@ pub fn bootstrap_ratchet_from_signed_link(
         .x25519_dh_checked(&peer_pub)
         .ok_or(ContactLinkError::DhFailed)?;
     let mut r = DoubleRatchet::new();
-    r.init_symmetric(&shared);
+    r.init_directional(&shared, &local.x25519_public_bytes(), &peer.x25519);
     zeroize::Zeroize::zeroize(&mut shared);
     let sas = sas_fingerprint(&peer.ed25519, &peer.x25519, &peer.onion);
     Ok((r, sas))
@@ -317,6 +317,52 @@ mod tests {
         let (o, k) = parse_unsigned_contact_link_insecure(&legacy).unwrap();
         assert!(o.ends_with(".onion"));
         assert_eq!(k, [0xABu8; 32]);
+    }
+
+    /// Same flow as above on wire v3: padded plaintext, epoch_start in the header.
+    #[test]
+    fn mutual_bootstrap_v3_padded_roundtrip() {
+        use crate::padding::{pad, unpad};
+        use crate::ratchet::{build_wire_aad_v3, encrypt_with_key};
+        use crate::wire::{frame_v3, unframe_v3};
+
+        let alice = LongTermIdentity::from_seed([0xA1; 32]);
+        let bob = LongTermIdentity::from_seed([0xB2; 32]);
+        let onion_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let onion_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let link_a = format_signed_contact_link(&alice, onion_a).unwrap();
+        let link_b = format_signed_contact_link(&bob, onion_b).unwrap();
+        let (mut r_a, _) = bootstrap_ratchet_from_signed_link(&alice, &link_b).unwrap();
+        let (mut r_b, _) = bootstrap_ratchet_from_signed_link(&bob, &link_a).unwrap();
+
+        let mut frames = Vec::new();
+        for text in ["a", "a much longer line ".repeat(40).as_str()] {
+            let hint = bob.x25519_public_bytes();
+            let (key, step) = r_b.ratchet_send();
+            let epoch = r_b.epoch_start();
+            let dh = r_b.public_key().to_bytes();
+            let aad = build_wire_aad_v3(&hint, step, epoch, &dh);
+            let ct = encrypt_with_key(&key, &pad(text.as_bytes()).unwrap(), &aad).unwrap();
+            frames.push((text.to_string(), frame_v3(&hint, step, epoch, &dh, &ct)));
+        }
+        assert_ne!(frames[0].1.len(), frames[1].1.len());
+        for (text, wire) in &frames {
+            let f = unframe_v3(wire).unwrap();
+            let aad = build_wire_aad_v3(&f.hint, f.step, f.epoch_start, &f.sender_dh);
+            let (padded, _) = r_a
+                .try_recv_decrypt_epoch(
+                    &X25519Public::from(f.sender_dh),
+                    f.step,
+                    f.epoch_start,
+                    &f.ciphertext,
+                    &aad,
+                )
+                .unwrap();
+            assert_eq!(unpad(&padded).unwrap(), text.as_bytes());
+        }
+        // Short messages are indistinguishable by size.
+        let short = |t: &[u8]| pad(t).unwrap().len();
+        assert_eq!(short(b"yes"), short(b"a slightly longer reply"));
     }
 
     /// Mutual signed bootstrap + wire v2 encrypt/decrypt (desktop two-peer path).

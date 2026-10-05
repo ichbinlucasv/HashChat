@@ -114,9 +114,15 @@ after commit but before Tor ACK may resend on restart. The receiver refuses a
 frame for a step it has already consumed, so a resent duplicate is dropped. Lost
 or reordered frames are tolerated: keys passed over are stored (at most
 `MAX_SKIP` = 200 per frame, 1000 per contact, oldest dropped first) and a late
-frame opens with its stored key, which is then erased. Losing every frame of a
-whole DH epoch still breaks the session; fixing that needs the previous chain
-length in the header, which is planned with the bootstrap handshake change.
+frame opens with its stored key, which is then erased. Wire format v3 carries
+the step where the sender's current DH epoch began (`epoch_start`, covered by
+the AEAD associated data), so a receiver that lost a whole epoch skips exactly
+the missing tail of the old chain and carries on. The skip limit still applies.
+Message plaintext is padded to 512, 1024, 2048, 4096 or 8448 bytes before
+sealing, so frame length shows only the size class. Contacts added after this
+change use a separate chain for each direction; older ratchet state keeps working
+but should be replaced by re-adding the contact. The Android copy and the
+transitional Haskell FFI still speak wire v2 and are not compatible with v3.
 The queue holds at most 64 frames. When it is full a send is refused before the
 ratchet advances, instead of being dropped after the fact; `:retry` frees space.
 Call sites that advance without commit risk losing forward-secrecy continuity
