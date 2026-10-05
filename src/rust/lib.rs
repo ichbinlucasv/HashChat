@@ -9,6 +9,7 @@ use zeroize::Zeroize;
 
 mod contact_link;
 mod disappearing;
+mod deadman;
 mod duress;
 mod emergency_scrub;
 mod envelope;
@@ -33,6 +34,10 @@ pub use disappearing::{
     extreme_default_lock_timeout, extreme_default_ttl, format_lock_timeout, format_ttl,
     parse_lock_timeout_token, parse_ttl_token, DEFAULT_LOCK_TIMEOUT_SECS,
     EXTREME_DEFAULT_LOCK_TIMEOUT_SECS, EXTREME_DEFAULT_TTL_SECS,
+};
+pub use deadman::{
+    clear_deadman, deadman_config, deadman_present, set_deadman, touch_deadman, unix_now,
+    wipe_if_deadman_due, DeadmanConfig, MAX_DEADMAN_DAYS,
 };
 pub use duress::{
     clear_duress, duress_configured, is_duress_passphrase, set_duress_passphrase, wipe_if_duress,

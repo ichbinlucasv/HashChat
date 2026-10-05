@@ -30,7 +30,8 @@ use hashchat_rust::{
     state_exists, take_terminate_signal, tor_probe, unframe_v2, unlock_backoff_delay_secs,
     take_zeroizing_vec, unlock_session, wipe_local_sensitive, DnsPreference, DoubleRatchet,
     DumpHardening, ERR_QUEUE_FULL, clear_duress, duress_configured, set_duress_passphrase,
-    wipe_if_duress,
+    wipe_if_duress, clear_deadman, deadman_config, set_deadman, touch_deadman, unix_now,
+    wipe_if_deadman_due, MAX_DEADMAN_DAYS,
     HiddenService, IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode,
     PersistedContact, PostureProfile, SessionState, SocksIsolationCreds, StoreKey,
     UnlockBackoffPolicy, DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES,
@@ -505,6 +506,49 @@ impl App {
         }
     }
 
+    fn handle_deadman(&mut self, args: &str) {
+        let data_dir = Path::new(DATA_DIR);
+        let mut words = args.split_whitespace();
+        match (words.next(), words.next(), words.next()) {
+            (None, _, _) | (Some("status"), None, _) => {
+                self.status_msg = match deadman_config(data_dir) {
+                    Some(cfg) => {
+                        let left = cfg.remaining_secs(unix_now()) / 3600;
+                        format!(
+                            "dead-man switch: wipe after {} day(s) without unlock ({left} h left)",
+                            cfg.days
+                        )
+                    }
+                    None => "dead-man switch: off".into(),
+                };
+            }
+            (Some("off"), None, _) => {
+                clear_deadman(data_dir);
+                self.status_msg = "dead-man switch off".into();
+            }
+            (Some("set"), Some(n), None) => {
+                if self.session.is_none() {
+                    self.status_msg = "Unlock first.".into();
+                    return;
+                }
+                self.status_msg = match n.parse::<u32>() {
+                    Ok(days) => match set_deadman(data_dir, days, unix_now()) {
+                        Ok(()) => format!(
+                            "dead-man switch: wipe after {days} day(s) without unlock. \
+                             It only checks when HashChat starts."
+                        ),
+                        Err(reason) => format!("Dead-man switch refused: {reason}."),
+                    },
+                    Err(_) => format!("Usage: :deadman set <1-{MAX_DEADMAN_DAYS}>"),
+                };
+            }
+            _ => {
+                self.status_msg = format!("Usage: :deadman [status|off|set <1-{MAX_DEADMAN_DAYS}>]");
+            }
+        }
+        self.push_msg(self.status_msg.clone());
+    }
+
     fn cancel_duress_entry(&mut self) {
         self.passphrase.zeroize();
         self.passphrase.clear();
@@ -631,6 +675,7 @@ impl App {
         if self.session.is_some() && self.store_key.is_some() {
             let _ = self.persist_session();
         }
+        touch_deadman(Path::new(DATA_DIR), unix_now());
         self.store_key = None;
         // Drop HS: stops accept thread + closes ControlPort (onion key stays in state.enc).
         self.hs = None;
@@ -913,6 +958,7 @@ impl App {
             match unlock_session(Path::new(DATA_DIR), pass) {
                 Ok((state, key)) => {
                     self.store_key = Some(Box::new(key));
+                    touch_deadman(Path::new(DATA_DIR), unix_now());
                     self.unlock_fail_count = 0;
                     self.unlock_cooldown_until = None;
                     let n_contacts = state.contacts.len();
@@ -2467,6 +2513,7 @@ impl App {
                     "  :evidence / :audit-status  OPSEC posture dump (counts/tokens only)",
                 );
                 self.push_msg("  :duress [set|clear]     passphrase that wipes instead of unlocking");
+                self.push_msg("  :deadman [set N|off]    wipe at start if not unlocked for N days");
                 self.push_msg("  :wipe                   nuclear local wipe (confirm)");
                 self.push_msg("  :quit                   exit");
                 self.push_msg(
@@ -2569,6 +2616,10 @@ impl App {
                     other.strip_prefix(":delete-contact").unwrap_or("").trim()
                 };
                 self.handle_delete_contact_command(args);
+            }
+            other if other == ":deadman" || other.starts_with(":deadman ") => {
+                let args = other.strip_prefix(":deadman").unwrap_or("").trim();
+                self.handle_deadman(args);
             }
             other if other == ":duress" || other.starts_with(":duress ") => {
                 let args = other.strip_prefix(":duress").unwrap_or("").trim();
@@ -3057,6 +3108,8 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    // Before the unlock prompt, so an overdue store is gone before anyone can type.
+    wipe_if_deadman_due(Path::new(DATA_DIR), unix_now(), wipe_local_sensitive);
     let mut app = App::new();
     app.dump_hardening = Some(dumps);
     if !dumps.all() {
@@ -3299,6 +3352,9 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
         }
     }
 
+    if app.session.is_some() {
+        touch_deadman(Path::new(DATA_DIR), unix_now());
+    }
     unbind_app_scrub();
     app.hs = None;
     app.store_key = None;

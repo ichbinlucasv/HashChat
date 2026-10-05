@@ -1344,6 +1344,7 @@ pub fn wipe_disk(data_dir: &Path) -> std::io::Result<()> {
     private_fs::remove_stale_temps(data_dir, STATE_FILE);
     private_fs::remove_stale_temps(data_dir, MACHINE_KEY_FILE);
     crate::duress::clear_duress(data_dir);
+    crate::deadman::clear_deadman(data_dir);
     Ok(())
 }
 

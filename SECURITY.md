@@ -92,6 +92,8 @@ No Tor daemon required for the gate itself.
 
 A duress passphrase (`:duress set`) triggers the same wipe when typed at the unlock prompt; see THREATMODEL.md for what that does and does not cover.
 
+The dead-man switch (`:deadman set N`) runs the same wipe at startup if the store has not been unlocked for N days. It only fires when HashChat is started; if the program is never run again, nothing happens.
+
 Nuclear wipe (`wipe_local_sensitive` / TUI `:wipe` → `:wipe-confirm`) deletes
 `state.enc` (and thus contacts/ratchets/pending) along with other local data under
 `hashchat_data/` and Tor HS material under `tor/hidden_service/`. The TUI confirm
