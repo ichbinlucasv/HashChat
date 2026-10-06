@@ -29,8 +29,8 @@ use hashchat_rust::{
     socks_isolation_for_contact, socks_isolation_for_onion, start_hidden_service_with_key,
     state_exists, take_terminate_signal, tor_probe, unframe_v3, unlock_backoff_delay_secs,
     take_zeroizing_vec, unlock_session, wipe_local_sensitive, DnsPreference, DoubleRatchet,
-    DumpHardening, ERR_QUEUE_FULL, FrameV3, clear_duress, duress_configured, set_duress_passphrase,
-    wipe_if_duress, clear_deadman, deadman_config, set_deadman, touch_deadman, unix_now,
+    DumpHardening, ERR_QUEUE_FULL, FrameV3, clear_duress, duress_configured,
+    set_duress_passphrase_with, wipe_on_duress, DuressAction, clear_deadman, deadman_config, set_deadman, touch_deadman, unix_now,
     wipe_if_deadman_due, MAX_DEADMAN_DAYS, attempt_failed, attempt_succeeded, begin_attempt,
     clear_failwipe, failwipe_config, set_failwipe, Attempt, MAX_FAIL_LIMIT,
     HiddenService, IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode,
@@ -214,6 +214,8 @@ struct App {
     held_sends: Vec<HeldSend>,
     /// Set at unlock when the clock reads well before the mark in state.enc.
     clock_behind_secs: Option<u64>,
+    /// Action chosen by `:duress set` / `:duress set decoy` while the entry screen is open.
+    duress_setup_action: DuressAction,
     /// Last user input Instant (Main / confirm screens). Used for idle auto-lock.
     last_input_at: Instant,
     /// Pending contact id for `:delete-contact-confirm` (cleared on Esc / success).
@@ -296,6 +298,7 @@ impl App {
             send_jitter_secs: 0,
             held_sends: Vec::new(),
             clock_behind_secs: None,
+            duress_setup_action: DuressAction::Wipe,
             last_input_at: Instant::now(),
             pending_delete_contact: None,
             unlock_fail_count: 0,
@@ -512,11 +515,16 @@ impl App {
                 };
                 self.push_msg(self.status_msg.clone());
             }
-            "set" => {
+            "set" | "set decoy" => {
                 if self.session.is_none() {
                     self.status_msg = "Unlock first.".into();
                     return;
                 }
+                self.duress_setup_action = if args.trim() == "set decoy" {
+                    DuressAction::Decoy
+                } else {
+                    DuressAction::Wipe
+                };
                 self.clear_input_secure();
                 self.passphrase.zeroize();
                 self.passphrase.clear();
@@ -532,7 +540,7 @@ impl App {
                 self.push_msg(self.status_msg.clone());
             }
             _ => {
-                self.status_msg = "Usage: :duress [status|set|clear]".into();
+                self.status_msg = "Usage: :duress [status|set|set decoy|clear]".into();
             }
         }
     }
@@ -621,6 +629,7 @@ impl App {
     }
 
     fn cancel_duress_entry(&mut self) {
+        self.duress_setup_action = DuressAction::Wipe;
         self.passphrase.zeroize();
         self.passphrase.clear();
         self.passphrase_confirm.zeroize();
@@ -641,14 +650,22 @@ impl App {
             return;
         }
         let result = if self.passphrase == self.passphrase_confirm {
-            set_duress_passphrase(Path::new(DATA_DIR), self.passphrase.as_bytes())
+            set_duress_passphrase_with(
+                Path::new(DATA_DIR),
+                self.passphrase.as_bytes(),
+                self.duress_setup_action,
+            )
         } else {
             Err("passphrases do not match")
         };
+        let action = self.duress_setup_action;
         self.cancel_duress_entry();
-        self.status_msg = match result {
-            Ok(()) => "duress passphrase set".into(),
-            Err(reason) => format!("Duress passphrase refused: {reason}."),
+        self.status_msg = match (result, action) {
+            (Ok(()), DuressAction::Wipe) => "duress passphrase set (wipe)".into(),
+            (Ok(()), DuressAction::Decoy) => {
+                "duress passphrase set (wipe, then open an empty decoy profile)".into()
+            }
+            (Err(reason), _) => format!("Duress passphrase refused: {reason}."),
         };
         self.push_msg(self.status_msg.clone());
     }
@@ -995,6 +1012,41 @@ impl App {
         }
     }
 
+    /// Install a freshly created session (create path and duress decoy).
+    fn adopt_new_session(&mut self, state: SessionState, key: StoreKey) {
+        self.store_key = Some(Box::new(key));
+        self.unlock_fail_count = 0;
+        self.unlock_cooldown_until = None;
+        self.session = Some(state);
+        self.disappear_ttl_secs = 0;
+        self.lock_timeout_secs = DEFAULT_LOCK_TIMEOUT_SECS;
+        self.send_jitter_secs = 0;
+        self.clock_behind_secs = None;
+        self.apply_extreme_ttl_default();
+        self.apply_extreme_lock_default();
+        let _ = self.persist_session();
+        self.refresh_identity_display();
+        self.screen = Screen::Main;
+        self.touch_input();
+    }
+
+    /// Open the empty profile made after a duress wipe. The messages match an
+    /// ordinary unlock of a store with no contacts.
+    fn open_decoy_session(&mut self, state: SessionState, key: StoreKey) {
+        let data_dir = Path::new(DATA_DIR);
+        attempt_succeeded(data_dir);
+        touch_deadman(data_dir, unix_now());
+        self.adopt_new_session(state, key);
+        self.push_msg(format!(
+            "Loaded 0 contact(s), 0 pending. {} · disappear={} · lock={}",
+            self.net.status_line(),
+            format_ttl(self.disappear_ttl_secs),
+            format_lock_timeout(self.lock_timeout_secs)
+        ));
+        self.status_msg = "Session unlocked. :listen then :add-contact to begin.".into();
+        self.apply_mlock_best_effort();
+    }
+
     fn try_unlock(&mut self) {
         let pass = self.passphrase.as_bytes();
         if pass.is_empty() {
@@ -1041,48 +1093,18 @@ impl App {
                 self.unlock_step = UnlockStep::EnterPass;
                 return;
             }
-            match LongTermIdentity::generate() {
-                Ok(id) => {
-                    let identity = IdentityOnionState {
-                        seed: id.seed_bytes(),
-                        onion: String::new(),
-                        onion_key: Vec::new(),
-                    };
-                    let state = SessionState::from_identity_with_net(identity, self.net.clone());
-                    // Argon2id runs once here; afterwards only the derived key is kept.
-                    let saved = StoreKey::derive_new(pass).and_then(|key| {
-                        save_session_with_key(Path::new(DATA_DIR), &key, &state).map(|()| key)
-                    });
-                    match saved {
-                        Ok(key) => {
-                            self.store_key = Some(Box::new(key));
-                            self.unlock_fail_count = 0;
-                            self.unlock_cooldown_until = None;
-                            self.session = Some(state);
-                            self.disappear_ttl_secs = 0;
-                            self.lock_timeout_secs = DEFAULT_LOCK_TIMEOUT_SECS;
-                            self.send_jitter_secs = 0;
-                            self.apply_extreme_ttl_default();
-                            self.apply_extreme_lock_default();
-                            let _ = self.persist_session();
-                            self.refresh_identity_display();
-                            self.screen = Screen::Main;
-                            self.touch_input();
-                            self.status_msg =
-                                "Session created. Use :listen when Tor ControlPort is ready."
-                                    .into();
-                            self.apply_mlock_best_effort();
-                            self.push_msg(
-                                "Session initialized. :listen then :my-contact to share a signed link.",
-                            );
-                        }
-                        Err(reason) => {
-                            // Reasons are fixed, path-free strings (no secrets).
-                            self.status_msg = format!("Failed to save session: {reason}.");
-                        }
-                    }
+            match create_session_on_disk(pass, &self.net) {
+                Ok((state, key)) => {
+                    self.adopt_new_session(state, key);
+                    self.status_msg =
+                        "Session created. Use :listen when Tor ControlPort is ready.".into();
+                    self.apply_mlock_best_effort();
+                    self.push_msg(
+                        "Session initialized. :listen then :my-contact to share a signed link.",
+                    );
                 }
-                Err(_) => self.status_msg = "Identity generation failed.".into(),
+                // Reasons are fixed, path-free strings (no secrets).
+                Err(reason) => self.status_msg = format!("Failed to save session: {reason}."),
             }
         } else {
             // Storage policy (symlink / owner / mode / type) is checked before any KDF
@@ -1150,9 +1172,20 @@ impl App {
                     }
                 }
                 Err(_) => {
-                    // A duress passphrase wipes and then looks like any other failure.
-                    wipe_if_duress(Path::new(DATA_DIR), pass, wipe_local_sensitive);
-                    if attempt == Attempt::Allowed && attempt_failed(data_dir) {
+                    // A duress passphrase wipes, then either looks like any other
+                    // failure or opens a fresh decoy profile under the same passphrase.
+                    let duress = wipe_on_duress(data_dir, pass, wipe_local_sensitive);
+                    if duress == Some(DuressAction::Decoy) {
+                        if let Ok((state, key)) = create_session_on_disk(pass, &self.net) {
+                            self.open_decoy_session(state, key);
+                            self.passphrase.zeroize();
+                            self.passphrase.clear();
+                            return;
+                        }
+                        // Could not write the decoy: the store is already wiped, so
+                        // fall through to the ordinary failure message.
+                    }
+                    if duress.is_none() && attempt == Attempt::Allowed && attempt_failed(data_dir) {
                         wipe_local_sensitive();
                     }
                     self.unlock_fail_count = self.unlock_fail_count.saturating_add(1);
@@ -2808,6 +2841,7 @@ impl App {
                     "  :evidence / :audit-status  OPSEC posture dump (counts/tokens only)",
                 );
                 self.push_msg("  :duress [set|clear]     passphrase that wipes instead of unlocking");
+                self.push_msg("  :duress set decoy       same, then opens an empty profile instead");
                 self.push_msg("  :deadman [set N|off]    wipe at start if not unlocked for N days");
                 self.push_msg("  :wipe-after [set N|off] wipe after N failed unlocks");
                 self.push_msg("  :clock / :clock-reset   check for a clock set back; accept current time");
@@ -3690,6 +3724,24 @@ fn clock_warning_line(behind_secs: u64) -> String {
          switch rely on it. Fix the clock, or :clock-reset if it is right.",
         format_rollback(behind_secs)
     )
+}
+
+/// Generate a new identity, seal it under `pass` in the data directory and
+/// return it with the derived store key. Argon2id runs once.
+fn create_session_on_disk(
+    pass: &[u8],
+    net: &NetConfig,
+) -> Result<(SessionState, StoreKey), &'static str> {
+    let id = LongTermIdentity::generate().map_err(|_| "identity generation failed")?;
+    let identity = IdentityOnionState {
+        seed: id.seed_bytes(),
+        onion: String::new(),
+        onion_key: Vec::new(),
+    };
+    let state = SessionState::from_identity_with_net(identity, net.clone());
+    let key = StoreKey::derive_new(pass)?;
+    save_session_with_key(Path::new(DATA_DIR), &key, &state)?;
+    Ok((state, key))
 }
 
 fn main() {

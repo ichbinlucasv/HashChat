@@ -56,7 +56,8 @@ pub use failwipe::{
     set_failwipe, Attempt, MAX_FAIL_LIMIT,
 };
 pub use duress::{
-    clear_duress, duress_configured, is_duress_passphrase, set_duress_passphrase, wipe_if_duress,
+    clear_duress, duress_action, duress_configured, is_duress_passphrase, set_duress_passphrase,
+    set_duress_passphrase_with, wipe_if_duress, wipe_on_duress, DuressAction,
 };
 pub use emergency_scrub::{
     clear_scrub_callback, emergency_scrub, install_panic_scrub_hook, install_terminate_signal_flag,

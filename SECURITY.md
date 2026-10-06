@@ -90,7 +90,7 @@ informational advisories ignored in `.cargo/audit.toml`. The offline gate soft-s
 audit when the tool or advisory DB is missing so local/offline runs stay deterministic.
 No Tor daemon required for the gate itself.
 
-A duress passphrase (`:duress set`) triggers the same wipe when typed at the unlock prompt; see THREATMODEL.md for what that does and does not cover.
+A duress passphrase (`:duress set`) triggers the same wipe when typed at the unlock prompt, and `:duress set decoy` opens a new empty profile after the wipe instead of failing; see THREATMODEL.md for what that does and does not cover.
 
 The dead-man switch (`:deadman set N`) runs the same wipe at startup if the store has not been unlocked for N days. It only fires when HashChat is started; if the program is never run again, nothing happens.
 
