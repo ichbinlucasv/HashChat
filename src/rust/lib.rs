@@ -7,6 +7,7 @@ use std::ptr;
 use subtle::ConstantTimeEq; // OPSEC: audited constant-time comparison (replaces deprecated ring internal API)
 use zeroize::Zeroize;
 
+mod clock_check;
 mod contact_link;
 mod disappearing;
 mod deadman;
@@ -38,6 +39,9 @@ pub use disappearing::{
     extreme_default_lock_timeout, extreme_default_ttl, format_lock_timeout, format_ttl,
     parse_lock_timeout_token, parse_ttl_token, DEFAULT_LOCK_TIMEOUT_SECS,
     EXTREME_DEFAULT_LOCK_TIMEOUT_SECS, EXTREME_DEFAULT_TTL_SECS,
+};
+pub use clock_check::{
+    advance_clock_mark, clock_rollback_secs, format_rollback, CLOCK_ROLLBACK_TOLERANCE_SECS,
 };
 pub use deadman::{
     clear_deadman, deadman_config, deadman_present, set_deadman, touch_deadman, unix_now,
@@ -1486,6 +1490,7 @@ pub extern "C" fn rust_session_state_save(
             verified_ids: Vec::new(),
             lock_timeout_secs: crate::disappearing::DEFAULT_LOCK_TIMEOUT_SECS,
             send_jitter_secs: 0,
+            clock_mark_unix: 0,
         };
         let mode = PersistMode::from_flags(insecure_dev != 0);
         save_session(Path::new(dir), mode, pass, &state).is_ok()

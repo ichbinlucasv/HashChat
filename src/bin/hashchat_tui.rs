@@ -37,7 +37,7 @@ use hashchat_rust::{
     PersistedContact, PostureProfile, SessionState, SocksIsolationCreds, StoreKey,
     UnlockBackoffPolicy, DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES,
     MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME, format_jitter, parse_jitter_token,
-    sample_send_delay,
+    sample_send_delay, clock_rollback_secs, format_rollback,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -212,6 +212,8 @@ struct App {
     send_jitter_secs: u32,
     /// Frames committed but not yet handed to Tor because of send jitter.
     held_sends: Vec<HeldSend>,
+    /// Set at unlock when the clock reads well before the mark in state.enc.
+    clock_behind_secs: Option<u64>,
     /// Last user input Instant (Main / confirm screens). Used for idle auto-lock.
     last_input_at: Instant,
     /// Pending contact id for `:delete-contact-confirm` (cleared on Esc / success).
@@ -293,6 +295,7 @@ impl App {
             lock_timeout_secs: DEFAULT_LOCK_TIMEOUT_SECS,
             send_jitter_secs: 0,
             held_sends: Vec::new(),
+            clock_behind_secs: None,
             last_input_at: Instant::now(),
             pending_delete_contact: None,
             unlock_fail_count: 0,
@@ -746,6 +749,7 @@ impl App {
         touch_deadman(Path::new(DATA_DIR), unix_now());
         // Held frames stay in state.enc and go out with :retry after unlock.
         self.held_sends.clear();
+        self.clock_behind_secs = None;
         self.store_key = None;
         // Drop HS: stops accept thread + closes ControlPort (onion key stays in state.enc).
         self.hs = None;
@@ -798,6 +802,38 @@ impl App {
         self.pending_delete_contact = None;
         self.contacts_state = ListState::default();
         self.selected_contact = None;
+    }
+
+    /// `:clock` shows whether the clock was set back; `:clock-reset` accepts
+    /// the current time as correct and lowers the stored mark to it.
+    fn handle_clock(&mut self, reset: bool) {
+        if self.session.is_none() {
+            self.status_msg = "Unlock first: the clock mark lives in state.enc.".into();
+            return;
+        }
+        if reset {
+            if let Some(s) = self.session.as_mut() {
+                s.clock_mark_unix = 0;
+            }
+            let saved = self.persist_session().is_ok();
+            if let Some(s) = self.session.as_mut() {
+                s.clock_mark_unix = unix_now();
+            }
+            self.clock_behind_secs = None;
+            let line = format!(
+                "Clock mark reset to the current time ({})",
+                if saved { "saved" } else { "memory only" }
+            );
+            self.status_msg = line.clone();
+            self.push_msg(line);
+            return;
+        }
+        let line = match self.clock_behind_secs {
+            Some(behind) => clock_warning_line(behind),
+            None => "clock=ok (not behind the last saved time)".into(),
+        };
+        self.status_msg = line.clone();
+        self.push_msg(line);
     }
 
     fn handle_jitter(&mut self, args: &str) {
@@ -1080,6 +1116,8 @@ impl App {
                     self.disappear_ttl_secs = state.disappear_ttl_secs;
                     self.lock_timeout_secs = state.lock_timeout_secs;
                     self.send_jitter_secs = state.send_jitter_secs;
+                    self.clock_behind_secs =
+                        clock_rollback_secs(state.clock_mark_unix, unix_now());
                     self.session = Some(state);
                     self.apply_extreme_ttl_default();
                     self.apply_extreme_lock_default();
@@ -1105,6 +1143,11 @@ impl App {
                             "Session unlocked. :listen then :add-contact to begin.".into();
                     }
                     self.apply_mlock_best_effort();
+                    if let Some(behind) = self.clock_behind_secs {
+                        let line = clock_warning_line(behind);
+                        self.push_msg(line.clone());
+                        self.status_msg = line;
+                    }
                 }
                 Err(_) => {
                     // A duress passphrase wipes and then looks like any other failure.
@@ -2544,6 +2587,10 @@ impl App {
         self.push_msg(format!(
             "contacts={contacts} · blocked={blocked} · muted={muted} · unverified={unverified}"
         ));
+        if unlocked {
+            let clock = if self.clock_behind_secs.is_some() { "behind" } else { "ok" };
+            self.push_msg(format!("clock={clock}"));
+        }
 
         let (core0, nodump) = match self.dump_hardening {
             Some(h) => (h.core_limit_zero, h.non_dumpable),
@@ -2763,6 +2810,7 @@ impl App {
                 self.push_msg("  :duress [set|clear]     passphrase that wipes instead of unlocking");
                 self.push_msg("  :deadman [set N|off]    wipe at start if not unlocked for N days");
                 self.push_msg("  :wipe-after [set N|off] wipe after N failed unlocks");
+                self.push_msg("  :clock / :clock-reset   check for a clock set back; accept current time");
                 self.push_msg("  :wipe                   nuclear local wipe (confirm)");
                 self.push_msg("  Ctrl+\\                 panic: wipe and quit now, no prompt");
                 self.push_msg("  :quit                   exit");
@@ -2879,6 +2927,8 @@ impl App {
                 let args = other.strip_prefix(":duress").unwrap_or("").trim();
                 self.handle_duress(args);
             }
+            ":clock" => self.handle_clock(false),
+            ":clock-reset" => self.handle_clock(true),
             ":lock" => {
                 if self.session.is_none() {
                     self.status_msg = "Already locked (or no session).".into();
@@ -3630,6 +3680,16 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     Ok(())
+}
+
+/// Warning shown when the clock reads earlier than the last save. Says why it
+/// matters without echoing any timestamps.
+fn clock_warning_line(behind_secs: u64) -> String {
+    format!(
+        "Warning: system clock is {} behind the last saved time. Expiry and the dead-man \
+         switch rely on it. Fix the clock, or :clock-reset if it is right.",
+        format_rollback(behind_secs)
+    )
 }
 
 fn main() {

@@ -34,7 +34,9 @@
 //! v6 = + verified contact-id string list (SAS out-of-band trust gate; Standard durable).
 //! v7 = + idle auto-lock timeout seconds (u32 BE; 0 = off; default 300 = 5m on missing).
 //! v8 = + maximum send jitter seconds (u32 BE; 0 = off, the default on missing).
-//! Load accepts v1–v8; save always writes v8. Older blobs load empty deny lists;
+//! v9 = + clock mark (u64 BE): latest wall-clock time seen at save, rounded down
+//! to ten minutes, used to warn about a clock set back ([`crate::clock_check`]).
+//! Load accepts v1–v9; save always writes v9. Older blobs load empty deny lists;
 //! pre-v6 contacts are treated as **verified** for continuity (new `:add-contact`
 //! entries start unverified). Pre-v7 loads default idle lock to 5 minutes.
 //!
@@ -49,7 +51,7 @@
 //! When [`crate::net_mode::PostureProfile::Extreme`] is set on the session's
 //! [`NetConfig`], [`save_session`] persists **identity + onion + net prefs +
 //! disappear TTL + idle lock timeout + send jitter only**. Contacts, ratchets, pending frames, blocked/muted, and
-//! verified lists are written as empty vectors (blob stays v8). Trade-off: smaller
+//! verified lists are written as empty vectors (blob stays v9). Trade-off: smaller
 //! at-rest footprint and no multi-session contact/deny/verify continuity — the user
 //! must re-add contacts (and re-block / re-verify if needed) after restart. Tor 1:1
 //! messaging for the **current** process session is unchanged (in-memory
@@ -67,6 +69,7 @@
 //! verified (continuity); missing idle lock on v1–v6 loads as 300 seconds (5m).
 
 use crate::disappearing::DEFAULT_LOCK_TIMEOUT_SECS;
+use crate::clock_check::advance_clock_mark;
 use crate::send_jitter::MAX_SEND_JITTER_SECS;
 use crate::envelope::{self, StoreKey};
 use crate::longterm_identity::LongTermIdentity;
@@ -90,6 +93,7 @@ const BLOB_VERSION_V5: u8 = 5;
 const BLOB_VERSION_V6: u8 = 6;
 const BLOB_VERSION_V7: u8 = 7;
 const BLOB_VERSION_V8: u8 = 8;
+const BLOB_VERSION_V9: u8 = 9;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PersistMode {
@@ -241,6 +245,10 @@ pub struct SessionState {
     /// Upper bound of the random delay before a send, in seconds (`0` = off). v8+.
     #[zeroize(skip)]
     pub send_jitter_secs: u32,
+    /// Latest clock time recorded at a save (v9+; 0 = none yet). Each save
+    /// raises it to the current time; it never goes down on its own.
+    #[zeroize(skip)]
+    pub clock_mark_unix: u64,
 }
 
 impl SessionState {
@@ -257,6 +265,7 @@ impl SessionState {
             verified_ids: Vec::new(),
             lock_timeout_secs: DEFAULT_LOCK_TIMEOUT_SECS,
             send_jitter_secs: 0,
+            clock_mark_unix: 0,
         }
     }
 
@@ -274,6 +283,7 @@ impl SessionState {
             verified_ids: Vec::new(),
             lock_timeout_secs: DEFAULT_LOCK_TIMEOUT_SECS,
             send_jitter_secs: 0,
+            clock_mark_unix: 0,
         }
     }
 
@@ -746,6 +756,7 @@ impl SessionState {
             verified_ids: Vec::new(),
             lock_timeout_secs: self.lock_timeout_secs,
             send_jitter_secs: self.send_jitter_secs,
+            clock_mark_unix: self.clock_mark_unix,
         }
     }
 
@@ -770,6 +781,7 @@ impl SessionState {
         self.disappear_ttl_secs = 0;
         self.lock_timeout_secs = 0;
         self.send_jitter_secs = 0;
+        self.clock_mark_unix = 0;
     }
 }
 
@@ -842,8 +854,12 @@ fn read_string_list(buf: &[u8], pos: &mut usize) -> Result<Vec<String>, &'static
 }
 
 fn serialize_blob(state: &SessionState) -> Vec<u8> {
+    serialize_blob_at(state, crate::deadman::unix_now())
+}
+
+fn serialize_blob_at(state: &SessionState, now_unix: u64) -> Vec<u8> {
     let mut plain = Vec::new();
-    plain.push(BLOB_VERSION_V8);
+    plain.push(BLOB_VERSION_V9);
     plain.extend_from_slice(&state.identity.seed);
     write_len_str(&mut plain, &state.identity.onion);
     write_len_bytes(&mut plain, &state.identity.onion_key);
@@ -892,6 +908,10 @@ fn serialize_blob(state: &SessionState) -> Vec<u8> {
     // send jitter (v8+)
     plain.extend_from_slice(&state.send_jitter_secs.to_be_bytes());
 
+    // clock mark (v9+)
+    let mark = advance_clock_mark(state.clock_mark_unix, now_unix);
+    plain.extend_from_slice(&mark.to_be_bytes());
+
     plain
 }
 
@@ -900,7 +920,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         return Err("empty state blob");
     }
     let ver = plain[0];
-    if !(BLOB_VERSION_V1..=BLOB_VERSION_V8).contains(&ver) {
+    if !(BLOB_VERSION_V1..=BLOB_VERSION_V9).contains(&ver) {
         return Err("bad state blob version");
     }
     if plain.len() < 33 {
@@ -1037,6 +1057,18 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         0
     };
 
+    // v9: clock mark. Older blobs have none, so the first unlock cannot warn.
+    let clock_mark_unix = if ver >= BLOB_VERSION_V9 {
+        if pos + 8 > plain.len() {
+            return Err("truncated clock mark");
+        }
+        let mark = u64::from_be_bytes(plain[pos..pos + 8].try_into().unwrap());
+        pos += 8;
+        mark
+    } else {
+        0
+    };
+
     if pos != plain.len() {
         return Err("trailing junk in state blob");
     }
@@ -1053,6 +1085,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         verified_ids,
         lock_timeout_secs,
         send_jitter_secs,
+        clock_mark_unix,
     })
 }
 
@@ -2711,6 +2744,73 @@ mod tests {
         assert_eq!(session.for_disk().send_jitter_secs, 45);
         session.wipe_memory_secure();
         assert_eq!(session.send_jitter_secs, 0);
+    }
+
+    #[test]
+    fn v9_clock_mark_only_moves_forward() {
+        let id = LongTermIdentity::from_seed([0x7Au8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "clock.onion",
+            vec![],
+        ));
+        let loaded = deserialize_blob(&serialize_blob_at(&session, 10_000)).unwrap();
+        assert_eq!(loaded.clock_mark_unix, 9_600);
+
+        // A save with the clock set back keeps the higher mark.
+        session.clock_mark_unix = loaded.clock_mark_unix;
+        let back = deserialize_blob(&serialize_blob_at(&session, 1_000)).unwrap();
+        assert_eq!(back.clock_mark_unix, 9_600);
+
+        let forward = deserialize_blob(&serialize_blob_at(&session, 50_000)).unwrap();
+        assert_eq!(forward.clock_mark_unix, 49_800);
+    }
+
+    #[test]
+    fn v9_clock_mark_survives_save_and_load() {
+        let dir = tmp_dir("v9_clock");
+        let session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &LongTermIdentity::generate().unwrap(),
+            "clock2.onion",
+            vec![],
+        ));
+        let before = crate::deadman::unix_now();
+        save_session(&dir, PersistMode::Passphrase, b"clock-pass", &session).unwrap();
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"clock-pass").unwrap();
+        assert!(loaded.clock_mark_unix + crate::clock_check::CLOCK_MARK_STEP_SECS > before);
+        assert!(loaded.clock_mark_unix <= crate::deadman::unix_now());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v8_blob_loads_without_clock_mark() {
+        let id = LongTermIdentity::from_seed([0x7Bu8; 32]);
+        let identity = IdentityOnionState::from_identity(&id, "oldv8.onion", b"k".to_vec());
+        let mut plain = v7_blob_bytes(&identity, 300);
+        plain[0] = BLOB_VERSION_V8;
+        plain.extend_from_slice(&0u32.to_be_bytes());
+        assert_eq!(deserialize_blob(&plain).unwrap().clock_mark_unix, 0);
+
+        plain[0] = BLOB_VERSION_V9;
+        assert!(deserialize_blob(&plain).is_err(), "v9 without the mark is truncated");
+        plain.extend_from_slice(&7_200u64.to_be_bytes());
+        assert_eq!(deserialize_blob(&plain).unwrap().clock_mark_unix, 7_200);
+    }
+
+    #[test]
+    fn extreme_for_disk_keeps_clock_mark_and_wipe_clears_it() {
+        use crate::net_mode::PostureProfile;
+        let id = LongTermIdentity::from_seed([0x7Cu8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "extc.onion",
+            vec![],
+        ));
+        session.net.set_posture(PostureProfile::Extreme);
+        session.clock_mark_unix = 123_000;
+        assert_eq!(session.for_disk().clock_mark_unix, 123_000);
+        session.wipe_memory_secure();
+        assert_eq!(session.clock_mark_unix, 0);
     }
 
     #[test]
