@@ -36,7 +36,9 @@
 //! v8 = + maximum send jitter seconds (u32 BE; 0 = off, the default on missing).
 //! v9 = + clock mark (u64 BE): latest wall-clock time seen at save, rounded down
 //! to ten minutes, used to warn about a clock set back ([`crate::clock_check`]).
-//! Load accepts v1–v9; save always writes v9. Older blobs load empty deny lists;
+//! v10 = + SHA-256 of the executable that saved (32 bytes; all zero = none),
+//! used to warn when a different binary opens the profile ([`crate::binary_check`]).
+//! Load accepts v1–v10; save always writes v10. Older blobs load empty deny lists;
 //! pre-v6 contacts are treated as **verified** for continuity (new `:add-contact`
 //! entries start unverified). Pre-v7 loads default idle lock to 5 minutes.
 //!
@@ -51,7 +53,7 @@
 //! When [`crate::net_mode::PostureProfile::Extreme`] is set on the session's
 //! [`NetConfig`], [`save_session`] persists **identity + onion + net prefs +
 //! disappear TTL + idle lock timeout + send jitter only**. Contacts, ratchets, pending frames, blocked/muted, and
-//! verified lists are written as empty vectors (blob stays v9). Trade-off: smaller
+//! verified lists are written as empty vectors (blob stays v10). Trade-off: smaller
 //! at-rest footprint and no multi-session contact/deny/verify continuity — the user
 //! must re-add contacts (and re-block / re-verify if needed) after restart. Tor 1:1
 //! messaging for the **current** process session is unchanged (in-memory
@@ -69,6 +71,7 @@
 //! verified (continuity); missing idle lock on v1–v6 loads as 300 seconds (5m).
 
 use crate::disappearing::DEFAULT_LOCK_TIMEOUT_SECS;
+use crate::binary_check::NO_BINARY_DIGEST;
 use crate::clock_check::advance_clock_mark;
 use crate::send_jitter::MAX_SEND_JITTER_SECS;
 use crate::envelope::{self, StoreKey};
@@ -94,6 +97,7 @@ const BLOB_VERSION_V6: u8 = 6;
 const BLOB_VERSION_V7: u8 = 7;
 const BLOB_VERSION_V8: u8 = 8;
 const BLOB_VERSION_V9: u8 = 9;
+const BLOB_VERSION_V10: u8 = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PersistMode {
@@ -249,6 +253,10 @@ pub struct SessionState {
     /// raises it to the current time; it never goes down on its own.
     #[zeroize(skip)]
     pub clock_mark_unix: u64,
+    /// SHA-256 of the binary trusted to open this profile (v10+; all zero =
+    /// none yet). Not updated on save: the TUI sets it on create, on first
+    /// unlock with a v10 build, and on `:binary-accept`.
+    pub binary_digest: [u8; 32],
 }
 
 impl SessionState {
@@ -266,6 +274,7 @@ impl SessionState {
             lock_timeout_secs: DEFAULT_LOCK_TIMEOUT_SECS,
             send_jitter_secs: 0,
             clock_mark_unix: 0,
+            binary_digest: NO_BINARY_DIGEST,
         }
     }
 
@@ -284,6 +293,7 @@ impl SessionState {
             lock_timeout_secs: DEFAULT_LOCK_TIMEOUT_SECS,
             send_jitter_secs: 0,
             clock_mark_unix: 0,
+            binary_digest: NO_BINARY_DIGEST,
         }
     }
 
@@ -757,6 +767,7 @@ impl SessionState {
             lock_timeout_secs: self.lock_timeout_secs,
             send_jitter_secs: self.send_jitter_secs,
             clock_mark_unix: self.clock_mark_unix,
+            binary_digest: self.binary_digest,
         }
     }
 
@@ -782,6 +793,7 @@ impl SessionState {
         self.lock_timeout_secs = 0;
         self.send_jitter_secs = 0;
         self.clock_mark_unix = 0;
+        self.binary_digest.zeroize();
     }
 }
 
@@ -859,7 +871,7 @@ fn serialize_blob(state: &SessionState) -> Vec<u8> {
 
 fn serialize_blob_at(state: &SessionState, now_unix: u64) -> Vec<u8> {
     let mut plain = Vec::new();
-    plain.push(BLOB_VERSION_V9);
+    plain.push(BLOB_VERSION_V10);
     plain.extend_from_slice(&state.identity.seed);
     write_len_str(&mut plain, &state.identity.onion);
     write_len_bytes(&mut plain, &state.identity.onion_key);
@@ -912,6 +924,9 @@ fn serialize_blob_at(state: &SessionState, now_unix: u64) -> Vec<u8> {
     let mark = advance_clock_mark(state.clock_mark_unix, now_unix);
     plain.extend_from_slice(&mark.to_be_bytes());
 
+    // binary digest (v10+)
+    plain.extend_from_slice(&state.binary_digest);
+
     plain
 }
 
@@ -920,7 +935,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         return Err("empty state blob");
     }
     let ver = plain[0];
-    if !(BLOB_VERSION_V1..=BLOB_VERSION_V9).contains(&ver) {
+    if !(BLOB_VERSION_V1..=BLOB_VERSION_V10).contains(&ver) {
         return Err("bad state blob version");
     }
     if plain.len() < 33 {
@@ -1069,6 +1084,18 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         0
     };
 
+    // v10: digest of the binary that last saved. Older blobs record none.
+    let binary_digest = if ver >= BLOB_VERSION_V10 {
+        if pos + 32 > plain.len() {
+            return Err("truncated binary digest");
+        }
+        let d: [u8; 32] = plain[pos..pos + 32].try_into().unwrap();
+        pos += 32;
+        d
+    } else {
+        NO_BINARY_DIGEST
+    };
+
     if pos != plain.len() {
         return Err("trailing junk in state blob");
     }
@@ -1086,6 +1113,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         lock_timeout_secs,
         send_jitter_secs,
         clock_mark_unix,
+        binary_digest,
     })
 }
 
@@ -2795,6 +2823,58 @@ mod tests {
         assert!(deserialize_blob(&plain).is_err(), "v9 without the mark is truncated");
         plain.extend_from_slice(&7_200u64.to_be_bytes());
         assert_eq!(deserialize_blob(&plain).unwrap().clock_mark_unix, 7_200);
+    }
+
+    #[test]
+    fn v10_binary_digest_roundtrip() {
+        let dir = tmp_dir("v10_binary");
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &LongTermIdentity::generate().unwrap(),
+            "bin.onion",
+            vec![],
+        ));
+        assert_eq!(session.binary_digest, NO_BINARY_DIGEST);
+        session.binary_digest = [0x5Au8; 32];
+        save_session(&dir, PersistMode::Passphrase, b"binary-pass", &session).unwrap();
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"binary-pass").unwrap();
+        assert_eq!(loaded.binary_digest, [0x5Au8; 32]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v9_blob_loads_without_binary_digest() {
+        let id = LongTermIdentity::from_seed([0x7Du8; 32]);
+        let identity = IdentityOnionState::from_identity(&id, "oldv9.onion", b"k".to_vec());
+        let mut plain = v7_blob_bytes(&identity, 300);
+        plain[0] = BLOB_VERSION_V9;
+        plain.extend_from_slice(&0u32.to_be_bytes());
+        plain.extend_from_slice(&7_200u64.to_be_bytes());
+        let loaded = deserialize_blob(&plain).unwrap();
+        assert_eq!(loaded.binary_digest, NO_BINARY_DIGEST);
+        assert_eq!(loaded.clock_mark_unix, 7_200);
+
+        plain[0] = BLOB_VERSION_V10;
+        assert!(deserialize_blob(&plain).is_err(), "v10 without the digest is truncated");
+        plain.extend_from_slice(&[0x11u8; 32]);
+        assert_eq!(deserialize_blob(&plain).unwrap().binary_digest, [0x11u8; 32]);
+        plain.push(0);
+        assert!(deserialize_blob(&plain).is_err(), "trailing byte refused");
+    }
+
+    #[test]
+    fn extreme_for_disk_keeps_binary_digest_and_wipe_clears_it() {
+        use crate::net_mode::PostureProfile;
+        let id = LongTermIdentity::from_seed([0x7Eu8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "extb.onion",
+            vec![],
+        ));
+        session.net.set_posture(PostureProfile::Extreme);
+        session.binary_digest = [0x33u8; 32];
+        assert_eq!(session.for_disk().binary_digest, [0x33u8; 32]);
+        session.wipe_memory_secure();
+        assert_eq!(session.binary_digest, NO_BINARY_DIGEST);
     }
 
     #[test]

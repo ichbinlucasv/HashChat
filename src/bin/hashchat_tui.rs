@@ -37,7 +37,8 @@ use hashchat_rust::{
     PersistedContact, PostureProfile, SessionState, SocksIsolationCreds, StoreKey,
     UnlockBackoffPolicy, DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES,
     MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME, format_jitter, parse_jitter_token,
-    sample_send_delay, clock_rollback_secs, format_rollback,
+    sample_send_delay, clock_rollback_secs, format_rollback, binary_status, digest_hex,
+    running_binary_digest, BinaryStatus,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -214,6 +215,8 @@ struct App {
     held_sends: Vec<HeldSend>,
     /// Set at unlock when the clock reads well before the mark in state.enc.
     clock_behind_secs: Option<u64>,
+    /// Set at unlock when the running binary is not the one recorded in state.enc.
+    binary_changed: bool,
     /// Action chosen by `:duress set` / `:duress set decoy` while the entry screen is open.
     duress_setup_action: DuressAction,
     /// Last user input Instant (Main / confirm screens). Used for idle auto-lock.
@@ -298,6 +301,7 @@ impl App {
             send_jitter_secs: 0,
             held_sends: Vec::new(),
             clock_behind_secs: None,
+            binary_changed: false,
             duress_setup_action: DuressAction::Wipe,
             last_input_at: Instant::now(),
             pending_delete_contact: None,
@@ -767,6 +771,7 @@ impl App {
         // Held frames stay in state.enc and go out with :retry after unlock.
         self.held_sends.clear();
         self.clock_behind_secs = None;
+        self.binary_changed = false;
         self.store_key = None;
         // Drop HS: stops accept thread + closes ControlPort (onion key stays in state.enc).
         self.hs = None;
@@ -848,6 +853,41 @@ impl App {
         let line = match self.clock_behind_secs {
             Some(behind) => clock_warning_line(behind),
             None => "clock=ok (not behind the last saved time)".into(),
+        };
+        self.status_msg = line.clone();
+        self.push_msg(line);
+    }
+
+    /// `:binary` shows whether this binary is the one recorded in the profile;
+    /// `:binary-accept` records the running binary as trusted.
+    fn handle_binary(&mut self, accept: bool) {
+        let Some(stored) = self.session.as_ref().map(|s| s.binary_digest) else {
+            self.status_msg = "Unlock first: the binary record lives in state.enc.".into();
+            return;
+        };
+        let running = running_binary_digest();
+        if accept {
+            let Some(cur) = running else {
+                self.status_msg = "Cannot read the running binary; nothing recorded.".into();
+                return;
+            };
+            if let Some(s) = self.session.as_mut() {
+                s.binary_digest = cur;
+            }
+            self.binary_changed = false;
+            let saved = self.persist_session().is_ok();
+            let line = format!(
+                "Running binary recorded as trusted ({})",
+                if saved { "saved" } else { "memory only" }
+            );
+            self.status_msg = line.clone();
+            self.push_msg(line);
+            return;
+        }
+        let status = binary_status(&stored, running.as_ref());
+        let line = match running {
+            Some(cur) => format!("binary={} sha256={}", status.as_token(), digest_hex(&cur)),
+            None => format!("binary={}", status.as_token()),
         };
         self.status_msg = line.clone();
         self.push_msg(line);
@@ -1022,6 +1062,7 @@ impl App {
         self.lock_timeout_secs = DEFAULT_LOCK_TIMEOUT_SECS;
         self.send_jitter_secs = 0;
         self.clock_behind_secs = None;
+        self.binary_changed = false;
         self.apply_extreme_ttl_default();
         self.apply_extreme_lock_default();
         let _ = self.persist_session();
@@ -1125,7 +1166,7 @@ impl App {
                 unlock_session(data_dir, pass)
             };
             match unlocked {
-                Ok((state, key)) => {
+                Ok((mut state, key)) => {
                     attempt_succeeded(data_dir);
                     self.store_key = Some(Box::new(key));
                     touch_deadman(Path::new(DATA_DIR), unix_now());
@@ -1140,6 +1181,19 @@ impl App {
                     self.send_jitter_secs = state.send_jitter_secs;
                     self.clock_behind_secs =
                         clock_rollback_secs(state.clock_mark_unix, unix_now());
+                    let running = running_binary_digest();
+                    self.binary_changed =
+                        match binary_status(&state.binary_digest, running.as_ref()) {
+                            BinaryStatus::Changed => true,
+                            BinaryStatus::Unrecorded => {
+                                // First unlock with a build that records it.
+                                if let Some(cur) = running {
+                                    state.binary_digest = cur;
+                                }
+                                false
+                            }
+                            BinaryStatus::Same | BinaryStatus::Unavailable => false,
+                        };
                     self.session = Some(state);
                     self.apply_extreme_ttl_default();
                     self.apply_extreme_lock_default();
@@ -1169,6 +1223,10 @@ impl App {
                         let line = clock_warning_line(behind);
                         self.push_msg(line.clone());
                         self.status_msg = line;
+                    }
+                    if self.binary_changed {
+                        self.push_msg(BINARY_WARNING.to_string());
+                        self.status_msg = BINARY_WARNING.into();
                     }
                 }
                 Err(_) => {
@@ -2623,6 +2681,8 @@ impl App {
         if unlocked {
             let clock = if self.clock_behind_secs.is_some() { "behind" } else { "ok" };
             self.push_msg(format!("clock={clock}"));
+            let binary = if self.binary_changed { "changed" } else { "ok" };
+            self.push_msg(format!("binary={binary}"));
         }
 
         let (core0, nodump) = match self.dump_hardening {
@@ -2845,6 +2905,7 @@ impl App {
                 self.push_msg("  :deadman [set N|off]    wipe at start if not unlocked for N days");
                 self.push_msg("  :wipe-after [set N|off] wipe after N failed unlocks");
                 self.push_msg("  :clock / :clock-reset   check for a clock set back; accept current time");
+                self.push_msg("  :binary / :binary-accept check this binary against the profile; trust it");
                 self.push_msg("  :wipe                   nuclear local wipe (confirm)");
                 self.push_msg("  Ctrl+\\                 panic: wipe and quit now, no prompt");
                 self.push_msg("  :quit                   exit");
@@ -2963,6 +3024,8 @@ impl App {
             }
             ":clock" => self.handle_clock(false),
             ":clock-reset" => self.handle_clock(true),
+            ":binary" => self.handle_binary(false),
+            ":binary-accept" => self.handle_binary(true),
             ":lock" => {
                 if self.session.is_none() {
                     self.status_msg = "Already locked (or no session).".into();
@@ -3716,6 +3779,11 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
     Ok(())
 }
 
+/// Warning shown when the running binary differs from the recorded one.
+const BINARY_WARNING: &str = "Warning: this hashchat-tui binary is not the one that last saved \
+    this profile. If you did not update it, stop and check it against the published checksum \
+    (:binary). :binary-accept if the update was yours.";
+
 /// Warning shown when the clock reads earlier than the last save. Says why it
 /// matters without echoing any timestamps.
 fn clock_warning_line(behind_secs: u64) -> String {
@@ -3738,7 +3806,10 @@ fn create_session_on_disk(
         onion: String::new(),
         onion_key: Vec::new(),
     };
-    let state = SessionState::from_identity_with_net(identity, net.clone());
+    let mut state = SessionState::from_identity_with_net(identity, net.clone());
+    if let Some(cur) = running_binary_digest() {
+        state.binary_digest = cur;
+    }
     let key = StoreKey::derive_new(pass)?;
     save_session_with_key(Path::new(DATA_DIR), &key, &state)?;
     Ok((state, key))
@@ -3760,6 +3831,8 @@ fn main() {
     }
     // First, before any secret exists: no core files, no same-uid ptrace.
     let dumps = disable_core_dumps_best_effort();
+    // Hash the executable now, while it is the file that was started.
+    let _ = running_binary_digest();
     // Before App exists: hook is a no-op until bind_app_scrub.
     install_panic_scrub_hook();
     install_terminate_signal_flag();
