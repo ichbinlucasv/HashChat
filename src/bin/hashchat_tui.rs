@@ -49,6 +49,9 @@ use ratatui::Terminal;
 use zeroize::{Zeroize, Zeroizing};
 
 const DATA_DIR: &str = "hashchat_data";
+/// Turning a wipe protection off needs the passphrase, so someone at the
+/// locked screen cannot disarm it before forcing an unlock.
+const UNLOCK_TO_DISABLE: &str = "Unlock first: turning a wipe protection off needs the passphrase.";
 const GOLD: Color = Color::Rgb(255, 215, 0); // #FFD700
 const BG: Color = Color::Rgb(10, 10, 10); // #0A0A0A
 const PANEL: Color = Color::Rgb(26, 26, 26); // #1A1A1A
@@ -542,6 +545,10 @@ impl App {
                 self.status_msg = "Enter the duress passphrase.".into();
             }
             "clear" => {
+                if self.session.is_none() {
+                    self.status_msg = UNLOCK_TO_DISABLE.into();
+                    return;
+                }
                 clear_duress(data_dir);
                 self.record_wipe_settings();
                 self.status_msg = "duress passphrase removed".into();
@@ -567,6 +574,11 @@ impl App {
                 };
             }
             (Some("off"), None, _) => {
+                if self.session.is_none() {
+                    self.status_msg = UNLOCK_TO_DISABLE.into();
+                    self.push_msg(self.status_msg.clone());
+                    return;
+                }
                 clear_failwipe(data_dir);
                 self.record_wipe_settings();
                 self.status_msg = "wipe after failed unlocks: off".into();
@@ -614,6 +626,11 @@ impl App {
                 };
             }
             (Some("off"), None, _) => {
+                if self.session.is_none() {
+                    self.status_msg = UNLOCK_TO_DISABLE.into();
+                    self.push_msg(self.status_msg.clone());
+                    return;
+                }
                 clear_deadman(data_dir);
                 self.record_wipe_settings();
                 self.status_msg = "dead-man switch off".into();
@@ -876,7 +893,7 @@ impl App {
 
     /// Record the wipe settings now on disk as the trusted ones. Called after
     /// the user changes one from an unlocked session; does nothing when locked,
-    /// so a change made at the locked screen is reported at the next unlock.
+    /// so a file changed behind HashChat's back is reported at the next unlock.
     fn record_wipe_settings(&mut self) {
         let Some(s) = self.session.as_mut() else {
             return;
@@ -3928,5 +3945,46 @@ fn main() {
     if let Err(e) = run(dumps) {
         eprintln!("hashchat-tui error: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn locked_app() -> App {
+        let app = App::new();
+        assert!(app.session.is_none());
+        app
+    }
+
+    #[test]
+    fn deadman_off_refused_while_locked() {
+        let mut app = locked_app();
+        app.handle_deadman("off");
+        assert_eq!(app.status_msg, UNLOCK_TO_DISABLE);
+    }
+
+    #[test]
+    fn wipe_after_off_refused_while_locked() {
+        let mut app = locked_app();
+        app.handle_wipe_after("off");
+        assert_eq!(app.status_msg, UNLOCK_TO_DISABLE);
+    }
+
+    #[test]
+    fn duress_clear_refused_while_locked() {
+        let mut app = locked_app();
+        app.handle_duress("clear");
+        assert_eq!(app.status_msg, UNLOCK_TO_DISABLE);
+    }
+
+    #[test]
+    fn status_still_works_while_locked() {
+        let mut app = locked_app();
+        app.handle_deadman("status");
+        assert_ne!(app.status_msg, UNLOCK_TO_DISABLE);
+        app.handle_wipe_after("");
+        assert_ne!(app.status_msg, UNLOCK_TO_DISABLE);
     }
 }

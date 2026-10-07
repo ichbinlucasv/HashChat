@@ -2,9 +2,10 @@
 //!
 //! The dead-man switch, the failed-unlock limit and the duress verifier live
 //! in plain files next to `state.enc`, because they are needed before the
-//! passphrase is known. Deleting one of them quietly turns the protection off,
-//! and `:deadman off`, `:wipe-after off` and `:duress clear` work at the
-//! locked screen. So each change made from an unlocked session records the
+//! passphrase is known. Deleting one of them quietly turns the protection off.
+//! The TUI refuses `:deadman off`, `:wipe-after off` and `:duress clear` at
+//! the locked screen, but the files can still be removed by hand. So each
+//! change made from an unlocked session records the
 //! settings inside `state.enc`, and the next unlock compares that record with
 //! the files on disk.
 //!
