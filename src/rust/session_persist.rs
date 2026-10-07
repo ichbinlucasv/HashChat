@@ -41,7 +41,10 @@
 //! v11 = + wipe settings record: one flag byte (0 = none recorded), then the
 //! dead-man days and failed-unlock limit (u32 BE each) and the SHA-256 of
 //! `duress.enc` ([`crate::wipe_settings`]).
-//! Load accepts v1–v11; save always writes v11. Older blobs load empty deny lists;
+//! v12 = + save id: one flag byte (0 = none), then 16 random bytes that each
+//! save also writes to `state.mark`, used to notice an older copy of
+//! `state.enc` put back in place ([`crate::save_mark`]).
+//! Load accepts v1–v12; save always writes v12. Older blobs load empty deny lists;
 //! pre-v6 contacts are treated as **verified** for continuity (new `:add-contact`
 //! entries start unverified). Pre-v7 loads default idle lock to 5 minutes.
 //!
@@ -56,7 +59,7 @@
 //! When [`crate::net_mode::PostureProfile::Extreme`] is set on the session's
 //! [`NetConfig`], [`save_session`] persists **identity + onion + net prefs +
 //! disappear TTL + idle lock timeout + send jitter only**. Contacts, ratchets, pending frames, blocked/muted, and
-//! verified lists are written as empty vectors (blob stays v11). Trade-off: smaller
+//! verified lists are written as empty vectors (blob stays v12). Trade-off: smaller
 //! at-rest footprint and no multi-session contact/deny/verify continuity — the user
 //! must re-add contacts (and re-block / re-verify if needed) after restart. Tor 1:1
 //! messaging for the **current** process session is unchanged (in-memory
@@ -77,6 +80,7 @@ use crate::disappearing::DEFAULT_LOCK_TIMEOUT_SECS;
 use crate::binary_check::NO_BINARY_DIGEST;
 use crate::wipe_settings::{WipeSettings, WIPE_SETTINGS_BYTES};
 use crate::clock_check::advance_clock_mark;
+use crate::save_mark::{SaveId, SAVE_ID_BYTES};
 use crate::send_jitter::MAX_SEND_JITTER_SECS;
 use crate::envelope::{self, StoreKey};
 use crate::longterm_identity::LongTermIdentity;
@@ -103,6 +107,7 @@ const BLOB_VERSION_V8: u8 = 8;
 const BLOB_VERSION_V9: u8 = 9;
 const BLOB_VERSION_V10: u8 = 10;
 const BLOB_VERSION_V11: u8 = 11;
+const BLOB_VERSION_V12: u8 = 12;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PersistMode {
@@ -267,6 +272,11 @@ pub struct SessionState {
     /// setting changes, on create, and on `:wipe-settings-accept`.
     #[zeroize(skip)]
     pub wipe_settings: Option<WipeSettings>,
+    /// Id of the save this state was loaded from (v12+; `None` = older blob or
+    /// never saved). Each save writes a fresh one; compare with `state.mark`
+    /// at unlock through [`crate::save_mark::check_save_mark`].
+    #[zeroize(skip)]
+    pub save_id: Option<SaveId>,
 }
 
 impl SessionState {
@@ -286,6 +296,7 @@ impl SessionState {
             clock_mark_unix: 0,
             binary_digest: NO_BINARY_DIGEST,
             wipe_settings: None,
+            save_id: None,
         }
     }
 
@@ -306,6 +317,7 @@ impl SessionState {
             clock_mark_unix: 0,
             binary_digest: NO_BINARY_DIGEST,
             wipe_settings: None,
+            save_id: None,
         }
     }
 
@@ -781,6 +793,7 @@ impl SessionState {
             clock_mark_unix: self.clock_mark_unix,
             binary_digest: self.binary_digest,
             wipe_settings: self.wipe_settings,
+            save_id: self.save_id,
         }
     }
 
@@ -808,6 +821,7 @@ impl SessionState {
         self.clock_mark_unix = 0;
         self.binary_digest.zeroize();
         self.wipe_settings = None;
+        self.save_id = None;
     }
 }
 
@@ -885,7 +899,7 @@ fn serialize_blob(state: &SessionState) -> Vec<u8> {
 
 fn serialize_blob_at(state: &SessionState, now_unix: u64) -> Vec<u8> {
     let mut plain = Vec::new();
-    plain.push(BLOB_VERSION_V11);
+    plain.push(BLOB_VERSION_V12);
     plain.extend_from_slice(&state.identity.seed);
     write_len_str(&mut plain, &state.identity.onion);
     write_len_bytes(&mut plain, &state.identity.onion_key);
@@ -953,6 +967,18 @@ fn serialize_blob_at(state: &SessionState, now_unix: u64) -> Vec<u8> {
         }
     }
 
+    // save id (v12+)
+    match &state.save_id {
+        Some(id) => {
+            plain.push(1);
+            plain.extend_from_slice(id);
+        }
+        None => {
+            plain.push(0);
+            plain.extend_from_slice(&[0u8; SAVE_ID_BYTES]);
+        }
+    }
+
     plain
 }
 
@@ -961,7 +987,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         return Err("empty state blob");
     }
     let ver = plain[0];
-    if !(BLOB_VERSION_V1..=BLOB_VERSION_V11).contains(&ver) {
+    if !(BLOB_VERSION_V1..=BLOB_VERSION_V12).contains(&ver) {
         return Err("bad state blob version");
     }
     if plain.len() < 33 {
@@ -1140,6 +1166,23 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         None
     };
 
+    // v12: save id. Older blobs carry none.
+    let save_id = if ver >= BLOB_VERSION_V12 {
+        if pos + 1 + SAVE_ID_BYTES > plain.len() {
+            return Err("truncated save id");
+        }
+        let flag = plain[pos];
+        let id: SaveId = plain[pos + 1..pos + 1 + SAVE_ID_BYTES].try_into().unwrap();
+        pos += 1 + SAVE_ID_BYTES;
+        match flag {
+            0 => None,
+            1 => Some(id),
+            _ => return Err("bad save id flag"),
+        }
+    } else {
+        None
+    };
+
     if pos != plain.len() {
         return Err("trailing junk in state blob");
     }
@@ -1159,6 +1202,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         clock_mark_unix,
         binary_digest,
         wipe_settings,
+        save_id,
     })
 }
 
@@ -1255,7 +1299,9 @@ fn save_session_wrapped(
 ) -> Result<(), &'static str> {
     // Harden / refuse the directory before the (slow) KDF and before any write.
     private_fs::ensure_private_dir(data_dir).map_err(PrivateFsError::as_str)?;
-    let disk = state.for_disk();
+    let save_id = crate::save_mark::new_save_id()?;
+    let mut disk = state.for_disk();
+    disk.save_id = Some(save_id);
     let mut plain = serialize_blob(&disk);
     let envelope = seal_plain(wrap, data_dir, &plain);
     plain.zeroize();
@@ -1263,6 +1309,9 @@ fn save_session_wrapped(
     drop(disk);
     private_fs::write_private_file(data_dir, STATE_FILE, &envelope?)
         .map_err(PrivateFsError::as_str)?;
+    // state.enc is already in place, so a failure here must not be reported as
+    // a failed save. The next unlock warns about the missing or stale mark.
+    let _ = crate::save_mark::write_save_mark(data_dir, &save_id);
     Ok(())
 }
 
@@ -1296,7 +1345,7 @@ fn load_session_wrapped(data_dir: &Path, wrap: &Wrap<'_>) -> Result<SessionState
     state
 }
 
-/// Save session state. Always writes v7.
+/// Save session state. Always writes the current blob version.
 ///
 /// Under Extreme posture (`state.net.is_extreme()`), contacts / ratchets / pending /
 /// blocked / muted / verified are stripped via [`SessionState::for_disk`] before sealing
@@ -1455,6 +1504,7 @@ pub fn wipe_disk(data_dir: &Path) -> std::io::Result<()> {
     let (state_path, key_path) = data_paths(data_dir);
     crate::shred::shred_file(&state_path);
     crate::shred::shred_file(&key_path);
+    crate::save_mark::clear_save_mark(data_dir);
     private_fs::remove_stale_temps(data_dir, STATE_FILE);
     private_fs::remove_stale_temps(data_dir, MACHINE_KEY_FILE);
     crate::duress::clear_duress(data_dir);
@@ -2951,6 +3001,74 @@ mod tests {
         plain[base + 4] = 9; // deadman days, low byte
         let loaded = deserialize_blob(&plain).unwrap();
         assert_eq!(loaded.wipe_settings.unwrap().deadman_days, 9);
+        plain.push(0);
+        assert!(deserialize_blob(&plain).is_err(), "trailing byte refused");
+    }
+
+    #[test]
+    fn each_save_writes_a_fresh_id_and_matching_mark() {
+        use crate::save_mark::{check_save_mark, SaveMarkStatus, SAVE_MARK_FILE};
+        let dir = tmp_dir("save_mark");
+        let session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &LongTermIdentity::generate().unwrap(),
+            "mark.onion",
+            vec![],
+        ));
+        save_session(&dir, PersistMode::Passphrase, b"mark-pass", &session).unwrap();
+        let first = load_session(&dir, PersistMode::Passphrase, b"mark-pass").unwrap();
+        assert!(first.save_id.is_some());
+        assert_eq!(check_save_mark(&dir, first.save_id.as_ref()), SaveMarkStatus::Match);
+        let old_copy = fs::read(dir.join(STATE_FILE)).unwrap();
+
+        save_session(&dir, PersistMode::Passphrase, b"mark-pass", &first).unwrap();
+        let second = load_session(&dir, PersistMode::Passphrase, b"mark-pass").unwrap();
+        assert_ne!(first.save_id, second.save_id);
+        assert_eq!(check_save_mark(&dir, second.save_id.as_ref()), SaveMarkStatus::Match);
+
+        // Put the older state.enc back: it still opens, but no longer matches.
+        write_private(&dir.join(STATE_FILE), &old_copy).unwrap();
+        let restored = load_session(&dir, PersistMode::Passphrase, b"mark-pass").unwrap();
+        assert_eq!(restored.save_id, first.save_id);
+        assert_eq!(
+            check_save_mark(&dir, restored.save_id.as_ref()),
+            SaveMarkStatus::Mismatch
+        );
+
+        fs::remove_file(dir.join(SAVE_MARK_FILE)).unwrap();
+        assert_eq!(
+            check_save_mark(&dir, restored.save_id.as_ref()),
+            SaveMarkStatus::MarkMissing
+        );
+
+        wipe_disk(&dir).unwrap();
+        assert!(!dir.join(SAVE_MARK_FILE).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v11_blob_loads_without_save_id() {
+        let id = LongTermIdentity::from_seed([0x7Cu8; 32]);
+        let identity = IdentityOnionState::from_identity(&id, "oldv11.onion", b"k".to_vec());
+        let mut plain = v7_blob_bytes(&identity, 300);
+        plain[0] = BLOB_VERSION_V11;
+        plain.extend_from_slice(&0u32.to_be_bytes());
+        plain.extend_from_slice(&7_200u64.to_be_bytes());
+        plain.extend_from_slice(&[0x11u8; 32]);
+        plain.push(0);
+        plain.extend_from_slice(&[0u8; WIPE_SETTINGS_BYTES]);
+        assert_eq!(deserialize_blob(&plain).unwrap().save_id, None);
+
+        plain[0] = BLOB_VERSION_V12;
+        assert!(deserialize_blob(&plain).is_err(), "v12 without the id is truncated");
+        let base = plain.len();
+        plain.push(2);
+        plain.extend_from_slice(&[0x5Au8; SAVE_ID_BYTES]);
+        assert!(deserialize_blob(&plain).is_err(), "unknown flag refused");
+        plain[base] = 1;
+        assert_eq!(
+            deserialize_blob(&plain).unwrap().save_id,
+            Some([0x5Au8; SAVE_ID_BYTES])
+        );
         plain.push(0);
         assert!(deserialize_blob(&plain).is_err(), "trailing byte refused");
     }

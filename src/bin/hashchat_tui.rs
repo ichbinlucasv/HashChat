@@ -38,7 +38,7 @@ use hashchat_rust::{
     UnlockBackoffPolicy, DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES,
     MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME, format_jitter, parse_jitter_token,
     sample_send_delay, clock_rollback_secs, format_rollback, binary_status, digest_hex,
-    running_binary_digest, BinaryStatus, WipeSettings,
+    running_binary_digest, BinaryStatus, WipeSettings, check_save_mark, SaveMarkStatus,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -222,6 +222,8 @@ struct App {
     binary_changed: bool,
     /// Wipe settings that differ from the record in state.enc, set at unlock.
     wipe_settings_changed: Vec<&'static str>,
+    /// How `state.enc` compared with `state.mark` at the last unlock.
+    save_mark: SaveMarkStatus,
     /// Action chosen by `:duress set` / `:duress set decoy` while the entry screen is open.
     duress_setup_action: DuressAction,
     /// Last user input Instant (Main / confirm screens). Used for idle auto-lock.
@@ -308,6 +310,7 @@ impl App {
             clock_behind_secs: None,
             binary_changed: false,
             wipe_settings_changed: Vec::new(),
+            save_mark: SaveMarkStatus::Unrecorded,
             duress_setup_action: DuressAction::Wipe,
             last_input_at: Instant::now(),
             pending_delete_contact: None,
@@ -805,6 +808,7 @@ impl App {
         self.clock_behind_secs = None;
         self.binary_changed = false;
         self.wipe_settings_changed.clear();
+        self.save_mark = SaveMarkStatus::Unrecorded;
         self.store_key = None;
         // Drop HS: stops accept thread + closes ControlPort (onion key stays in state.enc).
         self.hs = None;
@@ -1139,6 +1143,7 @@ impl App {
         self.clock_behind_secs = None;
         self.binary_changed = false;
         self.wipe_settings_changed.clear();
+        self.save_mark = SaveMarkStatus::Unrecorded;
         self.apply_extreme_ttl_default();
         self.apply_extreme_lock_default();
         let _ = self.persist_session();
@@ -1279,6 +1284,8 @@ impl App {
                             Vec::new()
                         }
                     };
+                    // Before persist_session below replaces the mark.
+                    self.save_mark = check_save_mark(data_dir, state.save_id.as_ref());
                     self.session = Some(state);
                     self.apply_extreme_ttl_default();
                     self.apply_extreme_lock_default();
@@ -1317,6 +1324,10 @@ impl App {
                         let line = wipe_settings_warning(&self.wipe_settings_changed);
                         self.push_msg(line.clone());
                         self.status_msg = line;
+                    }
+                    if self.save_mark.is_warning() {
+                        self.push_msg(SAVE_MARK_WARNING.to_string());
+                        self.status_msg = SAVE_MARK_WARNING.into();
                     }
                 }
                 Err(_) => {
@@ -2775,6 +2786,7 @@ impl App {
             self.push_msg(format!("binary={binary}"));
             let wipe = if self.wipe_settings_changed.is_empty() { "ok" } else { "changed" };
             self.push_msg(format!("wipe_settings={wipe}"));
+            self.push_msg(format!("state_copy={}", self.save_mark.token()));
         }
 
         let (core0, nodump) = match self.dump_hardening {
@@ -3878,6 +3890,12 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
 const BINARY_WARNING: &str = "Warning: this hashchat-tui binary is not the one that last saved \
     this profile. If you did not update it, stop and check it against the published checksum \
     (:binary). :binary-accept if the update was yours.";
+
+/// Warning shown when `state.enc` is not the copy this directory last saved.
+const SAVE_MARK_WARNING: &str = "Warning: this state.enc is not the copy last saved here. \
+    It may have been restored from an older backup or image, which brings back deleted \
+    contacts and old keys. If you did not restore it, someone had access to this data \
+    directory. The warning clears with the next save.";
 
 /// Warning shown when wipe setting files changed while the profile was locked.
 fn wipe_settings_warning(changed: &[&str]) -> String {

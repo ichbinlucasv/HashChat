@@ -23,6 +23,7 @@ mod onion_binding;
 mod padding;
 mod private_fs;
 mod ratchet;
+mod save_mark;
 mod send_jitter;
 mod session_persist;
 mod shred;
@@ -46,6 +47,7 @@ pub use binary_check::{
     binary_status, digest_hex, running_binary_digest, BinaryStatus, NO_BINARY_DIGEST,
 };
 pub use wipe_settings::WipeSettings;
+pub use save_mark::{check_save_mark, SaveMarkStatus, SAVE_MARK_FILE};
 pub use clock_check::{
     advance_clock_mark, clock_rollback_secs, format_rollback, CLOCK_ROLLBACK_TOLERANCE_SECS,
 };
@@ -1500,6 +1502,7 @@ pub extern "C" fn rust_session_state_save(
             clock_mark_unix: 0,
             binary_digest: NO_BINARY_DIGEST,
             wipe_settings: None,
+            save_id: None,
         };
         let mode = PersistMode::from_flags(insecure_dev != 0);
         save_session(Path::new(dir), mode, pass, &state).is_ok()
