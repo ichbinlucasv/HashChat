@@ -38,7 +38,7 @@ use hashchat_rust::{
     UnlockBackoffPolicy, DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES,
     MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME, format_jitter, parse_jitter_token,
     sample_send_delay, clock_rollback_secs, format_rollback, binary_status, digest_hex,
-    running_binary_digest, BinaryStatus,
+    running_binary_digest, BinaryStatus, WipeSettings,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -217,6 +217,8 @@ struct App {
     clock_behind_secs: Option<u64>,
     /// Set at unlock when the running binary is not the one recorded in state.enc.
     binary_changed: bool,
+    /// Wipe settings that differ from the record in state.enc, set at unlock.
+    wipe_settings_changed: Vec<&'static str>,
     /// Action chosen by `:duress set` / `:duress set decoy` while the entry screen is open.
     duress_setup_action: DuressAction,
     /// Last user input Instant (Main / confirm screens). Used for idle auto-lock.
@@ -302,6 +304,7 @@ impl App {
             held_sends: Vec::new(),
             clock_behind_secs: None,
             binary_changed: false,
+            wipe_settings_changed: Vec::new(),
             duress_setup_action: DuressAction::Wipe,
             last_input_at: Instant::now(),
             pending_delete_contact: None,
@@ -540,6 +543,7 @@ impl App {
             }
             "clear" => {
                 clear_duress(data_dir);
+                self.record_wipe_settings();
                 self.status_msg = "duress passphrase removed".into();
                 self.push_msg(self.status_msg.clone());
             }
@@ -564,6 +568,7 @@ impl App {
             }
             (Some("off"), None, _) => {
                 clear_failwipe(data_dir);
+                self.record_wipe_settings();
                 self.status_msg = "wipe after failed unlocks: off".into();
             }
             (Some("set"), Some(n), None) => {
@@ -573,9 +578,12 @@ impl App {
                 }
                 self.status_msg = match n.parse::<u32>() {
                     Ok(limit) => match set_failwipe(data_dir, limit) {
-                        Ok(()) => format!(
-                            "wipe after {limit} failed unlocks. The count survives restarts."
-                        ),
+                        Ok(()) => {
+                            self.record_wipe_settings();
+                            format!(
+                                "wipe after {limit} failed unlocks. The count survives restarts."
+                            )
+                        }
                         Err(reason) => format!("Refused: {reason}."),
                     },
                     Err(_) => format!("Usage: :wipe-after set <3-{MAX_FAIL_LIMIT}>"),
@@ -607,6 +615,7 @@ impl App {
             }
             (Some("off"), None, _) => {
                 clear_deadman(data_dir);
+                self.record_wipe_settings();
                 self.status_msg = "dead-man switch off".into();
             }
             (Some("set"), Some(n), None) => {
@@ -616,10 +625,13 @@ impl App {
                 }
                 self.status_msg = match n.parse::<u32>() {
                     Ok(days) => match set_deadman(data_dir, days, unix_now()) {
-                        Ok(()) => format!(
-                            "dead-man switch: wipe after {days} day(s) without unlock. \
-                             It only checks when HashChat starts."
-                        ),
+                        Ok(()) => {
+                            self.record_wipe_settings();
+                            format!(
+                                "dead-man switch: wipe after {days} day(s) without unlock. \
+                                 It only checks when HashChat starts."
+                            )
+                        }
                         Err(reason) => format!("Dead-man switch refused: {reason}."),
                     },
                     Err(_) => format!("Usage: :deadman set <1-{MAX_DEADMAN_DAYS}>"),
@@ -664,6 +676,9 @@ impl App {
         };
         let action = self.duress_setup_action;
         self.cancel_duress_entry();
+        if result.is_ok() {
+            self.record_wipe_settings();
+        }
         self.status_msg = match (result, action) {
             (Ok(()), DuressAction::Wipe) => "duress passphrase set (wipe)".into(),
             (Ok(()), DuressAction::Decoy) => {
@@ -772,6 +787,7 @@ impl App {
         self.held_sends.clear();
         self.clock_behind_secs = None;
         self.binary_changed = false;
+        self.wipe_settings_changed.clear();
         self.store_key = None;
         // Drop HS: stops accept thread + closes ControlPort (onion key stays in state.enc).
         self.hs = None;
@@ -853,6 +869,48 @@ impl App {
         let line = match self.clock_behind_secs {
             Some(behind) => clock_warning_line(behind),
             None => "clock=ok (not behind the last saved time)".into(),
+        };
+        self.status_msg = line.clone();
+        self.push_msg(line);
+    }
+
+    /// Record the wipe settings now on disk as the trusted ones. Called after
+    /// the user changes one from an unlocked session; does nothing when locked,
+    /// so a change made at the locked screen is reported at the next unlock.
+    fn record_wipe_settings(&mut self) {
+        let Some(s) = self.session.as_mut() else {
+            return;
+        };
+        s.wipe_settings = Some(WipeSettings::from_disk(Path::new(DATA_DIR)));
+        self.wipe_settings_changed.clear();
+        let _ = self.persist_session();
+    }
+
+    /// `:wipe-settings` compares the wipe setting files with the record in
+    /// the profile; `:wipe-settings-accept` records the current files.
+    fn handle_wipe_settings(&mut self, accept: bool) {
+        let Some(recorded) = self.session.as_ref().map(|s| s.wipe_settings) else {
+            self.status_msg = "Unlock first: the record lives in state.enc.".into();
+            return;
+        };
+        if accept {
+            self.record_wipe_settings();
+            let line = "Current wipe settings recorded as trusted.".to_string();
+            self.status_msg = line.clone();
+            self.push_msg(line);
+            return;
+        }
+        let on_disk = WipeSettings::from_disk(Path::new(DATA_DIR));
+        let line = match recorded {
+            None => "wipe_settings=unrecorded".to_string(),
+            Some(rec) => {
+                let changed = on_disk.changes_since(&rec);
+                if changed.is_empty() {
+                    "wipe_settings=ok".to_string()
+                } else {
+                    format!("wipe_settings=changed ({})", changed.join(", "))
+                }
+            }
         };
         self.status_msg = line.clone();
         self.push_msg(line);
@@ -1063,6 +1121,7 @@ impl App {
         self.send_jitter_secs = 0;
         self.clock_behind_secs = None;
         self.binary_changed = false;
+        self.wipe_settings_changed.clear();
         self.apply_extreme_ttl_default();
         self.apply_extreme_lock_default();
         let _ = self.persist_session();
@@ -1194,6 +1253,15 @@ impl App {
                             }
                             BinaryStatus::Same | BinaryStatus::Unavailable => false,
                         };
+                    let on_disk = WipeSettings::from_disk(data_dir);
+                    self.wipe_settings_changed = match &state.wipe_settings {
+                        Some(recorded) => on_disk.changes_since(recorded),
+                        None => {
+                            // First unlock with a build that records them.
+                            state.wipe_settings = Some(on_disk);
+                            Vec::new()
+                        }
+                    };
                     self.session = Some(state);
                     self.apply_extreme_ttl_default();
                     self.apply_extreme_lock_default();
@@ -1227,6 +1295,11 @@ impl App {
                     if self.binary_changed {
                         self.push_msg(BINARY_WARNING.to_string());
                         self.status_msg = BINARY_WARNING.into();
+                    }
+                    if !self.wipe_settings_changed.is_empty() {
+                        let line = wipe_settings_warning(&self.wipe_settings_changed);
+                        self.push_msg(line.clone());
+                        self.status_msg = line;
                     }
                 }
                 Err(_) => {
@@ -2683,6 +2756,8 @@ impl App {
             self.push_msg(format!("clock={clock}"));
             let binary = if self.binary_changed { "changed" } else { "ok" };
             self.push_msg(format!("binary={binary}"));
+            let wipe = if self.wipe_settings_changed.is_empty() { "ok" } else { "changed" };
+            self.push_msg(format!("wipe_settings={wipe}"));
         }
 
         let (core0, nodump) = match self.dump_hardening {
@@ -2906,6 +2981,7 @@ impl App {
                 self.push_msg("  :wipe-after [set N|off] wipe after N failed unlocks");
                 self.push_msg("  :clock / :clock-reset   check for a clock set back; accept current time");
                 self.push_msg("  :binary / :binary-accept check this binary against the profile; trust it");
+                self.push_msg("  :wipe-settings[-accept]  check wipe setting files against the profile");
                 self.push_msg("  :wipe                   nuclear local wipe (confirm)");
                 self.push_msg("  Ctrl+\\                 panic: wipe and quit now, no prompt");
                 self.push_msg("  :quit                   exit");
@@ -3026,6 +3102,8 @@ impl App {
             ":clock-reset" => self.handle_clock(true),
             ":binary" => self.handle_binary(false),
             ":binary-accept" => self.handle_binary(true),
+            ":wipe-settings" => self.handle_wipe_settings(false),
+            ":wipe-settings-accept" => self.handle_wipe_settings(true),
             ":lock" => {
                 if self.session.is_none() {
                     self.status_msg = "Already locked (or no session).".into();
@@ -3784,6 +3862,16 @@ const BINARY_WARNING: &str = "Warning: this hashchat-tui binary is not the one t
     this profile. If you did not update it, stop and check it against the published checksum \
     (:binary). :binary-accept if the update was yours.";
 
+/// Warning shown when wipe setting files changed while the profile was locked.
+fn wipe_settings_warning(changed: &[&str]) -> String {
+    format!(
+        "Warning: changed while locked: {}. If you did not do this, someone had access \
+         to this data directory. Check with :deadman, :wipe-after and :duress; \
+         :wipe-settings-accept once they are right.",
+        changed.join(", ")
+    )
+}
+
 /// Warning shown when the clock reads earlier than the last save. Says why it
 /// matters without echoing any timestamps.
 fn clock_warning_line(behind_secs: u64) -> String {
@@ -3810,6 +3898,7 @@ fn create_session_on_disk(
     if let Some(cur) = running_binary_digest() {
         state.binary_digest = cur;
     }
+    state.wipe_settings = Some(WipeSettings::from_disk(Path::new(DATA_DIR)));
     let key = StoreKey::derive_new(pass)?;
     save_session_with_key(Path::new(DATA_DIR), &key, &state)?;
     Ok((state, key))

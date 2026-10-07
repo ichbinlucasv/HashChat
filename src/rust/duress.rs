@@ -23,13 +23,13 @@ use std::fs;
 use std::path::Path;
 use zeroize::Zeroize;
 
-const DURESS_FILE: &str = "duress.enc";
+pub(crate) const DURESS_FILE: &str = "duress.enc";
 /// Marker for a plain wipe. Older verifiers only ever used this one.
 const DURESS_MARKER: &[u8] = b"HashChat-duress-v1";
 /// Marker for wipe followed by a fresh decoy profile.
 const DURESS_MARKER_DECOY: &[u8] = b"HashChat-duress-decoy-v1";
 /// The verifier is a few dozen bytes; anything larger is not ours.
-const MAX_DURESS_FILE_BYTES: u64 = 4096;
+pub(crate) const MAX_DURESS_FILE_BYTES: u64 = 4096;
 
 /// What happens after the duress passphrase wipes the store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

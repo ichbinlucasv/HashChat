@@ -38,7 +38,10 @@
 //! to ten minutes, used to warn about a clock set back ([`crate::clock_check`]).
 //! v10 = + SHA-256 of the executable that saved (32 bytes; all zero = none),
 //! used to warn when a different binary opens the profile ([`crate::binary_check`]).
-//! Load accepts v1–v10; save always writes v10. Older blobs load empty deny lists;
+//! v11 = + wipe settings record: one flag byte (0 = none recorded), then the
+//! dead-man days and failed-unlock limit (u32 BE each) and the SHA-256 of
+//! `duress.enc` ([`crate::wipe_settings`]).
+//! Load accepts v1–v11; save always writes v11. Older blobs load empty deny lists;
 //! pre-v6 contacts are treated as **verified** for continuity (new `:add-contact`
 //! entries start unverified). Pre-v7 loads default idle lock to 5 minutes.
 //!
@@ -53,7 +56,7 @@
 //! When [`crate::net_mode::PostureProfile::Extreme`] is set on the session's
 //! [`NetConfig`], [`save_session`] persists **identity + onion + net prefs +
 //! disappear TTL + idle lock timeout + send jitter only**. Contacts, ratchets, pending frames, blocked/muted, and
-//! verified lists are written as empty vectors (blob stays v10). Trade-off: smaller
+//! verified lists are written as empty vectors (blob stays v11). Trade-off: smaller
 //! at-rest footprint and no multi-session contact/deny/verify continuity — the user
 //! must re-add contacts (and re-block / re-verify if needed) after restart. Tor 1:1
 //! messaging for the **current** process session is unchanged (in-memory
@@ -72,6 +75,7 @@
 
 use crate::disappearing::DEFAULT_LOCK_TIMEOUT_SECS;
 use crate::binary_check::NO_BINARY_DIGEST;
+use crate::wipe_settings::{WipeSettings, WIPE_SETTINGS_BYTES};
 use crate::clock_check::advance_clock_mark;
 use crate::send_jitter::MAX_SEND_JITTER_SECS;
 use crate::envelope::{self, StoreKey};
@@ -98,6 +102,7 @@ const BLOB_VERSION_V7: u8 = 7;
 const BLOB_VERSION_V8: u8 = 8;
 const BLOB_VERSION_V9: u8 = 9;
 const BLOB_VERSION_V10: u8 = 10;
+const BLOB_VERSION_V11: u8 = 11;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PersistMode {
@@ -257,6 +262,11 @@ pub struct SessionState {
     /// none yet). Not updated on save: the TUI sets it on create, on first
     /// unlock with a v10 build, and on `:binary-accept`.
     pub binary_digest: [u8; 32],
+    /// Wipe settings as last changed from an unlocked session (v11+; `None` =
+    /// not recorded yet). Not updated on save: the TUI sets it when a wipe
+    /// setting changes, on create, and on `:wipe-settings-accept`.
+    #[zeroize(skip)]
+    pub wipe_settings: Option<WipeSettings>,
 }
 
 impl SessionState {
@@ -275,6 +285,7 @@ impl SessionState {
             send_jitter_secs: 0,
             clock_mark_unix: 0,
             binary_digest: NO_BINARY_DIGEST,
+            wipe_settings: None,
         }
     }
 
@@ -294,6 +305,7 @@ impl SessionState {
             send_jitter_secs: 0,
             clock_mark_unix: 0,
             binary_digest: NO_BINARY_DIGEST,
+            wipe_settings: None,
         }
     }
 
@@ -768,6 +780,7 @@ impl SessionState {
             send_jitter_secs: self.send_jitter_secs,
             clock_mark_unix: self.clock_mark_unix,
             binary_digest: self.binary_digest,
+            wipe_settings: self.wipe_settings,
         }
     }
 
@@ -794,6 +807,7 @@ impl SessionState {
         self.send_jitter_secs = 0;
         self.clock_mark_unix = 0;
         self.binary_digest.zeroize();
+        self.wipe_settings = None;
     }
 }
 
@@ -871,7 +885,7 @@ fn serialize_blob(state: &SessionState) -> Vec<u8> {
 
 fn serialize_blob_at(state: &SessionState, now_unix: u64) -> Vec<u8> {
     let mut plain = Vec::new();
-    plain.push(BLOB_VERSION_V10);
+    plain.push(BLOB_VERSION_V11);
     plain.extend_from_slice(&state.identity.seed);
     write_len_str(&mut plain, &state.identity.onion);
     write_len_bytes(&mut plain, &state.identity.onion_key);
@@ -927,6 +941,18 @@ fn serialize_blob_at(state: &SessionState, now_unix: u64) -> Vec<u8> {
     // binary digest (v10+)
     plain.extend_from_slice(&state.binary_digest);
 
+    // wipe settings record (v11+)
+    match &state.wipe_settings {
+        Some(w) => {
+            plain.push(1);
+            plain.extend_from_slice(&w.to_bytes());
+        }
+        None => {
+            plain.push(0);
+            plain.extend_from_slice(&[0u8; WIPE_SETTINGS_BYTES]);
+        }
+    }
+
     plain
 }
 
@@ -935,7 +961,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         return Err("empty state blob");
     }
     let ver = plain[0];
-    if !(BLOB_VERSION_V1..=BLOB_VERSION_V10).contains(&ver) {
+    if !(BLOB_VERSION_V1..=BLOB_VERSION_V11).contains(&ver) {
         return Err("bad state blob version");
     }
     if plain.len() < 33 {
@@ -1096,6 +1122,24 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         NO_BINARY_DIGEST
     };
 
+    // v11: wipe settings record. Older blobs record none.
+    let wipe_settings = if ver >= BLOB_VERSION_V11 {
+        if pos + 1 + WIPE_SETTINGS_BYTES > plain.len() {
+            return Err("truncated wipe settings");
+        }
+        let flag = plain[pos];
+        let raw: [u8; WIPE_SETTINGS_BYTES] =
+            plain[pos + 1..pos + 1 + WIPE_SETTINGS_BYTES].try_into().unwrap();
+        pos += 1 + WIPE_SETTINGS_BYTES;
+        match flag {
+            0 => None,
+            1 => Some(WipeSettings::from_bytes(&raw)),
+            _ => return Err("bad wipe settings flag"),
+        }
+    } else {
+        None
+    };
+
     if pos != plain.len() {
         return Err("trailing junk in state blob");
     }
@@ -1114,6 +1158,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         send_jitter_secs,
         clock_mark_unix,
         binary_digest,
+        wipe_settings,
     })
 }
 
@@ -2859,6 +2904,76 @@ mod tests {
         assert_eq!(deserialize_blob(&plain).unwrap().binary_digest, [0x11u8; 32]);
         plain.push(0);
         assert!(deserialize_blob(&plain).is_err(), "trailing byte refused");
+    }
+
+    #[test]
+    fn v11_wipe_settings_roundtrip() {
+        let dir = tmp_dir("v11_wipe");
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &LongTermIdentity::generate().unwrap(),
+            "wipeset.onion",
+            vec![],
+        ));
+        save_session(&dir, PersistMode::Passphrase, b"wipeset-pass", &session).unwrap();
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"wipeset-pass").unwrap();
+        assert_eq!(loaded.wipe_settings, None);
+
+        let rec = WipeSettings {
+            deadman_days: 14,
+            failwipe_limit: 0,
+            duress_digest: [0x21u8; 32],
+        };
+        session.wipe_settings = Some(rec);
+        save_session(&dir, PersistMode::Passphrase, b"wipeset-pass", &session).unwrap();
+        let loaded = load_session(&dir, PersistMode::Passphrase, b"wipeset-pass").unwrap();
+        assert_eq!(loaded.wipe_settings, Some(rec));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v10_blob_loads_without_wipe_settings() {
+        let id = LongTermIdentity::from_seed([0x7Bu8; 32]);
+        let identity = IdentityOnionState::from_identity(&id, "oldv10.onion", b"k".to_vec());
+        let mut plain = v7_blob_bytes(&identity, 300);
+        plain[0] = BLOB_VERSION_V10;
+        plain.extend_from_slice(&0u32.to_be_bytes());
+        plain.extend_from_slice(&7_200u64.to_be_bytes());
+        plain.extend_from_slice(&[0x11u8; 32]);
+        assert_eq!(deserialize_blob(&plain).unwrap().wipe_settings, None);
+
+        plain[0] = BLOB_VERSION_V11;
+        assert!(deserialize_blob(&plain).is_err(), "v11 without the record is truncated");
+        let base = plain.len();
+        plain.push(2);
+        plain.extend_from_slice(&[0u8; WIPE_SETTINGS_BYTES]);
+        assert!(deserialize_blob(&plain).is_err(), "unknown flag refused");
+        plain[base] = 1;
+        plain[base + 4] = 9; // deadman days, low byte
+        let loaded = deserialize_blob(&plain).unwrap();
+        assert_eq!(loaded.wipe_settings.unwrap().deadman_days, 9);
+        plain.push(0);
+        assert!(deserialize_blob(&plain).is_err(), "trailing byte refused");
+    }
+
+    #[test]
+    fn extreme_for_disk_keeps_wipe_settings_and_wipe_clears_them() {
+        use crate::net_mode::PostureProfile;
+        let id = LongTermIdentity::from_seed([0x7Au8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "extw.onion",
+            vec![],
+        ));
+        session.net.set_posture(PostureProfile::Extreme);
+        let rec = WipeSettings {
+            deadman_days: 2,
+            failwipe_limit: 5,
+            duress_digest: [0u8; 32],
+        };
+        session.wipe_settings = Some(rec);
+        assert_eq!(session.for_disk().wipe_settings, Some(rec));
+        session.wipe_memory_secure();
+        assert_eq!(session.wipe_settings, None);
     }
 
     #[test]
