@@ -249,6 +249,27 @@ enum TorStatus {
     Unavailable,
 }
 
+/// A change between reachable and unreachable SOCKS. The first probe after
+/// start (from `Checking`) is not a change; the header already shows it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TorChange {
+    WentDown,
+    CameBack,
+}
+
+fn tor_change(prev: TorStatus, next: TorStatus) -> Option<TorChange> {
+    match (prev, next) {
+        (TorStatus::Available, TorStatus::Unavailable) => Some(TorChange::WentDown),
+        (TorStatus::Unavailable, TorStatus::Available) => Some(TorChange::CameBack),
+        _ => None,
+    }
+}
+
+/// Header note for frames committed but not yet handed to Tor.
+fn queued_label(n: usize) -> Option<String> {
+    (n > 0).then(|| format!("{n} queued"))
+}
+
 impl TorStatus {
     fn label(self, listening: bool) -> String {
         let base = match self {
@@ -3182,11 +3203,43 @@ impl App {
                 break;
             }
         }
-        self.tor_status = if ok {
+        let next = if ok {
             TorStatus::Available
         } else {
             TorStatus::Unavailable
         };
+        let change = tor_change(self.tor_status, next);
+        self.tor_status = next;
+        if let Some(change) = change {
+            self.on_tor_change(change);
+        }
+    }
+
+    /// Say so in the transcript when Tor drops or returns. Nothing is sent
+    /// while it is down; committed frames wait in the encrypted queue and go
+    /// out over Tor once SOCKS answers again. Locked sessions stay quiet.
+    fn on_tor_change(&mut self, change: TorChange) {
+        let Some(pending) = self.session.as_ref().map(|s| s.pending.len()) else {
+            return;
+        };
+        match change {
+            TorChange::WentDown => {
+                self.status_msg = "Tor went down: sends are held in the encrypted queue".into();
+                self.push_msg(self.status_msg.clone());
+            }
+            TorChange::CameBack => {
+                self.push_msg("Tor is reachable again");
+                if pending > 0 && self.net.require_messenger_transport().is_ok() {
+                    self.retry_pending(false);
+                } else {
+                    self.status_msg = "Tor is reachable again".into();
+                }
+            }
+        }
+    }
+
+    fn pending_count(&self) -> usize {
+        self.session.as_ref().map_or(0, |s| s.pending.len())
     }
 }
 
@@ -3322,6 +3375,12 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         Span::styled(format!("SAS {}", app.my_sas), Style::default().fg(GOLD)),
         Span::styled(" │ ", Style::default().fg(DIM)),
         Span::styled(app.tor_status.label(listening), app.tor_status.style()),
+        Span::styled(
+            queued_label(app.pending_count())
+                .map(|q| format!(" · {q}"))
+                .unwrap_or_default(),
+            app.tor_status.style(),
+        ),
         Span::styled(" · ", Style::default().fg(DIM)),
         Span::styled(format!("mode={}", app.net.mode), Style::default().fg(DIM)),
         Span::styled(" · ", Style::default().fg(DIM)),
@@ -3974,6 +4033,39 @@ mod tests {
         let app = App::new();
         assert!(app.session.is_none());
         app
+    }
+
+    #[test]
+    fn tor_change_only_between_known_states() {
+        use TorStatus::*;
+        assert_eq!(
+            tor_change(Available, Unavailable),
+            Some(TorChange::WentDown)
+        );
+        assert_eq!(
+            tor_change(Unavailable, Available),
+            Some(TorChange::CameBack)
+        );
+        assert_eq!(tor_change(Checking, Unavailable), None);
+        assert_eq!(tor_change(Checking, Available), None);
+        assert_eq!(tor_change(Available, Available), None);
+        assert_eq!(tor_change(Unavailable, Unavailable), None);
+    }
+
+    #[test]
+    fn queued_label_hidden_when_empty() {
+        assert_eq!(queued_label(0), None);
+        assert_eq!(queued_label(3).as_deref(), Some("3 queued"));
+    }
+
+    #[test]
+    fn tor_change_silent_while_locked() {
+        let mut app = locked_app();
+        let before = app.messages.len();
+        app.on_tor_change(TorChange::WentDown);
+        app.on_tor_change(TorChange::CameBack);
+        assert_eq!(app.messages.len(), before);
+        assert_eq!(app.pending_count(), 0);
     }
 
     #[test]
