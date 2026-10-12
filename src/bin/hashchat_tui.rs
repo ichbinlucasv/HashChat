@@ -18,34 +18,36 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use hashchat_rust::{
-    parse_bridge_line, query_bridge_status, torrc_snippet, BridgeVerdict,
+    attempt_failed, attempt_succeeded, begin_attempt, binary_status,
     bootstrap_ratchet_from_signed_link, build_wire_aad_v3, check_new_passphrase,
-    check_plaintext_send_size, check_state_storage, clear_scrub_callback, commit_outgoing_with_key,
-    disable_core_dumps_best_effort, encrypt_with_key, extreme_default_lock_timeout,
-    extreme_default_ttl, format_lock_timeout, format_bound_contact_link, format_ttl, frame_v3, pad_message, unpad_message,
-    install_panic_scrub_hook, install_terminate_signal_flag, is_onion_destination,
-    is_terminal_safe, mlockall_current, parse_lock_timeout_token, parse_signed_contact_link,
-    parse_ttl_token, push_char_no_realloc, register_scrub_callback, sanitize_for_terminal,
-    sas_fingerprint, sas_for_signed, save_session_with_key, socks5_send,
-    socks_isolation_for_contact, socks_isolation_for_onion, start_hidden_service_with_key,
-    state_exists, take_terminate_signal, tor_probe, unframe_v3, unlock_backoff_delay_secs,
-    take_zeroizing_vec, unlock_session, wipe_local_sensitive, DnsPreference, DoubleRatchet,
-    DumpHardening, ERR_QUEUE_FULL, FrameV3, clear_duress, duress_configured,
-    set_duress_passphrase_with, wipe_on_duress, DuressAction, clear_deadman, deadman_config, set_deadman, touch_deadman, unix_now,
-    wipe_if_deadman_due, MAX_DEADMAN_DAYS, attempt_failed, attempt_succeeded, begin_attempt,
-    clear_failwipe, failwipe_config, set_failwipe, Attempt, MAX_FAIL_LIMIT,
-    HiddenService, IdentityOnionState, InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode,
-    PersistedContact, PostureProfile, SessionState, SocksIsolationCreds, StoreKey,
-    UnlockBackoffPolicy, DEFAULT_LOCK_TIMEOUT_SECS, MAX_PLAINTEXT_SEND_BYTES,
-    MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME, format_jitter, parse_jitter_token,
-    sample_send_delay, clock_rollback_secs, format_rollback, binary_status, digest_hex,
-    running_binary_digest, BinaryStatus, WipeSettings, check_save_mark, SaveMarkStatus,
+    check_plaintext_send_size, check_save_mark, check_state_storage, clear_deadman, clear_duress,
+    clear_failwipe, clear_scrub_callback, clock_rollback_secs, commit_outgoing_with_key,
+    deadman_config, digest_hex, disable_core_dumps_best_effort, duress_configured,
+    encrypt_with_key, extreme_default_lock_timeout, extreme_default_ttl, failwipe_config,
+    format_bound_contact_link, format_jitter, format_lock_timeout, format_rollback, format_ttl,
+    frame_v3, install_panic_scrub_hook, install_terminate_signal_flag, is_onion_destination,
+    is_terminal_safe, mlockall_current, pad_message, parse_bridge_line, parse_jitter_token,
+    parse_lock_timeout_token, parse_signed_contact_link, parse_ttl_token, push_char_no_realloc,
+    query_bridge_status, register_scrub_callback, running_binary_digest, sample_send_delay,
+    sanitize_for_terminal, sas_fingerprint, sas_for_signed, save_session_with_key, set_deadman,
+    set_duress_passphrase_with, set_failwipe, socks5_send, socks_isolation_for_contact,
+    socks_isolation_for_onion, start_hidden_service_with_key, state_exists, take_terminate_signal,
+    take_zeroizing_vec, tor_probe, torrc_snippet, touch_deadman, unframe_v3, unix_now,
+    unlock_backoff_delay_secs, unlock_session, unpad_message, wipe_if_deadman_due,
+    wipe_local_sensitive, wipe_on_duress, Attempt, BinaryStatus, BridgeVerdict, DnsPreference,
+    DoubleRatchet, DumpHardening, DuressAction, FrameV3, HiddenService, IdentityOnionState,
+    InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode, PersistedContact, PostureProfile,
+    SaveMarkStatus, SessionState, SocksIsolationCreds, StoreKey, UnlockBackoffPolicy, WipeSettings,
+    DEFAULT_LOCK_TIMEOUT_SECS, ERR_QUEUE_FULL, MAX_DEADMAN_DAYS, MAX_FAIL_LIMIT,
+    MAX_PLAINTEXT_SEND_BYTES, MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+};
 use ratatui::Terminal;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -63,6 +65,7 @@ const HAIRLINE: Color = Color::Rgb(58, 54, 40); // borders (hairline, lifted for
 const TEXT: Color = Color::Rgb(237, 237, 237); // #EDEDED
 const DIM: Color = Color::Rgb(138, 135, 120); // #8A8778 muted
 const DANGER: Color = Color::Rgb(255, 138, 138); // #FF8A8A
+const SELECT_BG: Color = Color::Rgb(36, 31, 14); // selected contact row
 const TOR: Color = Color::Rgb(196, 168, 255); // #C4A8FF
 const I2P: Color = Color::Rgb(126, 224, 198); // #7EE0C6
 
@@ -105,6 +108,28 @@ enum Screen {
     ConfirmDeleteContact,
     /// Masked two-step entry for the duress passphrase (`:duress set`).
     SetDuress,
+    /// Read-only SAS comparison grid (`:sas-grid`). Esc/Enter returns.
+    SasGrid,
+    /// Read-only own contact-link card (`:contact-card`). Esc/Enter returns.
+    ContactCard,
+}
+
+/// Delivery state of an outgoing bubble (display only; policy lives in send paths).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Delivery {
+    Sent,
+    Held,
+    Queued,
+}
+
+impl Delivery {
+    fn label(self) -> &'static str {
+        match self {
+            Delivery::Sent => "sent",
+            Delivery::Held => "held · random delay",
+            Delivery::Queued => "queued",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -121,6 +146,7 @@ struct HeldSend {
     onion: String,
     frame: Vec<u8>,
     peer_label: String,
+    msg_number: u32,
 }
 
 impl Drop for HeldSend {
@@ -137,6 +163,8 @@ struct ChatLine {
     wipe_key: Option<(String, u32)>,
     /// Presentation only: render as outgoing (gold) bubble.
     outgoing: bool,
+    /// Outgoing only: last known delivery state (display only).
+    delivery: Option<Delivery>,
 }
 
 /// Passphrase buffers are pre-allocated to this many bytes and never grow, so
@@ -165,6 +193,7 @@ impl ChatLine {
             expires_at: None,
             wipe_key: None,
             outgoing: false,
+            delivery: None,
         }
     }
 
@@ -184,6 +213,7 @@ impl ChatLine {
             expires_at,
             wipe_key,
             outgoing,
+            delivery: None,
         }
     }
 }
@@ -429,7 +459,31 @@ impl App {
     }
 
     fn push_chat_out(&mut self, text: impl Into<String>, contact_id: &str, msg_number: u32) {
+        self.push_chat_out_state(text, contact_id, msg_number, Delivery::Sent);
+    }
+
+    fn push_chat_out_state(
+        &mut self,
+        text: impl Into<String>,
+        contact_id: &str,
+        msg_number: u32,
+        delivery: Delivery,
+    ) {
         self.push_chat_dir(text, contact_id, msg_number, true);
+        if let Some(m) = self.messages.last_mut() {
+            m.delivery = Some(delivery);
+        }
+    }
+
+    /// Update the bubble footer of an outgoing line (display only).
+    fn set_delivery(&mut self, contact_id: &str, msg_number: u32, d: Delivery) {
+        for m in self.messages.iter_mut().filter(|m| m.outgoing) {
+            if let Some((cid, n)) = &m.wipe_key {
+                if cid == contact_id && *n == msg_number {
+                    m.delivery = Some(d);
+                }
+            }
+        }
     }
 
     fn push_chat_dir(
@@ -444,8 +498,12 @@ impl App {
         } else {
             Some((contact_id.to_string(), msg_number))
         };
-        self.messages
-            .push(ChatLine::chat(text, self.disappear_ttl_secs, wipe, outgoing));
+        self.messages.push(ChatLine::chat(
+            text,
+            self.disappear_ttl_secs,
+            wipe,
+            outgoing,
+        ));
     }
 
     /// Drop expired chat lines (zeroize plaintext) and wipe matching skipped ratchet keys.
@@ -708,7 +766,8 @@ impl App {
                 };
             }
             _ => {
-                self.status_msg = format!("Usage: :deadman [status|off|set <1-{MAX_DEADMAN_DAYS}>]");
+                self.status_msg =
+                    format!("Usage: :deadman [status|off|set <1-{MAX_DEADMAN_DAYS}>]");
             }
         }
         self.push_msg(self.status_msg.clone());
@@ -835,7 +894,12 @@ impl App {
         }
         if !matches!(
             self.screen,
-            Screen::Main | Screen::ConfirmWipe | Screen::ConfirmDeleteContact | Screen::SetDuress
+            Screen::Main
+                | Screen::ConfirmWipe
+                | Screen::ConfirmDeleteContact
+                | Screen::SetDuress
+                | Screen::SasGrid
+                | Screen::ContactCard
         ) {
             return false;
         }
@@ -942,7 +1006,11 @@ impl App {
         let line = match arg {
             "" | "status" => format!(
                 "bridges require={}",
-                if self.net.require_bridges { "on (sends held unless bridges are active)" } else { "off" }
+                if self.net.require_bridges {
+                    "on (sends held unless bridges are active)"
+                } else {
+                    "off"
+                }
             ),
             "on" | "off" if self.session.is_none() => {
                 "Unlock first: the setting lives in state.enc.".to_string()
@@ -970,7 +1038,11 @@ impl App {
             return None;
         }
         if let Some((at, res)) = &self.bridge_check {
-            let ttl = if res.is_ok() { BRIDGE_CHECK_OK_SECS } else { BRIDGE_CHECK_FAIL_SECS };
+            let ttl = if res.is_ok() {
+                BRIDGE_CHECK_OK_SECS
+            } else {
+                BRIDGE_CHECK_FAIL_SECS
+            };
             if at.elapsed() < Duration::from_secs(ttl) {
                 return res.clone().err();
             }
@@ -1315,9 +1387,7 @@ impl App {
         if self.unlock_mode_create {
             if self.unlock_step == UnlockStep::EnterPass {
                 // Creation-time strength floor (stricter under Extreme).
-                if let Err(reason) =
-                    check_new_passphrase(&self.passphrase, self.net.is_extreme())
-                {
+                if let Err(reason) = check_new_passphrase(&self.passphrase, self.net.is_extreme()) {
                     self.status_msg = format!("Refused: {reason}.");
                     self.passphrase.zeroize();
                     self.passphrase.clear();
@@ -1381,8 +1451,7 @@ impl App {
                     self.disappear_ttl_secs = state.disappear_ttl_secs;
                     self.lock_timeout_secs = state.lock_timeout_secs;
                     self.send_jitter_secs = state.send_jitter_secs;
-                    self.clock_behind_secs =
-                        clock_rollback_secs(state.clock_mark_unix, unix_now());
+                    self.clock_behind_secs = clock_rollback_secs(state.clock_mark_unix, unix_now());
                     let running = running_binary_digest();
                     self.binary_changed =
                         match binary_status(&state.binary_digest, running.as_ref()) {
@@ -1713,7 +1782,6 @@ impl App {
         }
     }
 
-
     /// Build SOCKS isolation credentials when prefs enable isolation.
     /// Prefer contact-id + local seed; fall back to onion tags for pending retries.
     fn socks_isolation_creds_for(
@@ -1756,24 +1824,40 @@ impl App {
         }
         let transport_ok = self.net.require_messenger_transport().is_ok()
             && self.tor_status == TorStatus::Available;
-        let bridge_hold = if transport_ok { self.bridges_hold_reason() } else { None };
+        let bridge_hold = if transport_ok {
+            self.bridges_hold_reason()
+        } else {
+            None
+        };
         let mut changed = false;
         for held in due {
             let queued = self
                 .session
                 .as_ref()
-                .map(|s| s.pending.iter().any(|(o, f)| *o == held.onion && *f == held.frame))
+                .map(|s| {
+                    s.pending
+                        .iter()
+                        .any(|(o, f)| *o == held.onion && *f == held.frame)
+                })
                 .unwrap_or(false);
             if !queued {
                 continue;
             }
             if !transport_ok {
-                self.push_msg(format!("[{}] queued offline (Tor unavailable)", held.peer_label));
+                self.set_delivery(&held.contact_id, held.msg_number, Delivery::Queued);
+                self.push_msg(format!(
+                    "[{}] queued offline (Tor unavailable)",
+                    held.peer_label
+                ));
                 self.status_msg = "Queued: Tor unavailable (frame committed)".into();
                 continue;
             }
             if let Some(why) = &bridge_hold {
-                self.push_msg(format!("[{}] queued: bridges required, {why}", held.peer_label));
+                self.set_delivery(&held.contact_id, held.msg_number, Delivery::Queued);
+                self.push_msg(format!(
+                    "[{}] queued: bridges required, {why}",
+                    held.peer_label
+                ));
                 self.status_msg = "Queued: bridges not active (frame committed)".into();
                 continue;
             }
@@ -1792,9 +1876,14 @@ impl App {
                     session.ack_pending_frame(&held.onion, &held.frame);
                 }
                 changed = true;
+                self.set_delivery(&held.contact_id, held.msg_number, Delivery::Sent);
                 self.status_msg = format!("Sent {} B via SOCKS after jitter", held.frame.len());
             } else {
-                self.push_msg(format!("[{}] queued offline (SOCKS send failed)", held.peer_label));
+                self.set_delivery(&held.contact_id, held.msg_number, Delivery::Queued);
+                self.push_msg(format!(
+                    "[{}] queued offline (SOCKS send failed)",
+                    held.peer_label
+                ));
                 self.status_msg = "Queued: SOCKS send failed (frame committed)".into();
             }
         }
@@ -2166,8 +2255,7 @@ impl App {
         // Local UX gate: refuse huge pastes before ratchet encrypt (no body echo).
         if check_plaintext_send_size(text.as_bytes()).is_err() {
             let kib = MAX_PLAINTEXT_SEND_BYTES / 1024;
-            self.status_msg =
-                format!("Send refused: message exceeds {kib} KiB plaintext limit.");
+            self.status_msg = format!("Send refused: message exceeds {kib} KiB plaintext limit.");
             self.push_msg(self.status_msg.clone());
             return;
         }
@@ -2195,15 +2283,14 @@ impl App {
                     }
                 }
             } else if contact.x25519 != [0u8; 32] {
-                let mut shared = match local
-                    .x25519_dh_checked(&x25519_dalek::PublicKey::from(contact.x25519))
-                {
-                    Some(s) => s,
-                    None => {
-                        self.push_msg("Contact key rejected (invalid).");
-                        return;
-                    }
-                };
+                let mut shared =
+                    match local.x25519_dh_checked(&x25519_dalek::PublicKey::from(contact.x25519)) {
+                        Some(s) => s,
+                        None => {
+                            self.push_msg("Contact key rejected (invalid).");
+                            return;
+                        }
+                    };
                 let mut r = DoubleRatchet::new();
                 r.init_directional(&shared, &local.x25519_public_bytes(), &contact.x25519);
                 shared.zeroize();
@@ -2273,10 +2360,11 @@ impl App {
 
         if self.send_jitter_secs > 0 {
             let due = Instant::now() + sample_send_delay(self.send_jitter_secs);
-            self.push_chat_out(
+            self.push_chat_out_state(
                 format!("[{peer_label}] you: {text}  (held, random delay before send)"),
                 &contact.id,
                 msg_number,
+                Delivery::Held,
             );
             self.held_sends.push(HeldSend {
                 due,
@@ -2284,6 +2372,7 @@ impl App {
                 onion: contact.onion.clone(),
                 frame,
                 peer_label,
+                msg_number,
             });
             self.status_msg = format!(
                 "Held for jitter ({}); committed to queue",
@@ -2293,10 +2382,11 @@ impl App {
         }
 
         if let Some(why) = self.bridges_hold_reason() {
-            self.push_chat_out(
+            self.push_chat_out_state(
                 format!("[{peer_label}] you: {text}  (queued: bridges required, {why})"),
                 &contact.id,
                 msg_number,
+                Delivery::Queued,
             );
             self.status_msg = "Queued: bridges not active (frame committed)".into();
             return;
@@ -2456,7 +2546,6 @@ impl App {
             }
         }
     }
-
 
     /// `:isolate` — Tor SOCKS stream isolation on/off/status (durable prefs).
     fn handle_isolate(&mut self, args: &str) {
@@ -2664,8 +2753,7 @@ impl App {
     fn handle_rename_command(&mut self, args: &str) {
         let args = args.trim();
         if args.is_empty() {
-            self.status_msg =
-                "Usage: :rename <name> | :rename <id|sas-prefix> <name>".into();
+            self.status_msg = "Usage: :rename <name> | :rename <id|sas-prefix> <name>".into();
             self.push_msg(self.status_msg.clone());
             return;
         }
@@ -2877,7 +2965,6 @@ impl App {
         }
     }
 
-
     /// OPSEC-safe posture dump for two-peer validation evidence.
     /// Prints counts and tokens only — never onions, links, SAS, passphrases, or bodies.
     /// Not a cryptographic proof of E2EE; see docs/TWO_PEER_VALIDATION.md.
@@ -2927,11 +3014,19 @@ impl App {
             "contacts={contacts} · blocked={blocked} · muted={muted} · unverified={unverified}"
         ));
         if unlocked {
-            let clock = if self.clock_behind_secs.is_some() { "behind" } else { "ok" };
+            let clock = if self.clock_behind_secs.is_some() {
+                "behind"
+            } else {
+                "ok"
+            };
             self.push_msg(format!("clock={clock}"));
             let binary = if self.binary_changed { "changed" } else { "ok" };
             self.push_msg(format!("binary={binary}"));
-            let wipe = if self.wipe_settings_changed.is_empty() { "ok" } else { "changed" };
+            let wipe = if self.wipe_settings_changed.is_empty() {
+                "ok"
+            } else {
+                "changed"
+            };
             self.push_msg(format!("wipe_settings={wipe}"));
             self.push_msg(format!("state_copy={}", self.save_mark.token()));
         }
@@ -2952,8 +3047,16 @@ impl App {
         // Token only — never echo isolation username/password tags.
         self.push_msg(format!(
             "socks_isol={}{}",
-            if self.net.socks_isolation_enabled() { "on" } else { "off" },
-            if self.net.is_extreme() { " (Extreme forces on)" } else { "" }
+            if self.net.socks_isolation_enabled() {
+                "on"
+            } else {
+                "off"
+            },
+            if self.net.is_extreme() {
+                " (Extreme forces on)"
+            } else {
+                ""
+            }
         ));
 
         let listening = self.hs.is_some();
@@ -3038,6 +3141,33 @@ impl App {
             ":delete-contact-confirm" => {
                 self.handle_delete_contact_confirm();
             }
+            ":sas-grid" => {
+                if self.session.is_none() {
+                    self.status_msg = "Unlock first.".into();
+                } else if self.selected_contact_record().is_none() {
+                    self.status_msg = ":sas-grid needs a selected contact.".into();
+                } else {
+                    self.screen = Screen::SasGrid;
+                    self.status_msg = "Compare out of band · Esc back".into();
+                }
+            }
+            ":contact-card" => {
+                // Same refusals as :my-contact; the card only displays.
+                if self.net.extreme_blocks_contact_export() {
+                    self.status_msg =
+                        "extreme posture refuses contact-link export (minimize link sharing)"
+                            .into();
+                    self.push_msg(self.status_msg.clone());
+                } else if let Err(e) = self.net.require_messenger_transport() {
+                    self.status_msg = format!(":contact-card refused: {e}");
+                    self.push_msg(self.status_msg.clone());
+                } else if self.my_contact_link.is_empty() {
+                    self.push_msg("No contact link yet (unlock + :listen first).");
+                } else {
+                    self.screen = Screen::ContactCard;
+                    self.status_msg = "Share privately · Esc back".into();
+                }
+            }
             ":my-contact" => {
                 if self.net.extreme_blocks_contact_export() {
                     self.status_msg =
@@ -3117,12 +3247,14 @@ impl App {
                 self.push_msg("HashChat commands:");
                 self.push_msg("  :listen                 publish Tor v3 onion (ControlPort)");
                 self.push_msg("  :add-contact <link>     verify signed link + bootstrap ratchet");
+                self.push_msg(
+                    "  :sas-grid               SAS comparison grid for the selected contact",
+                );
+                self.push_msg("  :contact-card           your signed contact-link card");
                 self.push_msg("  :my-contact             your signed link + short SAS");
                 self.push_msg("  :sas [link]             short SAS (selected contact or link)");
                 self.push_msg("  :mode [tor|status|…]    network mode (Tor default; fail-closed)");
-                self.push_msg(
-                    "  :isolate [on|off|status] Tor SOCKS stream isolation (default on)",
-                );
+                self.push_msg("  :isolate [on|off|status] Tor SOCKS stream isolation (default on)");
                 self.push_msg(
                     "  :retry                  flush pending queue (Tor / net_mode gate)",
                 );
@@ -3131,7 +3263,9 @@ impl App {
                 );
                 self.push_msg("  :lock                   lock UI now (clear RAM; disk untouched)");
                 self.push_msg("  :lock-timeout [off|…]   idle auto-lock (default 5m; Extreme→1m)");
-                self.push_msg("  :jitter [off|30s|2m]    random delay before each send (default off)");
+                self.push_msg(
+                    "  :jitter [off|30s|2m]    random delay before each send (default off)",
+                );
                 self.push_msg("  :block / :unblock [id]  refuse send + drop inbound (fail-closed)");
                 self.push_msg("  :mute / :unmute [id]    suppress inbound UI (decrypt for sync)");
                 self.push_msg("  :blocked                list blocked + muted ids");
@@ -3151,16 +3285,32 @@ impl App {
                 self.push_msg(
                     "  :evidence / :audit-status  OPSEC posture dump (counts/tokens only)",
                 );
-                self.push_msg("  :duress [set|clear]     passphrase that wipes instead of unlocking");
-                self.push_msg("  :duress set decoy       same, then opens an empty profile instead");
+                self.push_msg(
+                    "  :duress [set|clear]     passphrase that wipes instead of unlocking",
+                );
+                self.push_msg(
+                    "  :duress set decoy       same, then opens an empty profile instead",
+                );
                 self.push_msg("  :deadman [set N|off]    wipe at start if not unlocked for N days");
                 self.push_msg("  :wipe-after [set N|off] wipe after N failed unlocks");
-                self.push_msg("  :clock / :clock-reset   check for a clock set back; accept current time");
-                self.push_msg("  :bridges [check]        ask Tor whether bridges are on and in use");
-                self.push_msg("  :bridges torrc LINE     check a bridge line and print the torrc lines");
-                self.push_msg("  :bridges require on|off hold sends unless Tor reports bridges active");
-                self.push_msg("  :binary / :binary-accept check this binary against the profile; trust it");
-                self.push_msg("  :wipe-settings[-accept]  check wipe setting files against the profile");
+                self.push_msg(
+                    "  :clock / :clock-reset   check for a clock set back; accept current time",
+                );
+                self.push_msg(
+                    "  :bridges [check]        ask Tor whether bridges are on and in use",
+                );
+                self.push_msg(
+                    "  :bridges torrc LINE     check a bridge line and print the torrc lines",
+                );
+                self.push_msg(
+                    "  :bridges require on|off hold sends unless Tor reports bridges active",
+                );
+                self.push_msg(
+                    "  :binary / :binary-accept check this binary against the profile; trust it",
+                );
+                self.push_msg(
+                    "  :wipe-settings[-accept]  check wipe setting files against the profile",
+                );
                 self.push_msg("  :wipe                   nuclear local wipe (confirm)");
                 self.push_msg("  Ctrl+\\                 panic: wipe and quit now, no prompt");
                 self.push_msg("  :quit                   exit");
@@ -3394,32 +3544,13 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
         Screen::ConfirmWipe => draw_wipe_modal(f, app, area),
         Screen::ConfirmDeleteContact => draw_delete_contact_modal(f, app, area),
         Screen::SetDuress => draw_duress_entry(f, app, area),
+        Screen::SasGrid => draw_sas_grid(f, app, area),
+        Screen::ContactCard => draw_contact_card(f, app, area),
     }
 }
 
 fn draw_unlock(f: &mut ratatui::Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(8),
-            Constraint::Length(3),
-        ])
-        .split(area);
-
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled("  #  ", gold_style()),
-        Span::styled("HashChat", gold_style()),
-        Span::styled("  ·  Rust desktop", Style::default().fg(DIM)),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(GOLD))
-            .style(Style::default().bg(PANEL)),
-    );
-    f.render_widget(title, chunks[0]);
-
+    let rect = centered_rect(area, area.width.clamp(52, 72), 18);
     let prompt = if app.unlock_mode_create {
         match app.unlock_step {
             UnlockStep::EnterPass => {
@@ -3436,29 +3567,48 @@ fn draw_unlock(f: &mut ratatui::Frame, app: &App, area: Rect) {
         "Passphrase:".to_string()
     };
     let masked = if app.unlock_step == UnlockStep::ConfirmPass {
-        "*".repeat(app.passphrase_confirm.chars().count())
+        "•".repeat(app.passphrase_confirm.chars().count())
     } else {
-        "*".repeat(app.passphrase.chars().count())
+        "•".repeat(app.passphrase.chars().count())
     };
-    let body = Paragraph::new(vec![
+    let mut pills: Vec<Span> = Vec::new();
+    pills.extend(pill("● Locked", GOLD));
+    pills.extend(pill("Argon2id at rest", DIM));
+    pills.extend(pill("Tor required", TOR));
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                " # ",
+                Style::default()
+                    .fg(BG)
+                    .bg(GOLD)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  HashChat", gold_style()),
+        ])
+        .centered(),
+        Line::from(Span::styled(
+            "Private messaging over Tor. Nothing leaves this device unencrypted.",
+            Style::default().fg(DIM),
+        ))
+        .centered(),
+        Line::from(""),
+        Line::from(pills).centered(),
+        Line::from(""),
         Line::from(Span::styled(
             if app.unlock_mode_create {
                 "Initialize local session (Argon2id-wrapped at rest)"
             } else {
                 "Unlock local session"
             },
-            Style::default().fg(TEXT),
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(vec![
-            Span::styled(prompt, Style::default().fg(GOLD)),
-            Span::raw(" "),
-            Span::styled(masked, Style::default().fg(TEXT)),
-            Span::styled("▌", Style::default().fg(GOLD)),
-        ]),
+        confirm_field(&prompt, masked, false),
         Line::from(""),
         Line::from(Span::styled(
-            sanitize_for_terminal(&app.status_msg),
+            sanitize_for_terminal(&app.status_msg).into_owned(),
             Style::default().fg(DIM),
         )),
         Line::from(""),
@@ -3466,28 +3616,17 @@ fn draw_unlock(f: &mut ratatui::Frame, app: &App, area: Rect) {
             "Enter unlock · Esc clear · Tor required for network use",
             Style::default().fg(DIM),
         )),
-    ])
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(" unlock ", gold_style()))
-            .border_style(Style::default().fg(GOLD))
-            .style(Style::default().bg(PANEL)),
-    )
-    .wrap(Wrap { trim: false });
-    f.render_widget(body, chunks[1]);
-
-    let foot = Paragraph::new(Line::from(Span::styled(
-        "Transport default: Tor · :mode for explicit nets · No silent fallback",
-        Style::default().fg(DIM),
-    )))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(DIM))
-            .style(Style::default().bg(PANEL)),
+        Line::from(Span::styled(
+            "Transport default: Tor · :mode for explicit nets · No silent fallback",
+            Style::default().fg(DIM),
+        )),
+    ];
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(card_block("unlock", false))
+            .wrap(Wrap { trim: false }),
+        rect,
     );
-    f.render_widget(foot, chunks[2]);
 }
 
 /// Rounded "pill" span (design: status bar pills, always on).
@@ -3588,13 +3727,23 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let mut pills: Vec<Span> = vec![Span::raw(" ")];
     pills.extend(pill(tor_txt, tor_col));
     pills.extend(pill(fc_txt, fc_col));
-    let i2p_col = if app.net.mode.as_str() == "i2p" { I2P } else { DIM };
+    let i2p_col = if app.net.mode.as_str() == "i2p" {
+        I2P
+    } else {
+        DIM
+    };
     pills.extend(pill("I2P · refused", i2p_col));
     if let Some(q) = queued_label(app.pending_count()) {
         pills.extend(pill(q, GOLD_DEEP));
     }
     let title_line = Line::from(vec![
-        Span::styled(" # ", Style::default().fg(BG).bg(GOLD).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " # ",
+            Style::default()
+                .fg(BG)
+                .bg(GOLD)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" HashChat", gold_style()),
         Span::styled("   SAS ", Style::default().fg(DIM)),
         Span::styled(app.my_sas.clone(), Style::default().fg(GOLD)),
@@ -3633,8 +3782,11 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
             )),
         ])]
     } else {
+        let sel = app.contacts_state.selected();
         rows.iter()
-            .map(|r| {
+            .enumerate()
+            .map(|(idx, r)| {
+                let row_bg = if sel == Some(idx) { SELECT_BG } else { PANEL };
                 let name = sanitize_for_terminal(&r.label).into_owned();
                 let (status, col) = if r.blocked {
                     ("⊘ blocked", DANGER)
@@ -3651,18 +3803,26 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
                     Line::from(vec![
                         Span::styled(
                             format!(" {} ", avatar_initial(&name)),
-                            Style::default().fg(av_fg).bg(av_bg).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(av_fg)
+                                .bg(av_bg)
+                                .add_modifier(Modifier::BOLD),
                         ),
-                        Span::raw(" "),
+                        Span::styled(" ", Style::default().bg(row_bg)),
                         Span::styled(
                             name,
-                            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(TEXT)
+                                .bg(row_bg)
+                                .add_modifier(Modifier::BOLD),
                         ),
-                    ]),
+                    ])
+                    .style(Style::default().bg(row_bg)),
                     Line::from(vec![
                         Span::raw("    "),
                         Span::styled(status, Style::default().fg(col)),
-                    ]),
+                    ])
+                    .style(Style::default().bg(row_bg)),
                     Line::from(""),
                 ])
             })
@@ -3670,7 +3830,7 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     };
     let list = List::new(items)
         .block(panel_block("Chats", app.focus == Focus::Contacts))
-        .highlight_style(Style::default().bg(Color::Rgb(36, 31, 14)))
+        .highlight_style(Style::default())
         .highlight_symbol("▌");
     f.render_stateful_widget(list, body[0], &mut app.contacts_state);
 
@@ -3698,12 +3858,12 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
             Paragraph::new(Line::from(vec![
                 Span::styled(
                     " ✓ Verified (SAS) ",
-                    Style::default().fg(BG).bg(GOLD).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(BG)
+                        .bg(GOLD)
+                        .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    "  via Tor v3 · Double Ratchet",
-                    Style::default().fg(DIM),
-                ),
+                Span::styled("  via Tor v3 · Double Ratchet", Style::default().fg(DIM)),
             ])),
             parts[0],
         ),
@@ -3711,7 +3871,10 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
             Paragraph::new(Line::from(vec![
                 Span::styled(
                     " ⚠ Unverified ",
-                    Style::default().fg(BG).bg(DANGER).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(BG)
+                        .bg(DANGER)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     "  compare SAS out of band, then :verify · sending refused",
@@ -3751,6 +3914,14 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
                 if let Some(i) = text.find("] you: ") {
                     text = text[i + 7..].to_string();
                 }
+                // The delivery note moves to the footer.
+                if m.delivery.is_some() {
+                    if let Some(i) = text.rfind("  (") {
+                        if text.ends_with(')') {
+                            text.truncate(i);
+                        }
+                    }
+                }
             }
             if m.wipe_key.is_none() && !m.outgoing && m.expires_at.is_none() {
                 // System note: muted, centred, no bubble.
@@ -3772,12 +3943,7 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
                 let l = Line::from(Span::styled(format!(" {chunk} "), style));
                 msg_lines.push(if m.outgoing { l.right_aligned() } else { l });
             }
-            let meta = if m.expires_at.is_some() {
-                "Tor-only · Double Ratchet · ⏱ disappearing"
-            } else {
-                "Tor-only · Double Ratchet"
-            };
-            let ml = Line::from(Span::styled(meta, Style::default().fg(DIM)));
+            let ml = Line::from(bubble_meta(m));
             msg_lines.push(if m.outgoing { ml.right_aligned() } else { ml });
             msg_lines.push(Line::from(""));
         }
@@ -3793,9 +3959,7 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         Span::styled(sanitize_for_terminal(&app.input), Style::default().fg(TEXT)),
         Span::styled("▌", Style::default().fg(GOLD)),
     ]))
-    .block(
-        panel_block("Message", app.focus == Focus::Input).style(Style::default().bg(SURFACE)),
-    );
+    .block(panel_block("Message", app.focus == Focus::Input).style(Style::default().bg(SURFACE)));
     f.render_widget(input, root[2]);
 
     let status = Paragraph::new(Line::from(vec![
@@ -3807,6 +3971,27 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     ]))
     .style(Style::default().bg(BG));
     f.render_widget(status, root[3]);
+}
+
+/// Bubble footer: real transport + delivery state (display only).
+fn bubble_meta(m: &ChatLine) -> Vec<Span<'static>> {
+    let mut v = vec![Span::styled(
+        "via Tor v3 · Double Ratchet",
+        Style::default().fg(DIM),
+    )];
+    if let Some(d) = m.delivery {
+        let col = match d {
+            Delivery::Sent => GOLD_DEEP,
+            Delivery::Held => TOR,
+            Delivery::Queued => DANGER,
+        };
+        v.push(Span::styled(" · ", Style::default().fg(DIM)));
+        v.push(Span::styled(d.label(), Style::default().fg(col)));
+    }
+    if m.expires_at.is_some() {
+        v.push(Span::styled(" · ⏱ disappearing", Style::default().fg(DIM)));
+    }
+    v
 }
 
 /// Hard-wrap by characters for bubble rendering (display only).
@@ -3829,75 +4014,162 @@ fn wrap_chars(s: &str, width: usize) -> Vec<String> {
     out
 }
 
-fn draw_wipe_modal(f: &mut ratatui::Frame, app: &App, area: Rect) {
-    // Full-area danger backdrop — no chat plaintext visible behind the confirm.
+/// Centered rect clamped to the area (presentation only).
+fn centered_rect(area: Rect, w: u16, h: u16) -> Rect {
+    let w = w.min(area.width);
+    let h = h.min(area.height);
+    Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    )
+}
+
+/// Rounded card block; red for destructive actions (DESIGN.md).
+fn card_block(title: &str, danger: bool) -> Block<'static> {
+    let col = if danger { DANGER } else { GOLD };
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default().fg(col).add_modifier(Modifier::BOLD),
+        ))
+        .border_style(Style::default().fg(col))
+        .padding(ratatui::widgets::Padding::horizontal(2))
+        .style(Style::default().bg(PANEL))
+}
+
+/// Full-screen backdrop: never render chat/contacts under a modal.
+fn blank_backdrop(f: &mut ratatui::Frame, area: Rect) {
     f.render_widget(Clear, area);
     f.render_widget(Block::default().style(Style::default().bg(BG)), area);
+}
 
-    let w = area.width.clamp(48, 72);
-    let h = 12u16.min(area.height.saturating_sub(2)).max(10);
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    let rect = Rect::new(x, y, w, h);
-    f.render_widget(Clear, rect);
-    let body = Paragraph::new(vec![
-        Line::from(Span::styled(
-            "NUCLEAR WIPE",
-            Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Erases on-disk session (state.enc), Tor HS dir, and in-RAM",
-            Style::default().fg(TEXT),
-        )),
-        Line::from(Span::styled(
-            "passphrase, onion_key, ratchets, and pending frames.",
-            Style::default().fg(TEXT),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Type :wipe-confirm then Enter.  Esc cancels.",
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Limits: not a kernel-implant / prior-exfil mitigator (THREATMODEL).",
-            Style::default().fg(DIM),
-        )),
-        Line::from(Span::styled(
-            sanitize_for_terminal(&app.status_msg),
-            Style::default().fg(DIM),
-        )),
+fn danger_pill(text: &str) -> Span<'static> {
+    Span::styled(
+        format!(" ⚠ {text} "),
+        Style::default()
+            .fg(BG)
+            .bg(DANGER)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+fn confirm_field(label: &str, value: String, danger: bool) -> Line<'static> {
+    let col = if danger { DANGER } else { GOLD };
+    Line::from(vec![
+        Span::styled(format!("{label} "), Style::default().fg(DIM)),
+        Span::styled("› ", Style::default().fg(col).add_modifier(Modifier::BOLD)),
+        Span::styled(value, Style::default().fg(TEXT).bg(SURFACE)),
+        Span::styled("▌", Style::default().fg(col)),
     ])
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(
-                " DANGER · wipe ",
+}
+
+#[allow(clippy::too_many_arguments)] // presentation-only text slots
+fn draw_destructive(
+    f: &mut ratatui::Frame,
+    app: &App,
+    area: Rect,
+    title: &str,
+    heading: &str,
+    body: [&str; 2],
+    confirm_cmd: &str,
+    limits: &str,
+) {
+    blank_backdrop(f, area);
+    let rect = centered_rect(area, area.width.clamp(48, 76), 15);
+    let txt = |t: &str| Line::from(Span::styled(t.to_string(), Style::default().fg(TEXT)));
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            danger_pill(heading),
+            Span::styled("  irreversible", Style::default().fg(DANGER)),
+        ]),
+        Line::from(""),
+        txt(body[0]),
+        txt(body[1]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Type ", Style::default().fg(TEXT)),
+            Span::styled(
+                confirm_cmd.to_string(),
                 Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
-            ))
-            .border_style(Style::default().fg(DANGER))
-            .style(Style::default().bg(PANEL)),
+            ),
+            Span::styled(" then Enter.  Esc cancels.", Style::default().fg(TEXT)),
+        ]),
+        Line::from(""),
+        confirm_field(
+            "confirm",
+            sanitize_for_terminal(&app.input).into_owned(),
+            true,
+        ),
+        Line::from(""),
+        Line::from(Span::styled(limits.to_string(), Style::default().fg(DIM))),
+        Line::from(Span::styled(
+            sanitize_for_terminal(&app.status_msg).into_owned(),
+            Style::default().fg(DIM),
+        )),
+    ];
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(card_block(title, true))
+            .wrap(Wrap { trim: false }),
+        rect,
     );
-    f.render_widget(body, rect);
+}
+
+fn draw_wipe_modal(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    draw_destructive(
+        f,
+        app,
+        area,
+        "DANGER · wipe",
+        "NUCLEAR WIPE",
+        [
+            "Erases on-disk session (state.enc), Tor HS dir, and in-RAM",
+            "passphrase, onion_key, ratchets, and pending frames.",
+        ],
+        ":wipe-confirm",
+        "Limits: not a kernel-implant / prior-exfil mitigator (THREATMODEL).",
+    );
+}
+
+fn draw_delete_contact_modal(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    draw_destructive(
+        f,
+        app,
+        area,
+        "DANGER · delete-contact",
+        "DELETE CONTACT",
+        [
+            "Removes the contact and zeroizes local ratchet bytes,",
+            "pending frames for that dest, and mute/block entries.",
+        ],
+        ":delete-contact-confirm",
+        "Local only — not a remote wipe (THREATMODEL).",
+    );
 }
 
 fn draw_duress_entry(f: &mut ratatui::Frame, app: &App, area: Rect) {
-    f.render_widget(Clear, area);
-    f.render_widget(Block::default().style(Style::default().bg(BG)), area);
-
-    let w = area.width.clamp(48, 72);
-    let h = 11u16.min(area.height.saturating_sub(2)).max(9);
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    let rect = Rect::new(x, y, w, h);
-    f.render_widget(Clear, rect);
+    blank_backdrop(f, area);
+    let rect = centered_rect(area, area.width.clamp(48, 76), 14);
     let (prompt, len) = if app.unlock_step == UnlockStep::ConfirmPass {
         ("Confirm:", app.passphrase_confirm.chars().count())
     } else {
         ("Duress passphrase:", app.passphrase.chars().count())
     };
-    let body = Paragraph::new(vec![
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            danger_pill("DURESS"),
+            Span::styled(
+                "  wipes local data when entered",
+                Style::default().fg(DANGER),
+            ),
+        ]),
+        Line::from(""),
         Line::from(Span::styled(
             "Entering this at the unlock prompt wipes local data.",
             Style::default().fg(TEXT),
@@ -3907,79 +4179,181 @@ fn draw_duress_entry(f: &mut ratatui::Frame, app: &App, area: Rect) {
             Style::default().fg(TEXT),
         )),
         Line::from(""),
+        confirm_field(prompt, "•".repeat(len), true),
+        Line::from(""),
+        Line::from(Span::styled(
+            sanitize_for_terminal(&app.status_msg).into_owned(),
+            Style::default().fg(DIM),
+        )),
+        Line::from(Span::styled(
+            "Enter accept · Esc cancel",
+            Style::default().fg(DIM),
+        )),
+    ];
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(card_block("duress passphrase", true))
+            .wrap(Wrap { trim: false }),
+        rect,
+    );
+}
+
+/// `:sas-grid` — SAS of the selected contact as 8 mono blocks (compare out of band).
+fn draw_sas_grid(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    blank_backdrop(f, area);
+    let rect = centered_rect(area, area.width.clamp(52, 80), 19);
+    let Some(c) = app.selected_contact_record() else {
+        return;
+    };
+    let name = sanitize_for_terminal(&App::contact_list_label(c)).into_owned();
+    let sas: Vec<char> = App::contact_sas_short(c)
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect();
+    let verified = app.selected_is_verified().unwrap_or(false);
+    let block_style = Style::default()
+        .fg(BG)
+        .bg(GOLD)
+        .add_modifier(Modifier::BOLD);
+    let mut top = vec![Span::raw("  ")];
+    let mut mid = vec![Span::raw("  ")];
+    let mut idx = vec![Span::raw("  ")];
+    for (i, ch) in sas.iter().enumerate() {
+        if i == 4 {
+            for v in [&mut top, &mut mid, &mut idx] {
+                v.push(Span::raw("   "));
+            }
+        }
+        top.push(Span::styled("     ", block_style));
+        mid.push(Span::styled(format!("  {ch}  "), block_style));
+        idx.push(Span::styled(
+            format!("  {}  ", i + 1),
+            Style::default().fg(DIM),
+        ));
+        for v in [&mut top, &mut mid, &mut idx] {
+            v.push(Span::raw(" "));
+        }
+    }
+    let status = if verified {
+        Line::from(Span::styled(
+            " ✓ Verified (SAS) ",
+            Style::default()
+                .fg(BG)
+                .bg(GOLD)
+                .add_modifier(Modifier::BOLD),
+        ))
+    } else {
+        Line::from(danger_pill("Unverified · sending refused"))
+    };
+    let lines = vec![
+        Line::from(""),
         Line::from(vec![
-            Span::styled(prompt, Style::default().fg(GOLD)),
-            Span::raw(" "),
-            Span::styled("*".repeat(len), Style::default().fg(TEXT)),
-            Span::styled("▌", Style::default().fg(GOLD)),
+            Span::styled(name, Style::default().fg(TEXT).add_modifier(Modifier::BOLD)),
+            Span::styled("  ·  safety code (SAS)", Style::default().fg(DIM)),
+        ]),
+        Line::from(""),
+        status,
+        Line::from(""),
+        Line::from(top.clone()),
+        Line::from(mid),
+        Line::from(top),
+        Line::from(idx),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Read the 8 characters to each other in person or on a call.",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(Span::styled(
+            "Never compare over HashChat itself.",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                " :verify ",
+                Style::default()
+                    .fg(BG)
+                    .bg(GOLD)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" if they match   ", Style::default().fg(DIM)),
+            Span::styled(
+                " :block ",
+                Style::default()
+                    .fg(BG)
+                    .bg(DANGER)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" if they differ   Esc back", Style::default().fg(DIM)),
+        ]),
+    ];
+    f.render_widget(
+        Paragraph::new(lines).block(card_block("verify contact", false)),
+        rect,
+    );
+}
+
+/// `:contact-card` — own signed Contact Link v1 with the checks a peer will run.
+fn draw_contact_card(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    blank_backdrop(f, area);
+    let rect = centered_rect(area, area.width.clamp(56, 86), 21);
+    let inner_w = rect.width.saturating_sub(6) as usize;
+    let mono = Style::default().fg(GOLD).bg(SURFACE);
+    let check = |t: &str| {
+        Line::from(vec![
+            Span::styled(
+                "  ✓ ",
+                Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(t.to_string(), Style::default().fg(TEXT)),
+        ])
+    };
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                " # ",
+                Style::default()
+                    .fg(BG)
+                    .bg(GOLD)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  Your contact link", gold_style()),
+            Span::styled("  ·  Contact Link v1 · signed", Style::default().fg(DIM)),
+        ]),
+        Line::from(""),
+    ];
+    let link = sanitize_for_terminal(&app.my_contact_link).into_owned();
+    for chunk in wrap_chars(&link, inner_w).into_iter().take(5) {
+        lines.push(Line::from(Span::styled(chunk, mono)));
+    }
+    lines.extend([
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("SAS ", Style::default().fg(DIM)),
+            Span::styled(
+                app.my_sas.clone(),
+                Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            sanitize_for_terminal(&app.status_msg),
+            "Your contact's app checks:",
             Style::default().fg(DIM),
         )),
-        Line::from(Span::styled("Enter accept · Esc cancel", Style::default().fg(DIM))),
-    ])
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(" duress passphrase ", gold_style()))
-            .border_style(Style::default().fg(GOLD))
-            .style(Style::default().bg(PANEL)),
+        check("Ed25519 signature over the link"),
+        check("onion address bound to the signed identity"),
+        check("Tor-only transport · no clearnet fallback"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Share privately. Compare the SAS out of band before :verify.  Esc back",
+            Style::default().fg(DIM),
+        )),
+    ]);
+    f.render_widget(
+        Paragraph::new(lines).block(card_block("contact link", false)),
+        rect,
     );
-    f.render_widget(body, rect);
-}
-
-fn draw_delete_contact_modal(f: &mut ratatui::Frame, app: &App, area: Rect) {
-    f.render_widget(Clear, area);
-    f.render_widget(Block::default().style(Style::default().bg(BG)), area);
-
-    let w = area.width.clamp(48, 72);
-    let h = 11u16.min(area.height.saturating_sub(2)).max(9);
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    let rect = Rect::new(x, y, w, h);
-    f.render_widget(Clear, rect);
-    let body = Paragraph::new(vec![
-        Line::from(Span::styled(
-            "DELETE CONTACT",
-            Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Removes the contact and zeroizes local ratchet bytes,",
-            Style::default().fg(TEXT),
-        )),
-        Line::from(Span::styled(
-            "pending frames for that dest, and mute/block entries.",
-            Style::default().fg(TEXT),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Type :delete-contact-confirm then Enter.  Esc cancels.",
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Local only — not a remote wipe (THREATMODEL).",
-            Style::default().fg(DIM),
-        )),
-        Line::from(Span::styled(
-            sanitize_for_terminal(&app.status_msg),
-            Style::default().fg(DIM),
-        )),
-    ])
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(
-                " DANGER · delete-contact ",
-                Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
-            ))
-            .border_style(Style::default().fg(DANGER))
-            .style(Style::default().bg(PANEL)),
-    );
-    f.render_widget(body, rect);
 }
 
 impl Drop for App {
@@ -4059,7 +4433,12 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
         // Any key while unlocked resets the idle auto-lock timer.
         if matches!(
             app.screen,
-            Screen::Main | Screen::ConfirmWipe | Screen::ConfirmDeleteContact | Screen::SetDuress
+            Screen::Main
+                | Screen::ConfirmWipe
+                | Screen::ConfirmDeleteContact
+                | Screen::SetDuress
+                | Screen::SasGrid
+                | Screen::ContactCard
         ) {
             app.touch_input();
         }
@@ -4192,6 +4571,13 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
                 }
                 _ => {}
             },
+            Screen::SasGrid | Screen::ContactCard => {
+                if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+                    app.screen = Screen::Main;
+                    app.focus = Focus::Input;
+                    app.status_msg = "Back to chats.".into();
+                }
+            }
             Screen::Main => match key.code {
                 KeyCode::Tab => {
                     app.focus = match app.focus {
@@ -4348,7 +4734,8 @@ fn bridges_text(args: &str) -> Vec<String> {
     if let Some(line) = args.strip_prefix("torrc") {
         return match parse_bridge_line(line) {
             Ok(b) => {
-                let mut out = vec!["Add these lines to torrc, then reload Tor and run :bridges:".to_string()];
+                let mut out =
+                    vec!["Add these lines to torrc, then reload Tor and run :bridges:".to_string()];
                 out.extend(torrc_snippet(&[b]).into_iter().map(|l| format!("  {l}")));
                 out.push("HashChat does not store bridge lines; torrc keeps them.".into());
                 out
@@ -4360,7 +4747,8 @@ fn bridges_text(args: &str) -> Vec<String> {
         "Bridges hide that you use Tor from your network. Get lines from".into(),
         "bridges.torproject.org or the Tor Project's Telegram/email bots.".into(),
         "  :bridges torrc LINE   check one line and print what to add to torrc".into(),
-        "  :bridges              ask Tor whether bridges are on and every circuit starts at one".into(),
+        "  :bridges              ask Tor whether bridges are on and every circuit starts at one"
+            .into(),
         "  :bridges require on   keep messages queued unless that check passes".into(),
         "HashChat only reads Tor's settings; it never changes them.".into(),
     ]
@@ -4379,10 +4767,16 @@ mod tests {
     #[test]
     fn bridges_torrc_prints_snippet_for_valid_line() {
         let fp = "0123456789ABCDEF0123456789ABCDEF01234567";
-        let out = bridges_text(&format!("torrc obfs4 192.0.2.10:443 {fp} cert=abc iat-mode=0"));
+        let out = bridges_text(&format!(
+            "torrc obfs4 192.0.2.10:443 {fp} cert=abc iat-mode=0"
+        ));
         assert!(out.iter().any(|l| l.trim() == "UseBridges 1"));
-        assert!(out.iter().any(|l| l.trim().starts_with("ClientTransportPlugin obfs4")));
-        assert!(out.iter().any(|l| l.trim().starts_with("Bridge obfs4 192.0.2.10:443")));
+        assert!(out
+            .iter()
+            .any(|l| l.trim().starts_with("ClientTransportPlugin obfs4")));
+        assert!(out
+            .iter()
+            .any(|l| l.trim().starts_with("Bridge obfs4 192.0.2.10:443")));
     }
 
     #[test]
@@ -4424,7 +4818,10 @@ mod tests {
             onion: String::new(),
             onion_key: Vec::new(),
         };
-        app.session = Some(SessionState::from_identity_with_net(identity, NetConfig::default()));
+        app.session = Some(SessionState::from_identity_with_net(
+            identity,
+            NetConfig::default(),
+        ));
         app.net.require_bridges = true;
         app.bridge_check = Some((Instant::now(), Err("bridges=off".into())));
         app.listen();
@@ -4532,8 +4929,16 @@ mod tests {
         app.contacts_state.select(Some(0));
         app.push_msg("Session unlocked · contacts loaded");
         app.push_chat("[Alice] Olá! Chegou bem pelo Tor?", "demo-0", 1);
-        app.push_chat_out("[Alice] you: Chegou sim, tudo cifrado ponta a ponta.", "demo-0", 2);
-        app.push_chat("[Alice] Perfeito. Comparei o SAS fora da rede ✓", "demo-0", 3);
+        app.push_chat_out(
+            "[Alice] you: Chegou sim, tudo cifrado ponta a ponta.",
+            "demo-0",
+            2,
+        );
+        app.push_chat(
+            "[Alice] Perfeito. Comparei o SAS fora da rede ✓",
+            "demo-0",
+            3,
+        );
         app.status_msg = "Sent 1024 B via SOCKS (isol)".into();
         app
     }
@@ -4560,7 +4965,13 @@ mod tests {
         let mut out = format!("{} {}\n", b.area.width, b.area.height);
         for c in b.content() {
             let bold = c.modifier.contains(Modifier::BOLD) as u8;
-            out.push_str(&format!("{}\t{}\t{}\t{}\n", col(c.fg), col(c.bg), bold, c.symbol()));
+            out.push_str(&format!(
+                "{}\t{}\t{}\t{}\n",
+                col(c.fg),
+                col(c.bg),
+                bold,
+                c.symbol()
+            ));
         }
         std::fs::write(format!("{dir}/{name}.cells"), out).unwrap();
     }
@@ -4600,6 +5011,99 @@ mod tests {
         let app = demo_app(true, TorStatus::Available);
         let out: Vec<bool> = app.messages.iter().map(|m| m.outgoing).collect();
         assert_eq!(out, vec![false, false, true, false]);
+    }
+
+    #[test]
+    fn design_unlock_card() {
+        let mut app = locked_app();
+        app.passphrase.push_str("secret");
+        app.status_msg = "Enter your passphrase.".into();
+        let b = render(&mut app, 120, 34);
+        dump(&b, "hashchat-tui-unlock");
+        let t = buf_text(&b);
+        assert!(t.contains("Unlock local session") || t.contains("Initialize local session"));
+        assert!(!t.contains("secret"));
+    }
+
+    #[test]
+    fn design_destructive_modals_are_red_and_need_confirm() {
+        let mut app = demo_app(true, TorStatus::Available);
+        app.screen = Screen::ConfirmWipe;
+        app.input = ":wipe-con".into();
+        let b = render(&mut app, 120, 34);
+        dump(&b, "hashchat-tui-wipe");
+        let t = buf_text(&b);
+        assert!(t.contains("NUCLEAR WIPE") && t.contains(":wipe-confirm"));
+        assert!(!t.contains("Olá"), "no chat under the modal");
+        app.input.clear();
+        app.screen = Screen::ConfirmDeleteContact;
+        let b = render(&mut app, 120, 34);
+        dump(&b, "hashchat-tui-delete-contact");
+        assert!(buf_text(&b).contains(":delete-contact-confirm"));
+        app.screen = Screen::SetDuress;
+        app.passphrase.push_str("hunter2");
+        let b = render(&mut app, 120, 34);
+        dump(&b, "hashchat-tui-duress");
+        let t = buf_text(&b);
+        assert!(t.contains("Duress passphrase:") && !t.contains("hunter2"));
+    }
+
+    #[test]
+    fn design_sas_grid_shows_eight_blocks() {
+        let mut app = demo_app(false, TorStatus::Available);
+        app.handle_command(":sas-grid");
+        assert!(app.screen == Screen::SasGrid);
+        let b = render(&mut app, 120, 34);
+        dump(&b, "hashchat-tui-sas-grid");
+        let t = buf_text(&b);
+        let sas = App::contact_sas_short(app.selected_contact_record().unwrap());
+        for ch in sas.chars().filter(|c| c.is_ascii_alphanumeric()) {
+            assert!(t.contains(&format!("  {ch}  ")));
+        }
+        assert!(t.contains(":verify") && t.contains(":block"));
+    }
+
+    #[test]
+    fn design_contact_card_respects_refusals() {
+        let mut app = demo_app(true, TorStatus::Available);
+        app.handle_command(":contact-card");
+        assert!(app.screen == Screen::Main, "no link yet → no card");
+        app.my_contact_link = "hashchat://v1/EXAMPLE-NOT-A-REAL-LINK-0000000000000000000000000000000000000000000000000000000000000000/sig".into();
+        app.handle_command(":contact-card");
+        assert!(app.screen == Screen::ContactCard);
+        let b = render(&mut app, 120, 34);
+        dump(&b, "hashchat-tui-contact-card");
+        let t = buf_text(&b);
+        assert!(t.contains("Ed25519 signature") && t.contains("Tor-only"));
+    }
+
+    #[test]
+    fn design_bubble_footer_shows_delivery_and_selected_avatar_stays_gold() {
+        let mut app = demo_app(true, TorStatus::Available);
+        app.push_chat_out_state(
+            "[Alice] you: later  (held, random delay before send)",
+            "demo-0",
+            4,
+            Delivery::Held,
+        );
+        app.push_chat_out_state(
+            "[Alice] you: offline  (queued: bridges required, x)",
+            "demo-0",
+            5,
+            Delivery::Queued,
+        );
+        let b = render(&mut app, 120, 34);
+        dump(&b, "hashchat-tui-chat-delivery");
+        let t = buf_text(&b);
+        assert!(t.contains("via Tor v3 · Double Ratchet · sent"));
+        assert!(t.contains("held · random delay") && t.contains("· queued"));
+        app.set_delivery("demo-0", 4, Delivery::Sent);
+        assert_eq!(app.messages[4].delivery, Some(Delivery::Sent));
+        let av = b
+            .content()
+            .iter()
+            .find(|c| c.symbol() == "A" && c.bg == GOLD && c.fg == BG);
+        assert!(av.is_some(), "selected row keeps gold avatar");
     }
 
     #[test]
