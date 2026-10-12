@@ -38,6 +38,14 @@ The real `hashchat-tui` with the new design theme (black and gold, Tor/I2P statu
 | <img src="docs/screenshots/real/hashchat-tui-chat.png" alt="hashchat-tui: verified chat over Tor"/> | <img src="docs/screenshots/real/hashchat-tui-unverified-tor-down.png" alt="hashchat-tui: Tor down, fail-closed"/> |
 |---|---|
 | Verified contact, Tor ready | Tor down: fail-closed turns red, unverified banner |
+| <img src="docs/screenshots/real/hashchat-tui-chat-delivery.png" alt="hashchat-tui: bubble footers with delivery state"/> | <img src="docs/screenshots/real/hashchat-tui-unlock.png" alt="hashchat-tui: unlock"/> |
+| Bubble footer: real transport + sent / held / queued | Unlock card (Argon2id at rest, Tor required) |
+| <img src="docs/screenshots/real/hashchat-tui-sas-grid.png" alt="hashchat-tui: SAS grid"/> | <img src="docs/screenshots/real/hashchat-tui-contact-card.png" alt="hashchat-tui: contact link card"/> |
+| `:sas-grid` — compare 8 characters out of band, then `:verify` or `:block` | `:contact-card` — signed Contact Link v1 and the checks a peer runs (example link) |
+| <img src="docs/screenshots/real/hashchat-tui-wipe.png" alt="hashchat-tui: wipe confirm"/> | <img src="docs/screenshots/real/hashchat-tui-delete-contact.png" alt="hashchat-tui: delete contact confirm"/> |
+| `:wipe` — red, needs `:wipe-confirm` | `:delete-contact` — red, needs `:delete-contact-confirm` |
+| <img src="docs/screenshots/real/hashchat-tui-duress.png" alt="hashchat-tui: duress passphrase"/> | |
+| `:duress set` — masked entry | |
 
 ### Design concept (in progress)
 **These are design concepts, not the current app.** They show where the UI is going; every feature shown exists in the Rust core. See [docs/DESIGN.md](docs/DESIGN.md).
