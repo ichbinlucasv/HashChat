@@ -21,8 +21,7 @@ cargo build --release --locked --bin hashchat-tui --features tui
 ```
 
 - Binary name: `hashchat-tui` (Cargo feature `tui`)
-- Launcher `./run-tui` / `install*.sh` **never prefer cabal** when Rust can build
-- **Haskell desktop is transitional / not recommended** — opt-in only via `HASHCHAT_ALLOW_HASKELL=1` (tree kept compiling; see [Haskell removal criteria](#haskell-desktop-removal-criteria))
+- The project is 100% Rust: the legacy Haskell desktop was removed on 2026-10-12 (see [Haskell desktop removal](#haskell-desktop-removal-criteria))
 - Brand: black `#0A0A0A` + gold `#FFD700` (logo 2 — chat bubble / hash mark); see `branding/`
 
 **Transport default:** Tor only (SOCKS + ControlPort cookie auth). There is **no silent clearnet fallback**. Other networks (if added later) must be an explicit user choice.
@@ -68,7 +67,7 @@ Each script:
 - Installs build tools + the **Tor** package where applicable
 - Runs `cargo build --release --locked` and `cargo build --release --locked --bin hashchat-tui --features tui`
 - Does **not** print secrets, passphrases, or Tor cookie material
-- Does **not** install or prefer Cabal; Haskell desktop is **transitional / not recommended**
+- Does **not** install Cabal/GHC (no Haskell code remains)
 
 ```bash
 chmod +x install.sh install-*.sh run-tui
@@ -419,7 +418,7 @@ cargo build --release --locked --bin hashchat-tui --features tui
 
 ### 4. Reproducible Flatpak / Nix (optional)
 
-Default Nix package / `devShell` is **Rust-only** (`hashchat-tui`). Cabal/GHC are **not** on the default shell PATH.
+Default Nix package / `devShell` is **Rust-only** (`hashchat-tui`).
 
 ```bash
 nix build .#hashchat-tui       # default package = Rust TUI wrapper
@@ -427,23 +426,10 @@ nix build .#hashchat-flatpak   # Pure Nix .flatpak (Rust prebuilts)
 flatpak install --user result/hashchat-tui.flatpak
 flatpak run org.hashchat.HashChat
 
-nix develop                   # Rust + Tor + flatpak-builder (no Cabal)
-# Transitional Cabal parity only:
-nix develop .#haskellDev
+nix develop                   # Rust + Tor + flatpak-builder
 ```
 
 **Host Tor is still required** — see Flatpak section.
-
-### 5. Transitional Haskell desktop (NOT recommended)
-
-Legacy Brick TUI over the Rust FFI — **transitional / not recommended**. Scripts and docs do not prefer this path. Kept in-tree so Cabal targets can still compile for parity checks until removal criteria are met.
-
-```bash
-# Opt-in only — not a user/release path (criterion 2 MET)
-nix develop .#haskellDev          # optional Cabal/GHC shell
-./build.sh --haskell              # or: ./build.sh tui --haskell
-HASHCHAT_ALLOW_HASKELL=1 ./run-tui
-```
 
 ---
 
@@ -490,7 +476,7 @@ There is no in-tree PKGBUILD or RPM `.spec` yet. When packaging:
 | Desktop / binary name | `hashchat-tui` |
 | Cargo features | `--features tui` for the desktop binary |
 | Preferred build | `cargo build --release --locked --bin hashchat-tui --features tui` |
-| Library (FFI / transitional Haskell) | `libhashchat_rust.so` |
+| Library | `hashchat-rust` (rlib, linked statically into `hashchat-tui`) |
 | Runtime dependency | `tor` (SOCKS + ControlPort cookie auth) |
 | Flatpak app-id | `org.hashchat.HashChat` |
 | Icon name | `org.hashchat.HashChat` (hicolor) |
@@ -509,7 +495,7 @@ Early development. Needs NDK, Rust / `cargo-ndk`, secure storage + JNI. See `./b
 
 For maintainers validating HashChat on **two separate physical hosts** with real local Tor:
 
-1. Build and run the **Rust** TUI only (`./run-tui` / `make tui` / `cargo build --release --locked --bin hashchat-tui --features tui`). Haskell desktop is transitional / not recommended for this exercise.
+1. Build and run the **Rust** TUI (`./run-tui` / `make tui` / `cargo build --release --locked --bin hashchat-tui --features tui`).
 2. Follow the OPSEC-safe checklist: **[`docs/TWO_PEER_VALIDATION.md`](docs/TWO_PEER_VALIDATION.md)**.
 3. Capture posture with in-TUI **`:evidence`** (alias **`:audit-status`**) — metadata only; see **[`docs/VALIDATION_EVIDENCE.md`](docs/VALIDATION_EVIDENCE.md)** for what prints vs what must **never** appear in tickets.
 4. Fill **`scripts/validation-evidence-template.txt`** (versions, tip SHA, UTC-offset timestamps, pass/fail). Never record cookies, keys, onions, passphrases, SAS, or message bodies.
@@ -523,12 +509,10 @@ Tor is required and **fail-closed** (no silent clearnet fallback). Use disposabl
 | Symptom | What to check |
 |---------|----------------|
 | No `hashchat-tui` | `cargo build --release --locked --bin hashchat-tui --features tui` |
-| Missing `libhashchat_rust.so` (Haskell fallback) | `cargo build --release --locked` and copy into `rust-lib/` |
 | Tor / `:listen` fails | Is `tor` active? Is TCP `9051` listening? Is `CookieAuthentication 1` set? Can your user **read** the cookie file (group membership)? Never log cookie bytes. |
 | `:listen failed: … COOKIEFILE not at an expected location` | Tor's cookie is at a non-standard path: restart with `HASHCHAT_TOR_COOKIE_FILE=/abs/path` pointing at Tor's own cookie file. See [`docs/TOR_HOST_SETUP.md`](docs/TOR_HOST_SETUP.md#troubleshooting-listen). |
 | Cookie “unreadable” | Add user to `debian-tor` (Debian/Ubuntu) or `tor` (Fedora/Arch as applicable); re-login; confirm with `test -r` on the cookie path — do not `cat` it. |
 | Tails / Whonix ControlPort denied | ControlPort may be filtered; HashChat needs cookie auth + `ADD_ONION`. Do not bypass via clearnet. |
-| Cabal dependency hell (opt-in parity only) | See § Transitional Haskell; not needed for recommended installs |
 | Wrong branch | `git checkout codeberg-primary && git pull` |
 
 ---
@@ -547,17 +531,15 @@ Prefer Qubes disposables or Tails for high-risk builds.
 
 ## Haskell desktop removal criteria
 
-The Haskell tree (`hashchat.cabal`, `src/haskell/`, `app-desktop/`) is **not deleted** (still too risky as a drive-by). It remains compile-capable but **demoted**. Status below reflects the Rust-only release surface (criterion 2 MET) plus Extreme/TUI posture.
+**Status: DONE (2026-10-12).** The Haskell tree (`hashchat.cabal`, `src/haskell/`, `app-desktop/` Brick TUI), its Cabal/GHC tooling (`./build.sh --haskell`, `nix develop .#haskellDev`, the `haskell-parity` CI job, the `HASHCHAT_ALLOW_HASKELL=1` hatch in `./run-tui`) and the C FFI exports in `src/rust/lib.rs` that only served it were deleted. HashChat is now 100% Rust (plus the thin Kotlin Android shell over its own Rust crate). The tree remains available in git history before the removal commits.
 
-Remove the Haskell desktop path only when **all** of the following hold:
+The criteria that gated removal, all met:
 
 1. **MET** — Rust `hashchat-tui --features tui` covers the documented two-peer Tor path (`:listen`, contacts, send/recv, pending retry) without relying on Brick/Cabal.
-2. **MET** — Distro installers, `./run-tui`, `./build.sh`, Flatpak/Nix default package + `devShell`, and CI no longer present Cabal as a user or release path. Remaining opt-in escape hatch only: `HASHCHAT_ALLOW_HASKELL=1`, `./build.sh --haskell`, and `nix develop .#haskellDev` (parity / transitional; documented here, not on the happy path).
-3. **MET (current judgment)** — No open blocker that *requires* the Brick TUI for security review, release signing, or compatibility testing; Rust TUI is the review/demo path.
-4. **OPEN** — A dedicated PR on `codeberg-primary` that documents deletion, updates SBOM/scripts that still mention Haskell, and confirms `cargo test --lib` + release TUI build stay green has **not** been filed.
-5. **OPEN** — Maintainer has **not** explicitly approved tree removal.
-
-Until then: keep Cabal targets building if present; never recommend them for new installs. Do **not** delete Haskell in overnight polish commits.
+2. **MET** — Distro installers, `./run-tui`, `./build.sh`, Flatpak/Nix default package + `devShell`, and CI no longer presented Cabal as a user or release path.
+3. **MET** — No open blocker required the Brick TUI for security review, release signing, or compatibility testing.
+4. **MET (2026-10-12)** — Dedicated removal change on `codeberg-primary` documents the deletion, updates SBOM/scripts, and confirms `cargo test --lib`, the release TUI build, clippy and `scripts/ci-security-gate.sh` stay green.
+5. **MET (2026-10-12)** — Maintainer (Lucas) explicitly approved tree removal on 2026-10-12.
 
 ---
 **Legal / funding**

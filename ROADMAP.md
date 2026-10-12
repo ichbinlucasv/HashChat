@@ -1,6 +1,6 @@
 # HashChat Roadmap
 
-Goal: Build a usable anonymous messenger with a **Rust-first** stack (crypto, Tor, desktop TUI), with focus on security, forward secrecy, and metadata resistance. Haskell desktop is transitional / not recommended.
+Goal: Build a usable anonymous messenger with a **Rust-first** stack (crypto, Tor, desktop TUI), with focus on security, forward secrecy, and metadata resistance. The legacy Haskell desktop was removed on 2026-10-12; the project is 100% Rust.
 
 **We have moved from "build the foundations" to "polish to production".**
 
@@ -14,7 +14,7 @@ Goal: Build a usable anonymous messenger with a **Rust-first** stack (crypto, To
 - Dynamic Security Posture with real environment inspection + action refusals
 - Burner profiles + plausible deniability decoy profiles with automatic wipe on switch
 - Disappearing messages tied to ratchet key erasure
-- Wave 8: ContactAddress + ConnectionRequest (public-only QR links hashchat://contact/v1/...), full TUI wiring (:my-contact / :add-contact in Brick TUI + CLI), safer parser, export of helpers
+- Wave 8: ContactAddress + ConnectionRequest (public-only QR links hashchat://contact/v1/...), full TUI wiring (:my-contact / :add-contact in Brick TUI + CLI; the Haskell/Brick client was later removed on 2026-10-12), safer parser, export of helpers
 - Wave 8: Generalized SOCKS5/ProxyConfig transport (sendOverProxy) with I2P + bridge/pluggable notes + call-site updates; hardened CI audit (no || true) + pre-tag demo-pass scan
 - Wave 8: THREATMODEL update on remaining gaps (placeholder pubkey in QR, last gated demo-pass surface, no per-profile proxy yet, evidence logs required for tags)
 
@@ -41,7 +41,7 @@ Goal: Build a usable anonymous messenger with a **Rust-first** stack (crypto, To
 Significant progress has been made on most items below. This document is kept honest and up to date.
 
 ### Immediate Polish Items (Critical Remaining)
-0. **Haskell desktop retirement** — Rust is the only recommended desktop path (`hashchat-tui --features tui`). Criteria 1+2+3 met; 4+5 open (see INSTALL.md). Do not delete Haskell until all criteria clear; keep Cabal compiling via opt-in hatch if present.
+0. **Haskell desktop retirement** — **Done (2026-10-12).** All five removal criteria in INSTALL.md are met: criterion 4 by the removal commits on `codeberg-primary` (tree, Cabal/GHC tooling, `haskell-parity` CI job, `HASHCHAT_ALLOW_HASKELL` hatch and Haskell-only C FFI deleted; `cargo test --lib`, release TUI build, clippy and CI security gate green), criterion 5 by explicit approval from the maintainer, Lucas, on 2026-10-12.
 1. **Remove legacy dead code** — Massive stubFunction block in Main.hs removed (done in this pass).
 2. **Android "demo-pass" hardening** — Hardcoded passphrase in group persistence flagged with expert warnings + scoped constant. Must be replaced with user-derived + Keystore in production.
 3. **Honest docs** — ROADMAP + README refresh in progress (this update).
@@ -78,7 +78,7 @@ Significant progress has been made on most items below. This document is kept ho
 - Quantum-resistant options (post-quantum KEMs as noted in earlier roadmap).
 - Decentralized discovery without leaking metadata.
 
-Approach: small trusted computing base; Rust for crypto, Tor, persistence, and the recommended desktop TUI; Tor-only default transport (fail-closed). Haskell desktop demoted pending removal criteria in INSTALL.md.
+Approach: small trusted computing base; Rust for crypto, Tor, persistence, and the recommended desktop TUI; Tor-only default transport (fail-closed). Haskell desktop removed 2026-10-12.
 
 Contributions are very welcome — especially in the remaining polish areas above.
 
@@ -105,7 +105,7 @@ Standing rules for every item: no phone number, email, real name or identity che
 
 ### After the first release
 
-**SimpleX-class parity.** Checked against the current feature list: no user identifiers (done, there is only an onion address and public keys), groups (done), voice messages (listed as done above), disappearing messages (local timer done; the peer cannot be forced to delete), one-time invitation links and QR (missing: today's contact link is reusable), separate queue per contact (missing, see item 1), self-hostable relays (item 4), an incognito profile per chat (burner profiles exist per session, not per chat), file transfer (missing, streamed over the ratchet), and an encrypted local backup (missing; the FFI has an encrypted ratchet export, the app does not). Order: one-time invitations, per-chat incognito profile, encrypted backup and import/export migration, file transfer.
+**SimpleX-class parity.** Checked against the current feature list: no user identifiers (done, there is only an onion address and public keys), groups (done), voice messages (listed as done above), disappearing messages (local timer done; the peer cannot be forced to delete), one-time invitation links and QR (missing: today's contact link is reusable), separate queue per contact (missing, see item 1), self-hostable relays (item 4), an incognito profile per chat (burner profiles exist per session, not per chat), file transfer (missing, streamed over the ratchet), and an encrypted local backup (missing; the library has an encrypted ratchet export (`DoubleRatchet` + `envelope`), the app does not). Order: one-time invitations, per-chat incognito profile, encrypted backup and import/export migration, file transfer.
 
 **Beyond parity, ordered by security value.**
 - Cryptography: a hybrid X25519 plus ML-KEM exchange, claimed only once a vetted implementation is used and tested; deniable authentication; fuzzing and formal checks of the parsers and the ratchet in CI; `unsafe` confined to one small audited module; Shamir-split encrypted identity backup.

@@ -1,7 +1,7 @@
 # Local Tor host setup for HashChat TUI
 
 **Audience:** Operators running the Rust `hashchat-tui` against a **local** Tor daemon  
-**Client:** Rust desktop TUI only (Haskell desktop is transitional / not recommended)  
+**Client:** Rust desktop TUI  
 **Companion install steps:** [`INSTALL.md`](../INSTALL.md) (Critical: Tor setup)  
 **Maintainer validation:** [`TWO_PEER_VALIDATION.md`](TWO_PEER_VALIDATION.md)  
 **OPSEC when filing bugs:** [`OPSEC_REPORTING.md`](OPSEC_REPORTING.md)

@@ -16,9 +16,9 @@ This checklist collects the steps a maintainer should complete before calling a 
 
 ## 2. Build
 
-Rust-only release path (Cabal/GHC are not required; Haskell desktop is transitional / not recommended — see [INSTALL.md § Haskell desktop removal criteria](../INSTALL.md#haskell-desktop-removal-criteria)).
+Rust-only release path (the Haskell desktop was removed on 2026-10-12 — see [INSTALL.md § Haskell desktop removal criteria](../INSTALL.md#haskell-desktop-removal-criteria)).
 
-- [ ] Library: `cargo build --release --locked` (produces `target/release/libhashchat_rust.so`).
+- [ ] Library: `cargo build --release --locked` (rlib only; no shared library is produced).
 - [ ] **Preferred desktop build:** `cargo build --release --locked --bin hashchat-tui --features tui`
 - [ ] `test -x target/release/hashchat-tui`
 - [ ] Convenience wrappers behave the same where used: `make tui` / `./run-tui` (see [`INSTALL.md`](../INSTALL.md)).
@@ -31,7 +31,7 @@ These mirror the required `build` job in [`.forgejo/workflows/build.yml`](../.fo
 - [ ] Unit tests: `cargo test --lib` (also `make test`).
 - [ ] Release-profile tests: `cargo test --release`.
 - [ ] Supply chain (CI, blocking): `cargo audit --deny warnings` passes.
-- [ ] Forgejo `build` job is green on the tip being validated. (The `haskell-parity` job is manual/opt-in and is **not** a release gate.)
+- [ ] Forgejo `build` job is green on the tip being validated.
 - [ ] **Before any signed tag:** `./scripts/pre-tag-check.sh --strict` (runs `scripts/clean-security.sh --strict`, `cargo test --release`, `cargo audit --deny high`, sensitive-file checks, SBOM generation, and testing-strategy checks).
 - [ ] SBOM: `./scripts/generate-sbom.sh <outdir>` output reviewed / diffed against the previous preview.
 
@@ -57,10 +57,7 @@ Follow [`TWO_PEER_VALIDATION.md`](TWO_PEER_VALIDATION.md) end to end on **two se
 
 - [ ] **No I2P path yet.** I2P mode is selectable but refuses send/listen; there is no working I2P transport in this preview.
 - [ ] **Disappearing-message TTL is local-only.** `:disappear` / `:ttl` erase messages locally; erasure on the peer is **not** enforced on the wire.
-- [ ] **Haskell desktop retirement is incomplete.** Per [INSTALL.md § Haskell desktop removal criteria](../INSTALL.md#haskell-desktop-removal-criteria), criteria 1–3 are met and criteria 4 and 5 are open:
-  - Criterion 4 (open): a dedicated PR on `codeberg-primary` that documents deletion, updates SBOM/scripts that still mention Haskell, and confirms `cargo test --lib` + release TUI build stay green has not been filed.
-  - Criterion 5 (open): the maintainer has not explicitly approved tree removal.
-  - The Haskell tree stays in-tree (opt-in only via `HASHCHAT_ALLOW_HASKELL=1`) and is not a supported preview path.
+- [x] **Haskell desktop retirement: done (2026-10-12).** All five criteria in [INSTALL.md § Haskell desktop removal criteria](../INSTALL.md#haskell-desktop-removal-criteria) are met (criterion 4: removal commits on `codeberg-primary` with tests, release TUI build, clippy and security gate green; criterion 5: maintainer Lucas approved on 2026-10-12). No Haskell code remains.
 - [ ] Other limitations already listed in [`RELEASE_NOTES_v0.2.md`](RELEASE_NOTES_v0.2.md) and [`THREATMODEL.md`](../THREATMODEL.md) are still accurate for this tip.
 
 ## 7. Reporting

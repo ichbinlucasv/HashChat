@@ -23,7 +23,7 @@ hashchat://contact/v1/<onion>/<x25519-hex>/<ed25519-hex>/<sig-hex>/<onion-sig-he
 `"HashChat-onion-binding-v1" || onion public key || identity ed25519 || x25519`. The onion
 public key is the 32 bytes inside the onion hostname, so the receiver needs nothing else
 to check it. A link whose author does not control the onion cannot carry a valid fifth
-field. Four-field links still parse (the Haskell tools and the FFI write them) but are
+field. Four-field links (written by the removed Haskell tools and C FFI) still parse but are
 marked unbound, and the TUI refuses to add a contact from one.
 
 ## Canonical signed payload (exact bytes)
@@ -36,7 +36,6 @@ No length prefixes. Signature = Ed25519.Sign(long-term sk, payload) (detached).
 
 Implemented in:
 - `src/rust/contact_link.rs` (encode / verify / SAS / bootstrap-before-DH)
-- `src/haskell/HashChat/Contact.hs` (TUI/CLI parse + generate)
 
 ## Bootstrap rule
 

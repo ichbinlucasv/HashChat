@@ -113,7 +113,7 @@ This aligns with the project's philosophy of being honest about limitations and 
 
 ## Next Actions (once decision is made)
 
-- Create `ExtremeMode` type / flag in core (Rust + Haskell)
+- Create `ExtremeMode` type / flag in core (Rust)
 - Wire gating into TUI commands and Android screens
 - Update THREATMODEL.md with dedicated Extreme section
 - Add tests that verify gated features are refused in Extreme mode

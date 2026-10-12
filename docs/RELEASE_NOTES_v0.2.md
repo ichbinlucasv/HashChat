@@ -3,11 +3,11 @@
 **Date**: 2026  
 **Tag**: v0.2-preview (to be signed after final history clean + hardware evidence)  
 **Desktop product surface:** Rust TUI (`hashchat-tui --features tui`)  
-**Haskell desktop:** transitional / not recommended  
+**Haskell desktop:** removed (2026-10-12); 100% Rust  
 
 ## Executive summary
 
-HashChat v0.2 is a **preview** milestone for a Tor-only, metadata-resistant messenger with a **Rust-first** stack (crypto, Tor, persistence, wipe) and a **Rust TUI** desktop client. Legacy Haskell Brick desktop remains in-tree for parity only and is **not** the release path.
+HashChat v0.2 is a **preview** milestone for a Tor-only, metadata-resistant messenger with a **Rust-first** stack (crypto, Tor, persistence, wipe) and a **Rust TUI** desktop client. The legacy Haskell Brick desktop was removed from the tree on 2026-10-12.
 
 It ships Double Ratchet crypto, Tor v3 transport (host Tor; fail-closed cookie auth), burner/decoy profiles, and desktop/Android UX features listed below. It does **not** defeat full device compromise (e.g. Pegasus-class implants); see THREATMODEL.md. This is **not** a production-readiness claim.
 
@@ -21,7 +21,7 @@ It ships Double Ratchet crypto, Tor v3 transport (host Tor; fail-closed cookie a
 - Panic wipe of local sensitive state.
 - Cross-device ratchet export using real Argon2id + AES-256-GCM envelope on Android (where completed; remaining gaps stay loud below).
 - Voice with per-chunk ratchet + explicit post-playback wipe feedback in UI (desktop recording may still be limited — see limitations).
-- Groups with sender keys (advancement improved on Rust; see limitations for Haskell-side leftovers).
+- Groups with sender keys (advancement on Rust).
 - Encrypted persistence for identity / contacts / ratchets / pending queue on the Rust path.
 - Expanded Rust tests + Kotlin instrumented test skeletons.
 - Quantum-resistant skeleton (gated module — not production PQ).
@@ -49,7 +49,6 @@ This is a **preview** release. The following are still weak or incomplete:
 - Quantum remains a skeleton (no production PQ crate).
 - Full decentralized discovery not implemented (design only).
 - Some "demo-pass" strings may remain in Kotlin persistence (auditor-visible; never for real deployments — use user-derived keys + hardware Keystore).
-- Haskell Brick TUI is **transitional**; do not treat Brick/vty UX limits as the Rust TUI product surface.
 - Flatpak does **not** bundle Tor; misconfigured host Tor / unreadable cookie fails closed (expected).
 
 See THREATMODEL.md for the full honest threat model.

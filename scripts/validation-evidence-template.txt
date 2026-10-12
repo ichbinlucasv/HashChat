@@ -13,7 +13,7 @@ NEVER record / paste / commit / ticket:
   - Contact names/ids that might encode secrets
 
 Prefer :evidence / :audit-status counts and ok/fail tokens only.
-Client under test: Rust hashchat-tui (Haskell desktop is NOT recommended).
+Client under test: Rust hashchat-tui.
 Tor is required and fail-closed — no silent clearnet fallback.
 
 --- Environment ---

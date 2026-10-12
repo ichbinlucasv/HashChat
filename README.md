@@ -24,7 +24,7 @@ HashChat is moving to **maximum Rust**:
 | Crypto, Tor, persist, wipe | Rust (done / hardening) |
 | Desktop client | Rust TUI (`hashchat-tui --features tui`), then Rust GUI if attack surface stays honest |
 | Android | Thin UI over the same Rust crate |
-| Legacy Haskell desktop | **Transitional / not recommended** — kept compiling only; not the long-term stack |
+| Legacy Haskell desktop | **Removed** (2026-10-12) — the project is 100% Rust |
 
 Inspiration: SimpleX-class UX ideas, with paranoid defaults (Tor-first, no phone/account, nuclear wipe, signed contacts). Brand: black + gold (`#FFD700`), logo 2 (chat bubble / hash mark).
 
@@ -43,7 +43,7 @@ Inspiration: SimpleX-class UX ideas, with paranoid defaults (Tor-first, no phone
    ./install.sh
    # or: cargo build --release --locked --bin hashchat-tui --features tui
    ```
-3. `./run-tui` or `make tui` (uses `./target/release/hashchat-tui`; prints audio + Tor status). Haskell desktop is transitional / not recommended (`HASHCHAT_ALLOW_HASKELL=1` opt-in only).
+3. `./run-tui` or `make tui` (uses `./target/release/hashchat-tui`; prints audio + Tor status).
 4. Unlock / create identity with a passphrase (Argon2id-wrapped at rest)
 5. `:listen`, exchange signed `hashchat://` contacts, chat over Tor
 
@@ -51,7 +51,7 @@ Inspiration: SimpleX-class UX ideas, with paranoid defaults (Tor-first, no phone
 
 See [INSTALL.md](INSTALL.md) for Fedora / Ubuntu / Arch / Tails / Qubes walkthroughs, Flatpak, and packaging notes.
 
-**Two-peer Tor validation (maintainers):** follow [`docs/TWO_PEER_VALIDATION.md`](docs/TWO_PEER_VALIDATION.md). Capture OPSEC-safe posture with `:evidence` (alias `:audit-status`); see [`docs/VALIDATION_EVIDENCE.md`](docs/VALIDATION_EVIDENCE.md) for what prints vs what must never appear in tickets. Fill-in: `scripts/validation-evidence-template.txt`. Rust `hashchat-tui` only — Haskell desktop is not recommended for this exercise.
+**Two-peer Tor validation (maintainers):** follow [`docs/TWO_PEER_VALIDATION.md`](docs/TWO_PEER_VALIDATION.md). Capture OPSEC-safe posture with `:evidence` (alias `:audit-status`); see [`docs/VALIDATION_EVIDENCE.md`](docs/VALIDATION_EVIDENCE.md) for what prints vs what must never appear in tickets. Fill-in: `scripts/validation-evidence-template.txt`. Rust `hashchat-tui` only.
 
 **v0.2 Linux preview readiness (maintainers):** see [`docs/V0_2_PREVIEW_CHECKLIST.md`](docs/V0_2_PREVIEW_CHECKLIST.md).
 
@@ -70,7 +70,6 @@ See [INSTALL.md](INSTALL.md) for Fedora / Ubuntu / Arch / Tails / Qubes walkthro
 
 **Clients**
 - Desktop: **Rust TUI** (`hashchat-tui --features tui`, black + gold) — **only recommended** path; two-peer: `:listen` → `:my-contact` / `:add-contact` → Tor SOCKS
-- Haskell Brick TUI over Rust FFI — **transitional / not recommended** (opt-in; tree not deleted this pass)
 - Android shell over the Rust library (production two-device path still maturing)
 
 **Brand / packaging**
@@ -94,10 +93,6 @@ cargo build --release --locked --bin hashchat-tui --features tui
 ./target/release/hashchat-tui
 # or: ./run-tui
 # or: make tui && make run-tui
-
-# Transitional Haskell desktop (NOT recommended; opt-in only)
-# HASHCHAT_ALLOW_HASKELL=1 ./run-tui
-# ./build.sh --haskell   # keeps Cabal targets compiling if present
 
 # Flatpak / Nix
 nix build .#hashchat-tui

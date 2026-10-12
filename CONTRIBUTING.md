@@ -2,7 +2,7 @@
 
 Thank you for your interest in HashChat — a maximum-anonymity messenger.
 **Rust is the only recommended desktop path** (`hashchat-tui --features tui`).
-Haskell desktop is **transitional / not recommended** (kept compiling if present; see INSTALL.md removal criteria).
+The project is 100% Rust; the legacy Haskell desktop was removed on 2026-10-12 (see INSTALL.md).
 
 **Primary development happens on Codeberg**: https://codeberg.org/ichbinlucasv/HashChat  
 Active tip branch: `codeberg-primary`. GitHub is a read-only mirror.
@@ -50,8 +50,7 @@ cargo build --release --locked --bin hashchat-tui --features tui
 ./run-tui
 ```
 
-Do **not** install Cabal for normal contribution work. Haskell is opt-in only
-(`HASHCHAT_ALLOW_HASKELL=1` / `./build.sh --haskell`) and is not recommended.
+No Cabal/GHC is needed: there is no Haskell code left.
 
 See [README.md](README.md) and [INSTALL.md](INSTALL.md).
 
@@ -60,7 +59,6 @@ See [README.md](README.md) and [INSTALL.md](INSTALL.md).
 - `src/rust/` — Cryptography, Tor, persistence, net modes (primary)
 - `src/bin/hashchat_tui.rs` — Native Rust desktop TUI (`--features tui`)
 - `android/` — Kotlin UI over the same Rust crate
-- `src/haskell/`, `app-desktop/` — Transitional Haskell (not recommended; do not expand)
 
 ### 4. Security Guidelines (Very Important)
 
@@ -101,7 +99,7 @@ feat(rust): add explicit network modes (Tor default, fail-closed)
 2. Keep network modes fail-closed (no silent clearnet)
 3. Android thin UI over the shared Rust crate
 4. Reproducible Flatpak / Nix distribution
-5. Retire Haskell desktop once removal criteria in INSTALL.md are met
+5. ~~Retire Haskell desktop~~ (done 2026-10-12)
 
 If you want to work on any of these, please open an issue first on Codeberg.
 

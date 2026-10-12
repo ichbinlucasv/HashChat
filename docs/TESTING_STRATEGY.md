@@ -37,7 +37,7 @@ Emulators are useful for CI smoke tests but **insufficient** for a paranoid mess
 6. **Cross-device ratchet export**: Real QR or file transfer between two devices, import, continue chat with forward secrecy intact. Source device must wipe after export.
 
 ## CI vs Real
-- CI (Forgejo Actions on Codeberg only): cargo test --release (paranoid paths), cabal check, gradle assemble.
+- CI (Forgejo Actions on Codeberg only): cargo test --release (paranoid paths), gradle assemble.
 - Real hardware: The only place where JNI + Keystore + mlock + actual Tor hidden service + mic + biometric can be trusted.
 - CI must **fail the build** on any regression in the 9+ Rust tests (wired in .forgejo/workflows/build.yml on Codeberg).
 

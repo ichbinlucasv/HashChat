@@ -15,7 +15,7 @@
   - Avoid storing sensitive data in cleartext SharedPreferences or external storage.
 
 ## Security Requirements (Non-Negotiable)
-- All sensitive operations go through the existing Rust FFI (same as desktop).
+- All sensitive operations go through the Android Rust crate over JNI (same crypto as desktop).
 - Panic wipe must work reliably on Android (clear app data + zeroize in-memory).
 - No unnecessary permissions.
 - Strong protection against backup extraction (exclude from backups where possible).

@@ -3,7 +3,7 @@
 **Audience:** Anyone filing tickets, overnight notes, or the two-peer fill-in  
 **Checklist:** `docs/TWO_PEER_VALIDATION.md`  
 **Fill-in:** `scripts/validation-evidence-template.txt`  
-**Client:** Rust `hashchat-tui` (Haskell desktop is transitional / not recommended)
+**Client:** Rust `hashchat-tui`
 
 Tor is the default transport and is **fail-closed**. Do not document or suggest silent clearnet fallbacks.
 

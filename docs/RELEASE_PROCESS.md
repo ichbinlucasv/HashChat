@@ -12,7 +12,7 @@
 - [ ] `./scripts/clean-security.sh` has been run on a clean tree.
 - [ ] Git history has been cleaned (see rec-10) and force-with-lease push performed (when intentionally rewriting; otherwise normal fast-forward to Codeberg primary).
 - [ ] `cargo test --release` (and Android unit tests where applicable) pass locally and in CI with no regressions on paranoid paths (wipe, posture, disappearing, export roundtrips, mlock safety).
-- [ ] Desktop release path builds: `cargo build --release --locked --bin hashchat-tui --features tui` (Haskell / Cabal is transitional / not recommended).
+- [ ] Desktop release path builds: `cargo build --release --locked --bin hashchat-tui --features tui`
 - [ ] No hardcoded "demo-pass" or equivalent secrets remain in production code paths (only in clearly marked tests/examples).
 - [ ] Android Rust crate has real DoubleRatchet serialization for export/import (high-4), or the gap is called out loudly in RELEASE_NOTES.
 - [ ] THREATMODEL.md has been updated with all new features (cross-device export, groups with sender keys, voice chunking, net-mode refuse paths, etc.).
@@ -42,9 +42,6 @@ git status --short
 cargo test --release
 cargo build --release --locked --bin hashchat-tui --features tui
 (cd android/src/main/rust && cargo test --release)
-
-# Transitional Haskell parity only (optional; not a release path)
-# cabal build hashchat-cli -f-tui
 
 # Supply chain (arch-3): Run audit + basic SBOM
 cargo install cargo-audit --locked 2>/dev/null || true
@@ -108,7 +105,7 @@ git push --force-with-lease origin --tags
 
 ## Known Audit Findings & Current Status (refresh vs tip)
 
-- Desktop release path is **Rust `hashchat-tui`**; Haskell Brick desktop remains transitional / not recommended.
+- Desktop release path is **Rust `hashchat-tui`**; the Haskell Brick desktop was removed on 2026-10-12.
 - Android Rust DoubleRatchet parity (high-4) advanced for core serialization; remaining envelope / Keystore gaps must stay loud in release notes where still present.
 - Nix Flatpak path: install-only manifest; prebuilt binary name **`hashchat-tui`**; host Tor not bundled.
 - Quantum (long-13) remains a gated skeleton (`#[cfg(feature = "quantum")]`) — not production PQ.
@@ -128,8 +125,6 @@ git status --short   # must show only source changes, never tor/ or *.db or voic
 # 2. Reproduce desktop Rust TUI (release surface)
 cargo test --release
 cargo build --release --locked --bin hashchat-tui --features tui
-# Optional transitional Cabal parity only:
-# cabal build hashchat-cli -f-tui
 
 # 3. Reproduce Android Rust (where claiming high-4 artifacts)
 cd android/src/main/rust && cargo check --release

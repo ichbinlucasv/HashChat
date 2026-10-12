@@ -52,7 +52,7 @@ git push --force-with-lease origin main
 
 ## What is Safe to Commit
 
-- Source code (`.hs`, `.rs`, `.cabal`, `Cargo.toml`, etc.)
+- Source code (`.rs`, `Cargo.toml`, etc.)
 - Documentation
 - Configuration templates (`tor/torrc` is safe)
 - Build scripts

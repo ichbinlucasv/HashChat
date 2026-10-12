@@ -125,8 +125,9 @@ the missing tail of the old chain and carries on. The skip limit still applies.
 Message plaintext is padded to 512, 1024, 2048, 4096 or 8448 bytes before
 sealing, so frame length shows only the size class. Contacts added after this
 change use a separate chain for each direction; older ratchet state keeps working
-but should be replaced by re-adding the contact. The Android copy and the
-transitional Haskell FFI still speak wire v2 and are not compatible with v3.
+but should be replaced by re-adding the contact. The Android copy still
+speaks wire v2 and is not compatible with v3 (the Haskell client that also used v2
+was removed on 2026-10-12).
 The queue holds at most 64 frames. When it is full a send is refused before the
 ratchet advances, instead of being dropped after the fact; `:retry` frees space.
 Call sites that advance without commit risk losing forward-secrecy continuity
@@ -140,17 +141,16 @@ authoritative restart path for contacts/ratchets/pending is `state.enc`.
 ## Unsafe inventory (I-5)
 
 `hashchat-tui` contains **no** `unsafe`. All `unsafe` lives in the Rust library and
-is intentional FFI / Linux hardening, not peer-facing parsers:
+is intentional Linux hardening, not peer-facing parsers:
 
 | Location | Role | Notes |
 |---|---|---|
-| `src/rust/lib.rs` | FFI slice/pointer views, `static mut` ratchet store, `mlock`/`mlockall`/`madvise`, `setrlimit`/`prctl` | Covered by open review items M-4/M-5/L-8 for API contract; TUI path does not use the raw FFI store |
+| `src/rust/lib.rs` | `mlock`/`mlockall`, `setrlimit`/`prctl` | Safe wrappers over libc; the C FFI exports and `static mut` ratchet store were removed with the Haskell client (2026-10-12) |
 | `src/rust/emergency_scrub.rs` | `libc::signal` for SIGINT/SIGTERM flag | Handler only stores an atomic; no secret access |
 | `src/rust/private_fs.rs` | `geteuid` ownership checks; test-only `mkfifo` | Production path is read-only uid check |
 
-Reducing further `unsafe` means finishing M-5 (mutex + generation IDs for the FFI
-store) and L-8 (`unsafe extern "C"` + null checks) — deliberately deferred as
-API-level work. Do not add new `unsafe` in the TUI.
+M-5 (FFI ratchet store) and L-8 (`unsafe extern "C"` + null checks) became moot
+when the FFI was deleted on 2026-10-12. Do not add new `unsafe` in the TUI.
 
 ## Quantum feature (I-8)
 

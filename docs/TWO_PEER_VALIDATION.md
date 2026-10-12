@@ -2,7 +2,7 @@
 
 **Audience:** Maintainers validating HashChat on two real hosts  
 **Purpose:** OPSEC-safe path for the overnight “When Lucas wakes” two-peer exercise  
-**Client:** Rust `hashchat-tui` only (Haskell Brick is transitional / not recommended)  
+**Client:** Rust `hashchat-tui`  
 **Companion fill-in:** `scripts/validation-evidence-template.txt`  
 **What `:evidence` prints:** `docs/VALIDATION_EVIDENCE.md`  
 **In-TUI posture dump:** `:evidence` (alias `:audit-status`) — metadata only, **not** a proof of E2EE
@@ -35,7 +35,7 @@ Do **not** copy into logs, screenshots, tickets, chat, git commits, or the fill-
 
 1. Check out the current tip of the `codeberg-primary` branch and note its commit hash.
 2. Local Tor: loopback **SOCKS** (typically `9050`) and **ControlPort** with **cookie** auth only (no bare `AUTHENTICATE` password). Setup: [`TOR_HOST_SETUP.md`](TOR_HOST_SETUP.md).
-3. Build/run the **Rust** TUI (`make tui` / `./run-tui`, or `cargo build --release --locked --bin hashchat-tui --features tui`). Do not use the Haskell desktop for this exercise.
+3. Build/run the **Rust** TUI (`make tui` / `./run-tui`, or `cargo build --release --locked --bin hashchat-tui --features tui`).
 4. Use **disposable** identities; wipe or discard after the exercise (`./scripts/clean-security.sh --strict` when appropriate).
 
 Quick start pointers: [INSTALL.md](../INSTALL.md) (Tor setup) · [TOR_HOST_SETUP.md](TOR_HOST_SETUP.md) · [README.md](../README.md) · this checklist · fill-in template.

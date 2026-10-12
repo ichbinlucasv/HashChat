@@ -4,7 +4,7 @@
 **Maintainer validation:** `docs/TWO_PEER_VALIDATION.md`  
 **What `:evidence` prints:** `docs/VALIDATION_EVIDENCE.md`  
 **Fill-in (two-peer):** `scripts/validation-evidence-template.txt`  
-**Client:** Rust `hashchat-tui` (Haskell desktop is transitional / not recommended)
+**Client:** Rust `hashchat-tui`
 
 Tor is the **default** transport and is **fail-closed**. Do not suggest silent clearnet fallbacks in reports. Local Tor host setup (SOCKS / cookie ControlPort): [`TOR_HOST_SETUP.md`](TOR_HOST_SETUP.md).
 
