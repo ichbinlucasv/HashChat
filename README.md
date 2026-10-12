@@ -138,3 +138,7 @@ This is security-critical software.
 ## Licence
 
 See [LICENSE](LICENSE).
+
+## Why HashChat
+
+<img src="docs/screenshots/marketing/01_no_servers.png" width="32%"/> <img src="docs/screenshots/marketing/02_your_keys.png" width="32%"/> <img src="docs/screenshots/marketing/03_refuse_watched.png" width="32%"/> 
