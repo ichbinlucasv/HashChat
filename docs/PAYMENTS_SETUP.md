@@ -56,8 +56,13 @@ pay-what-you-want donations.
 4. The license unlocks comfort features only. Privacy and security features
    are not in the gated list and cannot be gated.
 
-## Placeholders
+## Receiving addresses
 
-Code and docs use `<XMR_ADDRESS_TBD>`, `<BTC_ADDRESS_TBD>` and
-`<LIGHTNING_TBD>`. Replace them only with **receiving** addresses. Never
-commit a seed, spend key or private key.
+- **XMR** and **Lightning** are published in `SUPPORT.md` and in the app
+  constants (receiving addresses / Lightning address only).
+- **BTC on-chain** is paid via BTCPay invoices: a fresh address per payment,
+  derived from an xpub that must **never** be committed to the repository
+  (it would reveal every past and future address). Keep the xpub only on the
+  BTCPay host / offline config. Docs may still show `<BTC_ADDRESS_TBD>` until
+  the server is live.
+- Never commit a seed, spend key, private key or xpub.

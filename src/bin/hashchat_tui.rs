@@ -4368,9 +4368,9 @@ fn draw_contact_card(f: &mut ratatui::Frame, app: &App, area: Rect) {
 
 /// `:support` — plans and pay-what-you-want. Static, offline.
 fn draw_support(f: &mut ratatui::Frame, area: Rect) {
-    use hashchat_rust::entitlement::{PAY_WHAT_YOU_WANT, PLANS, PRINCIPLE, XMR_ADDRESS};
+    use hashchat_rust::entitlement::{LIGHTNING, PAY_WHAT_YOU_WANT, PLANS, PRINCIPLE, XMR_ADDRESS};
     blank_backdrop(f, area);
-    let rect = centered_rect(area, area.width.clamp(56, 92), 22);
+    let rect = centered_rect(area, area.width.clamp(56, 92), 26);
     let inner_w = rect.width.saturating_sub(6) as usize;
     let mut lines = vec![
         Line::from(""),
@@ -4391,10 +4391,21 @@ fn draw_support(f: &mut ratatui::Frame, area: Rect) {
     for chunk in wrap_chars(PAY_WHAT_YOU_WANT, inner_w) {
         lines.push(Line::from(Span::styled(chunk, Style::default().fg(DIM))));
     }
+    lines.push(Line::from(Span::styled("  XMR", Style::default().fg(DIM))));
+    for chunk in wrap_chars(XMR_ADDRESS, inner_w.saturating_sub(2).max(8)) {
+        lines.push(Line::from(Span::styled(
+            format!("  {chunk}"),
+            Style::default().fg(GOLD).bg(SURFACE),
+        )));
+    }
     lines.push(Line::from(vec![
-        Span::styled("  XMR ", Style::default().fg(DIM)),
-        Span::styled(XMR_ADDRESS, Style::default().fg(GOLD).bg(SURFACE)),
+        Span::styled("  LN  ", Style::default().fg(DIM)),
+        Span::styled(LIGHTNING, Style::default().fg(GOLD).bg(SURFACE)),
     ]));
+    lines.push(Line::from(Span::styled(
+        "  BTC on-chain: BTCPay invoice (fresh address per payment)",
+        Style::default().fg(DIM),
+    )));
     lines.push(Line::from(Span::styled(
         "  Esc back",
         Style::default().fg(DIM),
@@ -5118,10 +5129,15 @@ mod tests {
         let mut app = demo_app(false, TorStatus::Unavailable);
         app.handle_command(":support");
         assert!(app.screen == Screen::Support);
-        let b = render(&mut app, 120, 34);
+        // Tall enough for the wrapped XMR primary address.
+        let b = render(&mut app, 120, 40);
         let t = buf_text(&b);
         assert!(t.contains("€149") && t.contains("Pay what you want"));
-        assert!(t.contains("<XMR_ADDRESS_TBD>"));
+        // Address wraps across rows; assert contiguous head and final wrap chunk.
+        assert!(t.contains("42i5CYsjGALfD8GgCiL3Wv1WPKtWbeUKEYe4"));
+        assert!(t.contains("Wz9L1F3bwJn"));
+        assert!(t.contains("treulicht@cake.cash"));
+        assert!(t.contains("BTCPay"));
     }
 
     #[test]

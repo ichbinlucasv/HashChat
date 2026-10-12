@@ -37,11 +37,12 @@ comfort features.**
 Send any amount in Monero (preferred), Bitcoin or Lightning. It is support,
 not a purchase, and it never changes what the free version can do.
 
-- XMR: `<XMR_ADDRESS_TBD>`
-- BTC: `<BTC_ADDRESS_TBD>`
-- Lightning: `<LIGHTNING_TBD>`
+- XMR: `42i5CYsjGALfD8GgCiL3Wv1WPKtWbeUKEYe4ovjVSbbB8jfDdMcLK77dum9ff3iFUaVXCrpUnTd5DUeUQwNXWz9L1F3bwJn`
+- Lightning: `treulicht@cake.cash`
+- BTC on-chain: paid via BTCPay invoices (a fresh address per payment from
+  an xpub kept offline). No static BTC address is published.
+  `<BTC_ADDRESS_TBD>` until the BTCPay server is live.
 
-(Placeholders until the maintainer publishes receiving addresses.)
 
 ## How it works
 

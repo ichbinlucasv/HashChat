@@ -26,11 +26,12 @@ use ed25519_dalek::{Signature, VerifyingKey};
 /// every license is rejected and the app stays in free mode.
 pub const MAINTAINER_PUBKEY: Option<[u8; 32]> = None;
 
-/// Placeholder receiving addresses. Real ones are provided by the maintainer
-/// at release time. Never put private keys or seeds here.
-pub const XMR_ADDRESS: &str = "<XMR_ADDRESS_TBD>";
+/// Public receiving addresses for pay-what-you-want and plan payments.
+/// On-chain BTC is invoiced via BTCPay (fresh address per payment); no static
+/// BTC address or xpub is published. Never put private keys, seeds or xpubs here.
+pub const XMR_ADDRESS: &str = "42i5CYsjGALfD8GgCiL3Wv1WPKtWbeUKEYe4ovjVSbbB8jfDdMcLK77dum9ff3iFUaVXCrpUnTd5DUeUQwNXWz9L1F3bwJn";
 pub const BTC_ADDRESS: &str = "<BTC_ADDRESS_TBD>";
-pub const LIGHTNING: &str = "<LIGHTNING_TBD>";
+pub const LIGHTNING: &str = "treulicht@cake.cash";
 
 /// Paid plans.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -362,10 +363,13 @@ mod tests {
     }
 
     #[test]
-    fn placeholders_only() {
-        assert!(
-            XMR_ADDRESS.contains("TBD") && BTC_ADDRESS.contains("TBD") && LIGHTNING.contains("TBD")
-        );
+    fn receiving_addresses_published() {
+        assert!(!XMR_ADDRESS.contains("TBD"));
+        assert!(XMR_ADDRESS.starts_with('4') || XMR_ADDRESS.starts_with('8'));
+        assert!(XMR_ADDRESS.len() >= 95);
+        assert!(BTC_ADDRESS.contains("TBD"), "no static BTC address; use BTCPay invoices");
+        assert!(!LIGHTNING.contains("TBD"));
+        assert!(LIGHTNING.contains('@'));
         assert!(MAINTAINER_PUBKEY.is_none());
     }
 }
