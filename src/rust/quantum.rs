@@ -38,6 +38,7 @@
 
 use zeroize::Zeroize;
 
+#[allow(dead_code)] // reserved for the ML-KEM-768 interface (long-13)
 pub const KEM_PUBLIC_KEY_LEN: usize = 1184; // ML-KEM-768 example size (placeholder)
 pub const KEM_CIPHERTEXT_LEN: usize = 1088;
 pub const KEM_SHARED_SECRET_LEN: usize = 32;
@@ -59,6 +60,12 @@ impl Zeroize for QuantumHybridRatchet {
 impl Drop for QuantumHybridRatchet {
     fn drop(&mut self) {
         self.zeroize();
+    }
+}
+
+impl Default for QuantumHybridRatchet {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
