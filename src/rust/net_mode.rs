@@ -136,6 +136,9 @@ pub struct NetConfig {
     /// Tor SOCKS5 `IsolateSOCKSAuth` per-contact credentials (default on).
     /// Extreme posture forces this on; `:isolate off` is refused under Extreme.
     pub socks_isolation: bool,
+    /// Hold outgoing frames unless Tor reports bridges in effect (`:bridges
+    /// require on`). Off by default; older blobs restore as off.
+    pub require_bridges: bool,
 }
 
 impl Default for NetConfig {
@@ -146,6 +149,7 @@ impl Default for NetConfig {
             custom_dns: None,
             posture: PostureProfile::Standard,
             socks_isolation: true,
+            require_bridges: false,
         }
     }
 }
@@ -209,6 +213,11 @@ impl NetConfig {
             self.posture.as_str(),
             isol
         );
+        let base = if self.require_bridges {
+            format!("{base} · bridges=required")
+        } else {
+            base
+        };
         if self.is_extreme() {
             format!("{base} · locks=tor-only,socks-isol,no-contact-export,no-groups,no-voice")
         } else {
@@ -279,6 +288,8 @@ impl NetConfig {
     /// Layout: mode, dns, custom_dns, posture, socks_isolation as length-prefixed
     /// strings (u32 BE length + UTF-8). Empty custom_dns means `None`.
     /// `socks_isolation` is `on` / `off` (default on when absent on older blobs).
+    /// `require_bridges` follows as `on` / `off` and is only written when on,
+    /// so profiles that never used it keep the five-field layout.
     pub fn to_persist_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         write_persist_str(&mut out, self.mode.as_str());
@@ -289,6 +300,9 @@ impl NetConfig {
             &mut out,
             if self.socks_isolation { "on" } else { "off" },
         );
+        if self.require_bridges {
+            write_persist_str(&mut out, "on");
+        }
         out
     }
 
@@ -301,21 +315,28 @@ impl NetConfig {
         let dns_s = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidDns)?;
         let custom_s = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidDns)?;
         let posture_s = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidPosture)?;
+        let parse_bool = |t: &str| match t.trim().to_ascii_lowercase().as_str() {
+            "on" | "1" | "true" | "yes" => Ok(true),
+            "off" | "0" | "false" | "no" => Ok(false),
+            _ => Err(NetModeError::InvalidMode),
+        };
         let socks_isolation = if pos == buf.len() {
             // Pre-isolation blob: default on (safe).
             true
         } else {
             let isol_s = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidMode)?;
-            if pos != buf.len() {
-                // Trailing junk → refuse (fail closed on corrupt prefs).
-                return Err(NetModeError::InvalidMode);
-            }
-            match isol_s.trim().to_ascii_lowercase().as_str() {
-                "on" | "1" | "true" | "yes" => true,
-                "off" | "0" | "false" | "no" => false,
-                _ => return Err(NetModeError::InvalidMode),
-            }
+            parse_bool(&isol_s)?
         };
+        let require_bridges = if pos == buf.len() {
+            false
+        } else {
+            let b = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidMode)?;
+            parse_bool(&b)?
+        };
+        if pos != buf.len() {
+            // Trailing junk → refuse (fail closed on corrupt prefs).
+            return Err(NetModeError::InvalidMode);
+        }
         let mode = NetworkMode::parse_token(&mode_s)?;
         let dns = DnsPreference::parse_token(&dns_s)?;
         let posture = PostureProfile::parse_token(&posture_s)?;
@@ -333,6 +354,7 @@ impl NetConfig {
             custom_dns,
             posture,
             socks_isolation,
+            require_bridges,
         };
         if cfg.posture.locks_tor_only() {
             cfg.mode = NetworkMode::Tor;
@@ -511,6 +533,25 @@ mod tests {
         );
         assert!(cfg.set_mode(NetworkMode::Tor).is_ok());
         assert!(cfg.require_messenger_transport().is_ok());
+    }
+
+    #[test]
+    fn require_bridges_roundtrips_and_defaults_off() {
+        let mut cfg = NetConfig::default();
+        let five = cfg.to_persist_bytes();
+        assert!(!NetConfig::from_persist_bytes(&five).unwrap().require_bridges);
+        cfg.require_bridges = true;
+        let six = cfg.to_persist_bytes();
+        assert!(six.len() > five.len());
+        let back = NetConfig::from_persist_bytes(&six).unwrap();
+        assert!(back.require_bridges);
+        assert!(back.status_line().contains("bridges=required"));
+        let mut junk = six.clone();
+        junk.extend_from_slice(&[0, 0, 0, 1, b'x']);
+        assert!(NetConfig::from_persist_bytes(&junk).is_err());
+        let mut bad = five.clone();
+        write_persist_str(&mut bad, "maybe");
+        assert!(NetConfig::from_persist_bytes(&bad).is_err());
     }
 
     #[test]

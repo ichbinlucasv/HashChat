@@ -18,7 +18,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use hashchat_rust::{
-    parse_bridge_line, query_bridge_status, torrc_snippet,
+    parse_bridge_line, query_bridge_status, torrc_snippet, BridgeVerdict,
     bootstrap_ratchet_from_signed_link, build_wire_aad_v3, check_new_passphrase,
     check_plaintext_send_size, check_state_storage, clear_scrub_callback, commit_outgoing_with_key,
     disable_core_dumps_best_effort, encrypt_with_key, extreme_default_lock_timeout,
@@ -86,6 +86,10 @@ fn unbind_app_scrub() {
 const SOCKS_HOST: &str = "127.0.0.1";
 const SOCKS_PORTS: [u16; 2] = [9050, 9150];
 const CONTROL_PORT: u16 = 9051;
+/// How long a passing bridge check lets sends through before Tor is asked again.
+const BRIDGE_CHECK_OK_SECS: u64 = 30;
+/// How long a failing bridge check is reused before Tor is asked again.
+const BRIDGE_CHECK_FAIL_SECS: u64 = 10;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -217,6 +221,9 @@ struct App {
     send_jitter_secs: u32,
     /// Frames committed but not yet handed to Tor because of send jitter.
     held_sends: Vec<HeldSend>,
+    /// Last bridge check for `:bridges require on`: when, and why sends were
+    /// held (`Ok` = bridges active). Re-asked after a short cache window.
+    bridge_check: Option<(Instant, Result<(), String>)>,
     /// Set at unlock when the clock reads well before the mark in state.enc.
     clock_behind_secs: Option<u64>,
     /// Set at unlock when the running binary is not the one recorded in state.enc.
@@ -329,6 +336,7 @@ impl App {
             lock_timeout_secs: DEFAULT_LOCK_TIMEOUT_SECS,
             send_jitter_secs: 0,
             held_sends: Vec::new(),
+            bridge_check: None,
             clock_behind_secs: None,
             binary_changed: false,
             wipe_settings_changed: Vec::new(),
@@ -897,10 +905,63 @@ impl App {
             self.push_msg(line);
             return;
         }
+        if let Some(arg) = args.strip_prefix("require") {
+            self.handle_bridges_require(arg.trim());
+            return;
+        }
         for line in bridges_text(args) {
             self.push_msg(line);
         }
         self.status_msg = "See transcript for bridge help.".into();
+    }
+
+    /// `:bridges require [on|off]`: hold every outgoing frame in the encrypted
+    /// queue unless Tor reports bridges active. Turning it off needs an
+    /// unlocked session, like the other protections.
+    fn handle_bridges_require(&mut self, arg: &str) {
+        let line = match arg {
+            "" | "status" => format!(
+                "bridges require={}",
+                if self.net.require_bridges { "on (sends held unless bridges are active)" } else { "off" }
+            ),
+            "on" | "off" if self.session.is_none() => {
+                "Unlock first: the setting lives in state.enc.".to_string()
+            }
+            "on" | "off" => {
+                self.net.require_bridges = arg == "on";
+                self.bridge_check = None;
+                let saved = self.persist_net_after_mode_change();
+                format!(
+                    "bridges require={arg} ({})",
+                    if saved { "saved" } else { "not saved" }
+                )
+            }
+            _ => "usage: :bridges require [on|off]".to_string(),
+        };
+        self.status_msg = line.clone();
+        self.push_msg(line);
+    }
+
+    /// With `:bridges require on`, the reason outgoing frames must stay
+    /// queued, or `None` when they may go to Tor. Uses a short cache so a
+    /// burst of sends does not open a ControlPort connection each time.
+    fn bridges_hold_reason(&mut self) -> Option<String> {
+        if !self.net.require_bridges {
+            return None;
+        }
+        if let Some((at, res)) = &self.bridge_check {
+            let ttl = if res.is_ok() { BRIDGE_CHECK_OK_SECS } else { BRIDGE_CHECK_FAIL_SECS };
+            if at.elapsed() < Duration::from_secs(ttl) {
+                return res.clone().err();
+            }
+        }
+        let res = match query_bridge_status(SOCKS_HOST, CONTROL_PORT) {
+            Ok(st) if st.verdict() == BridgeVerdict::Active => Ok(()),
+            Ok(st) => Err(st.summary_line()),
+            Err(e) => Err(format!("bridges=unknown ({e})")),
+        };
+        self.bridge_check = Some((Instant::now(), res.clone()));
+        res.err()
     }
 
     /// `:clock` shows whether the clock was set back; `:clock-reset` accepts
@@ -1670,6 +1731,7 @@ impl App {
         }
         let transport_ok = self.net.require_messenger_transport().is_ok()
             && self.tor_status == TorStatus::Available;
+        let bridge_hold = if transport_ok { self.bridges_hold_reason() } else { None };
         let mut changed = false;
         for held in due {
             let queued = self
@@ -1683,6 +1745,11 @@ impl App {
             if !transport_ok {
                 self.push_msg(format!("[{}] queued offline (Tor unavailable)", held.peer_label));
                 self.status_msg = "Queued: Tor unavailable (frame committed)".into();
+                continue;
+            }
+            if let Some(why) = &bridge_hold {
+                self.push_msg(format!("[{}] queued: bridges required, {why}", held.peer_label));
+                self.status_msg = "Queued: bridges not active (frame committed)".into();
                 continue;
             }
             let isol = self.socks_isolation_creds_for(Some(&held.contact_id), &held.onion);
@@ -1721,6 +1788,11 @@ impl App {
         }
         if self.tor_status != TorStatus::Available {
             self.status_msg = ":retry refused: Tor SOCKS unavailable".into();
+            self.push_msg(self.status_msg.clone());
+            return;
+        }
+        if let Some(why) = self.bridges_hold_reason() {
+            self.status_msg = format!(":retry held: bridges required, {why}");
             self.push_msg(self.status_msg.clone());
             return;
         }
@@ -2192,6 +2264,16 @@ impl App {
                 "Held for jitter ({}); committed to queue",
                 format_jitter(self.send_jitter_secs)
             );
+            return;
+        }
+
+        if let Some(why) = self.bridges_hold_reason() {
+            self.push_chat(
+                format!("[{peer_label}] you: {text}  (queued: bridges required, {why})"),
+                &contact.id,
+                msg_number,
+            );
+            self.status_msg = "Queued: bridges not active (frame committed)".into();
             return;
         }
 
@@ -3051,6 +3133,7 @@ impl App {
                 self.push_msg("  :clock / :clock-reset   check for a clock set back; accept current time");
                 self.push_msg("  :bridges [check]        ask Tor whether bridges are on and in use");
                 self.push_msg("  :bridges torrc LINE     check a bridge line and print the torrc lines");
+                self.push_msg("  :bridges require on|off hold sends unless Tor reports bridges active");
                 self.push_msg("  :binary / :binary-accept check this binary against the profile; trust it");
                 self.push_msg("  :wipe-settings[-accept]  check wipe setting files against the profile");
                 self.push_msg("  :wipe                   nuclear local wipe (confirm)");
@@ -4069,6 +4152,7 @@ fn bridges_text(args: &str) -> Vec<String> {
         "bridges.torproject.org or the Tor Project's Telegram/email bots.".into(),
         "  :bridges torrc LINE   check one line and print what to add to torrc".into(),
         "  :bridges              ask Tor whether bridges are on and every circuit starts at one".into(),
+        "  :bridges require on   keep messages queued unless that check passes".into(),
         "HashChat only reads Tor's settings; it never changes them.".into(),
     ]
 }
@@ -4098,6 +4182,28 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!(out[0].starts_with("Bridge line refused"));
         assert!(!out[0].contains("SECRET") && !out[0].contains("192.0.2.99"));
+    }
+
+    #[test]
+    fn bridge_hold_off_by_default_and_uses_cache() {
+        let mut app = locked_app();
+        assert!(!app.net.require_bridges);
+        assert_eq!(app.bridges_hold_reason(), None);
+        app.net.require_bridges = true;
+        app.bridge_check = Some((Instant::now(), Err("bridges=off".into())));
+        assert_eq!(app.bridges_hold_reason().as_deref(), Some("bridges=off"));
+        app.bridge_check = Some((Instant::now(), Ok(())));
+        assert_eq!(app.bridges_hold_reason(), None);
+    }
+
+    #[test]
+    fn bridges_require_needs_unlock_to_change() {
+        let mut app = locked_app();
+        app.handle_bridges_require("on");
+        assert!(!app.net.require_bridges);
+        assert!(app.status_msg.starts_with("Unlock first"));
+        app.handle_bridges_require("");
+        assert_eq!(app.status_msg, "bridges require=off");
     }
 
     #[test]
