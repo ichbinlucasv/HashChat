@@ -30,6 +30,25 @@ Inspiration: SimpleX-class UX ideas, with paranoid defaults (Tor-first, no phone
 
 ---
 
+## Screenshots
+
+### Today (real)
+The Rust TUI as it runs now: fresh demo session, no Tor running, so `:listen` fails closed.
+
+<img src="docs/screenshots/real/hashchat-tui-today.png" width="720" alt="hashchat-tui today"/>
+
+### Design concept (in progress)
+**These are design concepts, not the current app.** They show where the UI is going; every feature shown exists in the Rust core. See [docs/DESIGN.md](docs/DESIGN.md).
+
+| | |
+|---|---|
+| <img src="docs/screenshots/concept/hashchat-chat-list.png" alt="Design concept: chat"/> | <img src="docs/screenshots/concept/hashchat-verify-sas.png" alt="Design concept: SAS verification"/> |
+| Chat over Tor *(design concept)* | Safety number check *(design concept)* |
+| <img src="docs/screenshots/concept/hashchat-add-contact.png" alt="Design concept: add contact"/> | <img src="docs/screenshots/concept/hashchat-android.png" alt="Design concept: Android"/> |
+| Signed contact link *(design concept)* | Android *(design concept)* |
+
+---
+
 ## For users (Fedora / Ubuntu / Arch / Tails / Qubes)
 
 1. Clone the primary repo and use branch `codeberg-primary`:

@@ -178,3 +178,14 @@ Goal: move as much of the Android app as possible into Rust, keeping only the mi
 3. Evaluate a Rust UI (Slint or egui via android-activity) on a prototype screen; adopt only if stable and accessible.
 4. Migrate screens incrementally; never break the working app; tests green at every step.
 5. End state: Kotlin limited to a thin generated shell.
+
+## Front end: elegant Rust UI (approved by Lucas, 2026-10-12)
+
+Implement [docs/DESIGN.md](docs/DESIGN.md) in the real UI, step by step, in Rust. Concepts: `docs/screenshots/concept/`.
+
+1. **TUI theme module** (ratatui): one `theme.rs` with the palette tokens, truecolor with 16-color fallback.
+2. **TUI status bar**: Tor / fail-closed / posture / lock as colored pills; red when Tor is down.
+3. **TUI contacts and chat**: verified / unverified markers, gold outgoing messages, mono meta line.
+4. **TUI SAS and contact-link panels** matching the concepts (`:sas`, `:verify`, `:my-contact`, `:add-contact`).
+5. **Android**: once the Rust core is bound (see "Android: maximum Rust"), pilot one screen in Slint (or egui) with the same tokens, then migrate screen by screen.
+6. Replace concept images with real screenshots as each piece lands.
