@@ -33,9 +33,11 @@ Inspiration: SimpleX-class UX ideas, with paranoid defaults (Tor-first, no phone
 ## Screenshots
 
 ### Today (real)
-The Rust TUI as it runs now: fresh demo session, no Tor running, so `:listen` fails closed.
+The real `hashchat-tui` with the new design theme (black and gold, Tor/I2P status pills, fail-closed badge, verified/unverified badges, chat bubbles). Rendered headlessly from the real `ui()` code with a demo session (fake names and keys, no real onions): `HASHCHAT_SNAPSHOT_DIR=/tmp/cells cargo test --features tui --bin hashchat-tui design_ && python3 scripts/tui_snapshot.py /tmp/cells docs/screenshots/real`.
 
-<img src="docs/screenshots/real/hashchat-tui-today.png" width="720" alt="hashchat-tui today"/>
+| <img src="docs/screenshots/real/hashchat-tui-chat.png" alt="hashchat-tui: verified chat over Tor"/> | <img src="docs/screenshots/real/hashchat-tui-unverified-tor-down.png" alt="hashchat-tui: Tor down, fail-closed"/> |
+|---|---|
+| Verified contact, Tor ready | Tor down: fail-closed turns red, unverified banner |
 
 ### Design concept (in progress)
 **These are design concepts, not the current app.** They show where the UI is going; every feature shown exists in the Rust core. See [docs/DESIGN.md](docs/DESIGN.md).
