@@ -8,6 +8,7 @@ use subtle::ConstantTimeEq; // OPSEC: audited constant-time comparison (replaces
 use zeroize::Zeroize;
 
 mod binary_check;
+mod bridges;
 mod clock_check;
 mod contact_link;
 mod disappearing;
@@ -74,8 +75,12 @@ pub use emergency_scrub::{
 pub use envelope::{
     check_new_passphrase, StoreKey, MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME,
 };
+pub use bridges::{
+    evaluate_bridge_status, parse_bridge_line, torrc_snippet, BridgeError, BridgeLine,
+    BridgeStatus, BridgeTransport, BridgeVerdict, MAX_BRIDGE_LINE,
+};
 pub use hidden_service::{
-    cookie_path_from_protocolinfo, start_hidden_service_with_key, HiddenService,
+    cookie_path_from_protocolinfo, query_bridge_status, start_hidden_service_with_key, HiddenService,
     HS_INBOUND_QUEUE_CAP, MAX_HS_INBOUND_FRAME,
 };
 pub use longterm_identity::LongTermIdentity;

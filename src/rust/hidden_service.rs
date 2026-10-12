@@ -26,6 +26,7 @@
 //! When `ADD_ONION` returns `PrivateKey=`, callers must persist it only inside the
 //! passphrase-wrapped session blob (H2 `onion_key`).
 
+use crate::bridges::{evaluate_bridge_status, BridgeStatus};
 use crate::tor_socks::{is_loopback_host, loopback_socket_addr, MAX_SOCKS_FRAME};
 use ring::hmac;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -172,6 +173,39 @@ pub fn start_hidden_service_with_key(
         },
         privkey,
     ))
+}
+
+/// Ask the system Tor whether bridges are configured and in use.
+///
+/// Opens a short-lived ControlPort connection with the same SAFECOOKIE
+/// authentication as [`start_hidden_service_with_key`] and only sends read
+/// commands (`GETCONF`, `GETINFO`). Tor's configuration is never changed.
+pub fn query_bridge_status(control_host: &str, control_port: u16) -> Result<BridgeStatus, String> {
+    if !is_loopback_host(control_host) {
+        return Err("ControlPort host refused (not loopback)".into());
+    }
+    let mut control = ControlConn::new(connect_control(control_host, control_port)?);
+    let cookie_override = std::env::var_os(TOR_COOKIE_FILE_ENV).map(PathBuf::from);
+    authenticate_cookie_only(&mut control, cookie_override.as_deref())?;
+    bridge_status_on(&mut control)
+}
+
+/// Read-only bridge queries on an already authenticated connection.
+fn bridge_status_on(control: &mut ControlConn) -> Result<BridgeStatus, String> {
+    let ok = |lines: &[String]| lines.last().is_some_and(|l| l.starts_with("250 "));
+    let mut conf = control_cmd(control, "GETCONF UseBridges Bridge ClientTransportPlugin")?;
+    let mut boot = control_cmd(control, "GETINFO status/bootstrap-phase")?;
+    let mut circ = control_cmd(control, "GETINFO circuit-status")?;
+    let result = if ok(&conf) && ok(&boot) && ok(&circ) {
+        Ok(evaluate_bridge_status(&conf, &boot, &circ))
+    } else {
+        Err("Tor control refused a bridge status query".to_string())
+    };
+    // Bridge lines and relay fingerprints are sensitive; drop them now.
+    for v in [&mut conf, &mut boot, &mut circ] {
+        v.iter_mut().for_each(Zeroize::zeroize);
+    }
+    result
 }
 
 /// Timing / concurrency limits for the inbound listener (tests shrink them).
@@ -834,6 +868,69 @@ mod tests {
         let r = authenticate_cookie_only(&mut conn, cookie_override);
         drop(conn);
         r
+    }
+
+    /// Fake ControlPort that answers the bridge read queries only.
+    fn fake_bridge_control(conf: &'static str) -> (std::net::SocketAddr, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let h = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut w = stream.try_clone().unwrap();
+            let mut r = BufReader::new(stream);
+            let mut got = Vec::new();
+            loop {
+                let mut line = String::new();
+                if r.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let line = line.trim_end().to_string();
+                let reply = match line.as_str() {
+                    "GETCONF UseBridges Bridge ClientTransportPlugin" => conf.to_string(),
+                    "GETINFO status/bootstrap-phase" => "250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=100 TAG=done SUMMARY=\"Done\"\r\n250 OK\r\n".to_string(),
+                    "GETINFO circuit-status" => "250+circuit-status=\r\n3 BUILT $0123456789ABCDEF0123456789ABCDEF01234567~b,$89ABCDEF0123456789ABCDEF0123456789ABCDEF~m PURPOSE=GENERAL\r\n.\r\n250 OK\r\n".to_string(),
+                    _ => "510 Unrecognized command\r\n".to_string(),
+                };
+                got.push(line);
+                w.write_all(reply.as_bytes()).unwrap();
+                w.flush().unwrap();
+            }
+            got
+        });
+        (addr, h)
+    }
+
+    #[test]
+    fn bridge_status_query_is_read_only_and_parsed() {
+        let (addr, h) = fake_bridge_control(
+            "250-UseBridges=1\r\n250-Bridge=obfs4 192.0.2.10:443 0123456789ABCDEF0123456789ABCDEF01234567 cert=abc iat-mode=0\r\n250 ClientTransportPlugin=obfs4 exec /usr/bin/lyrebird\r\n",
+        );
+        let s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut conn = ControlConn::new(s);
+        let st = bridge_status_on(&mut conn).unwrap();
+        drop(conn);
+        let sent = h.join().unwrap();
+        assert_eq!(st.verdict(), crate::bridges::BridgeVerdict::Active);
+        assert_eq!(st.circuits_checked, 1);
+        assert!(sent.iter().all(|c| c.starts_with("GETCONF ") || c.starts_with("GETINFO ")));
+    }
+
+    #[test]
+    fn bridge_status_query_fails_closed_on_refusal() {
+        let (addr, h) = fake_bridge_control("552 Unrecognized configuration key\r\n");
+        let s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut conn = ControlConn::new(s);
+        assert!(bridge_status_on(&mut conn).is_err());
+        drop(conn);
+        h.join().unwrap();
+    }
+
+    #[test]
+    fn bridge_status_refuses_non_loopback_control() {
+        assert!(query_bridge_status("192.0.2.1", 9051).is_err());
     }
 
     #[test]

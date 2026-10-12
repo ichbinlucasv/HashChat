@@ -18,6 +18,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use hashchat_rust::{
+    parse_bridge_line, query_bridge_status, torrc_snippet,
     bootstrap_ratchet_from_signed_link, build_wire_aad_v3, check_new_passphrase,
     check_plaintext_send_size, check_state_storage, clear_scrub_callback, commit_outgoing_with_key,
     disable_core_dumps_best_effort, encrypt_with_key, extreme_default_lock_timeout,
@@ -882,6 +883,24 @@ impl App {
         self.pending_delete_contact = None;
         self.contacts_state = ListState::default();
         self.selected_contact = None;
+    }
+
+    /// `:bridges` asks Tor (read-only) whether bridges are configured and in
+    /// use; `:bridges torrc LINE` checks a bridge line and prints torrc lines.
+    fn handle_bridges(&mut self, args: &str) {
+        if args.is_empty() || args == "check" {
+            let line = match query_bridge_status(SOCKS_HOST, CONTROL_PORT) {
+                Ok(st) => st.summary_line(),
+                Err(e) => format!("bridges=unknown ({e})"),
+            };
+            self.status_msg = line.clone();
+            self.push_msg(line);
+            return;
+        }
+        for line in bridges_text(args) {
+            self.push_msg(line);
+        }
+        self.status_msg = "See transcript for bridge help.".into();
     }
 
     /// `:clock` shows whether the clock was set back; `:clock-reset` accepts
@@ -3030,6 +3049,8 @@ impl App {
                 self.push_msg("  :deadman [set N|off]    wipe at start if not unlocked for N days");
                 self.push_msg("  :wipe-after [set N|off] wipe after N failed unlocks");
                 self.push_msg("  :clock / :clock-reset   check for a clock set back; accept current time");
+                self.push_msg("  :bridges [check]        ask Tor whether bridges are on and in use");
+                self.push_msg("  :bridges torrc LINE     check a bridge line and print the torrc lines");
                 self.push_msg("  :binary / :binary-accept check this binary against the profile; trust it");
                 self.push_msg("  :wipe-settings[-accept]  check wipe setting files against the profile");
                 self.push_msg("  :wipe                   nuclear local wipe (confirm)");
@@ -3147,6 +3168,10 @@ impl App {
             other if other == ":duress" || other.starts_with(":duress ") => {
                 let args = other.strip_prefix(":duress").unwrap_or("").trim();
                 self.handle_duress(args);
+            }
+            other if other == ":bridges" || other.starts_with(":bridges ") => {
+                let args = other.strip_prefix(":bridges").unwrap_or("").trim();
+                self.handle_bridges(args);
             }
             ":clock" => self.handle_clock(false),
             ":clock-reset" => self.handle_clock(true),
@@ -4025,6 +4050,29 @@ fn main() {
     }
 }
 
+/// Text for `:bridges help` and `:bridges torrc LINE`. Never echoes an
+/// invalid line back, since it may be a private bridge.
+fn bridges_text(args: &str) -> Vec<String> {
+    if let Some(line) = args.strip_prefix("torrc") {
+        return match parse_bridge_line(line) {
+            Ok(b) => {
+                let mut out = vec!["Add these lines to torrc, then reload Tor and run :bridges:".to_string()];
+                out.extend(torrc_snippet(&[b]).into_iter().map(|l| format!("  {l}")));
+                out.push("HashChat does not store bridge lines; torrc keeps them.".into());
+                out
+            }
+            Err(e) => vec![format!("Bridge line refused: {e}")],
+        };
+    }
+    vec![
+        "Bridges hide that you use Tor from your network. Get lines from".into(),
+        "bridges.torproject.org or the Tor Project's Telegram/email bots.".into(),
+        "  :bridges torrc LINE   check one line and print what to add to torrc".into(),
+        "  :bridges              ask Tor whether bridges are on and every circuit starts at one".into(),
+        "HashChat only reads Tor's settings; it never changes them.".into(),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4033,6 +4081,29 @@ mod tests {
         let app = App::new();
         assert!(app.session.is_none());
         app
+    }
+
+    #[test]
+    fn bridges_torrc_prints_snippet_for_valid_line() {
+        let fp = "0123456789ABCDEF0123456789ABCDEF01234567";
+        let out = bridges_text(&format!("torrc obfs4 192.0.2.10:443 {fp} cert=abc iat-mode=0"));
+        assert!(out.iter().any(|l| l.trim() == "UseBridges 1"));
+        assert!(out.iter().any(|l| l.trim().starts_with("ClientTransportPlugin obfs4")));
+        assert!(out.iter().any(|l| l.trim().starts_with("Bridge obfs4 192.0.2.10:443")));
+    }
+
+    #[test]
+    fn bridges_torrc_refusal_does_not_echo_line() {
+        let out = bridges_text("torrc obfs4 192.0.2.99:443 cert=SECRET iat-mode=0");
+        assert_eq!(out.len(), 1);
+        assert!(out[0].starts_with("Bridge line refused"));
+        assert!(!out[0].contains("SECRET") && !out[0].contains("192.0.2.99"));
+    }
+
+    #[test]
+    fn bridges_help_for_unknown_args() {
+        let out = bridges_text("help");
+        assert!(out.iter().any(|l| l.contains(":bridges torrc LINE")));
     }
 
     #[test]
