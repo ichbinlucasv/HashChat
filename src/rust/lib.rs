@@ -6,6 +6,8 @@ mod clock_check;
 mod contact_link;
 mod disappearing;
 mod deadman;
+/// Device posture policy shared with the Android shell.
+pub mod device_posture;
 mod duress;
 mod emergency_scrub;
 /// Offline supporter license; gates comfort features only, never privacy.
