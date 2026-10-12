@@ -21,8 +21,6 @@ lib:
 
 tui:
 	$(CARGO) build $(CARGO_FLAGS) --bin hashchat-tui --features tui
-	@mkdir -p rust-lib
-	@test -f target/release/libhashchat_rust.so && cp -f target/release/libhashchat_rust.so rust-lib/ || true
 	@echo "Built $(TUI_BIN)"
 
 run-tui: tui

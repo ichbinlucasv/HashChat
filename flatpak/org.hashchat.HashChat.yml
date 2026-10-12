@@ -31,15 +31,6 @@ modules:
     buildsystem: simple
     build-commands:
       - |
-        if [ -f prebuilt/libhashchat_rust.so ]; then
-          install -Dm755 prebuilt/libhashchat_rust.so /app/lib/libhashchat_rust.so
-        elif [ -f prebuilt/libhashchat_rust.a ]; then
-          install -Dm755 prebuilt/libhashchat_rust.a /app/lib/libhashchat_rust.a
-        else
-          echo "ERROR: prebuilt Rust library not found. Build via Nix flake only." >&2
-          exit 1
-        fi
-      - |
         if [ -f prebuilt/hashchat-tui ]; then
           install -Dm755 prebuilt/hashchat-tui /app/bin/hashchat-tui
         else

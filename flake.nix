@@ -24,23 +24,6 @@
         packages = rec {
           default = hashchat-tui;
 
-          # Real Rust FFI lib (the crypto heart)
-          rust-lib = pkgs.rustPlatform.buildRustPackage {
-            pname = "hashchat-rust";
-            version = "0.1.9";
-            src = ./.;
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-            };
-            buildInputs = with pkgs; [ pkg-config openssl ];
-            # Only build the lib we actually use for FFI
-            buildPhase = "cargo build --release --locked";
-            installPhase = ''
-              mkdir -p $out/lib
-              cp target/release/libhashchat_rust.* $out/lib/ || true
-            '';
-          };
-
           # Default package: native Rust TUI only (hashchat-tui --features tui).
           # Rust-only (Haskell tree removed 2026-10-12).
           hashchat-tui = pkgs.writeShellScriptBin "hashchat-tui" ''
@@ -73,17 +56,13 @@
               echo "Building TUI reliably using project build system (outside Flatpak sandbox)..."
               ${pkgs.bash}/bin/bash ./build.sh tui || (echo "ERROR: Reliable TUI build failed" && exit 1)
 
-              # Prepare the two prebuilt artifacts the minimal manifest needs
+              # Prepare the prebuilt artifact the minimal manifest needs
               mkdir -p prebuilt
 
               # TUI
               TUI_BIN=$(find . -name hashchat-tui -type f | head -1)
               [ -n "$TUI_BIN" ] || (echo "ERROR: TUI binary missing" && exit 1)
               cp "$TUI_BIN" prebuilt/hashchat-tui && chmod +x prebuilt/hashchat-tui
-
-              # Rust lib (prefer .so)
-              cp src/rust/target/release/libhashchat_rust.so prebuilt/ 2>/dev/null || \
-                cp src/rust/target/release/libhashchat_rust.a prebuilt/
 
               echo "Prebuilts ready for Flatpak manifest"
 

@@ -57,11 +57,6 @@ cargo build --release --locked
 echo "[5/6] Building Rust desktop TUI (hashchat-tui --features tui)..."
 cargo build --release --locked --bin hashchat-tui --features tui
 
-mkdir -p rust-lib
-if [ -f target/release/libhashchat_rust.so ]; then
-  cp -f target/release/libhashchat_rust.so rust-lib/
-fi
-
 echo "[6/6] Done."
 
 echo ""

@@ -4,7 +4,7 @@ version = "0.1.9"
 edition = "2021"
 
 [lib]
-crate-type = ["cdylib", "staticlib", "rlib"]
+crate-type = ["rlib"]
 path = "src/rust/lib.rs"
 
 [[bin]]
@@ -30,7 +30,7 @@ libc = "0.2"   # for mlockall / seccomp primitives on Linux (used under cfg(targ
 # It is tiny, has no extra runtime deps in recent versions, and makes security intent explicit for auditors.
 subtle = "2.6"
 
-# Desktop Rust TUI (optional — keeps the FFI/Android lib free of terminal deps)
+# Desktop Rust TUI (optional — keeps the library free of terminal deps)
 ratatui = { version = "0.29", optional = true }
 crossterm = { version = "0.28", optional = true }
 # Note: Cargo.lock pins instability 0.3.7 (ratatui transitive) for rustc 1.85.

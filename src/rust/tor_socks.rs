@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::time::Duration;
 
-/// Max payload for the 2-byte length-prefixed transport frame (matches Haskell Tor.hs).
+/// Max payload for the 2-byte length-prefixed transport frame (format unchanged since the removed Haskell client).
 pub const MAX_SOCKS_FRAME: usize = u16::MAX as usize;
 
 /// Parse a loopback host without DNS: `localhost` maps to 127.0.0.1, all
@@ -393,7 +393,7 @@ fn socks5_handshake(
     Ok(s)
 }
 
-/// Write a 2-byte BE length-prefixed frame (Haskell Tor.hs compatible).
+/// Write a 2-byte BE length-prefixed frame.
 pub fn write_framed_u16(stream: &mut TcpStream, payload: &[u8]) -> Result<(), String> {
     if payload.len() > MAX_SOCKS_FRAME {
         return Err("frame too large".into());

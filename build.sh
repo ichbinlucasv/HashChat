@@ -48,27 +48,14 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "[1/3] Building Rust FFI / library (release, locked)..."
+echo "[1/2] Building Rust library (release, locked)..."
 cargo build --release --locked
 
-echo "[2/3] Staging Rust library..."
-mkdir -p rust-lib
-LIB_NAME="libhashchat_rust.so"
-if [[ "$(uname -s)" == "Darwin" ]]; then
-  LIB_NAME="libhashchat_rust.dylib"
-fi
-if [[ -f "target/release/${LIB_NAME}" ]]; then
-  cp -f "target/release/${LIB_NAME}" rust-lib/
-  echo "  → Copied ${LIB_NAME} to rust-lib/"
-else
-  echo "  Warning: ${LIB_NAME} not found in target/release/"
-fi
-
 if [[ "$WANT_TUI" -eq 1 ]]; then
-  echo "[3/3] Building native Rust TUI (hashchat-tui --features tui)..."
+  echo "[2/2] Building native Rust TUI (hashchat-tui --features tui)..."
   cargo build --release --locked --bin hashchat-tui --features tui
 else
-  echo "[3/3] Skipping Rust TUI (pass 'tui' to build hashchat-tui)."
+  echo "[2/2] Skipping Rust TUI (pass 'tui' to build hashchat-tui)."
 fi
 
 echo ""

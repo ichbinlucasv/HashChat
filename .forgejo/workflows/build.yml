@@ -47,11 +47,6 @@ jobs:
           echo "Cargo: $(cargo --version)"
 
           cargo build --release --locked
-          mkdir -p rust-lib
-          cp target/release/libhashchat_rust.so rust-lib/ || {
-            echo "FATAL: libhashchat_rust.so missing after cargo build"
-            exit 1
-          }
 
           cargo build --release --locked --bin hashchat-tui --features tui
           test -x target/release/hashchat-tui

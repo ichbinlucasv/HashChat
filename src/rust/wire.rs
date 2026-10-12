@@ -1,4 +1,4 @@
-//! Wire frame v2 (matches Haskell `frameForWire` / `unframeFromWire`).
+//! Wire frame v2 (format originally shared with the removed Haskell client).
 //!
 //! Layout: `version(1)=2 | hintLen(1) | hint | step(4 BE) | sender_dh(32) | ctLen(4 BE) | ciphertext`
 //! Desktop receive rejects version ≠ 2 and missing sender_dh (audit M4).

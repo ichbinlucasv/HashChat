@@ -14,8 +14,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-LIB_DIR="$SCRIPT_DIR/rust-lib"
-RUST_LIB="$LIB_DIR/libhashchat_rust.so"
 RUST_BIN_RELEASE="$SCRIPT_DIR/target/release/hashchat-tui"
 RUST_BIN_DEBUG="$SCRIPT_DIR/target/debug/hashchat-tui"
 
@@ -61,44 +59,24 @@ if ! pgrep -x tor >/dev/null 2>&1; then
   echo "          See INSTALL.md — never cat/paste ControlPort cookies into chats/logs."
 fi
 
-ensure_rust_lib() {
-  if [ -f "$RUST_LIB" ]; then
-    return 0
-  fi
-  if [ -f "$SCRIPT_DIR/target/release/libhashchat_rust.so" ]; then
-    mkdir -p "$LIB_DIR"
-    cp -f "$SCRIPT_DIR/target/release/libhashchat_rust.so" "$LIB_DIR/"
-    return 0
-  fi
-  return 1
-}
-
 build_rust_tui() {
   if ! command -v cargo >/dev/null 2>&1; then
     return 1
   fi
   echo "[INFO] Building Rust TUI: cargo build --release --bin hashchat-tui --features tui"
   cargo build --release --locked --bin hashchat-tui --features tui
-  mkdir -p "$LIB_DIR"
-  if [ -f "$SCRIPT_DIR/target/release/libhashchat_rust.so" ]; then
-    cp -f "$SCRIPT_DIR/target/release/libhashchat_rust.so" "$LIB_DIR/"
-  fi
   return 0
 }
 
 # Prefer release Rust binary; accept debug if already built
 if [ -x "$RUST_BIN_RELEASE" ]; then
   echo "[INFO] Using Rust binary: $RUST_BIN_RELEASE"
-  ensure_rust_lib || true
-  export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   echo "Starting HashChat Rust TUI (Tor-first, black + gold)..."
   exec "$RUST_BIN_RELEASE" "$@"
 fi
 
 if [ -x "$RUST_BIN_DEBUG" ]; then
   echo "[INFO] Using Rust debug binary: $RUST_BIN_DEBUG"
-  ensure_rust_lib || true
-  export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   echo "Starting HashChat Rust TUI (debug build)..."
   exec "$RUST_BIN_DEBUG" "$@"
 fi
@@ -106,7 +84,6 @@ fi
 if command -v cargo >/dev/null 2>&1; then
   if build_rust_tui && [ -x "$RUST_BIN_RELEASE" ]; then
     echo "[INFO] Using freshly built Rust binary: $RUST_BIN_RELEASE"
-    export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     echo "Starting HashChat Rust TUI (Tor-first, black + gold)..."
     exec "$RUST_BIN_RELEASE" "$@"
   fi
