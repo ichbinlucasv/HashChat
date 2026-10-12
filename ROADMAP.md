@@ -173,7 +173,7 @@ Document owner: keep this section updated after the philosophy decision.
 
 ## Android: maximum Rust (approved by Lucas, 2026-10-12)
 Goal: move as much of the Android app as possible into Rust, keeping only the minimal Kotlin/Java shell Android requires (Activity entry, permissions, lifecycle).
-1. Inventory Kotlin code in `android/` and classify: must-stay shell vs. movable logic.
+1. Inventory Kotlin code in `android/` and classify: must-stay shell vs. movable logic. **Done:** [docs/ANDROID_RUST_INVENTORY.md](docs/ANDROID_RUST_INVENTORY.md). First move done: device posture policy is now `device_posture` in the shared crate (JNI binding next).
 2. Move all crypto, Tor, messaging, storage and state logic into the Rust crate (shared with desktop where possible).
 3. Evaluate a Rust UI (Slint or egui via android-activity) on a prototype screen; adopt only if stable and accessible.
 4. Migrate screens incrementally; never break the working app; tests green at every step.
