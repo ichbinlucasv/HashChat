@@ -45,7 +45,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Terminal;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -53,13 +53,18 @@ const DATA_DIR: &str = "hashchat_data";
 /// Turning a wipe protection off needs the passphrase, so someone at the
 /// locked screen cannot disarm it before forcing an unlock.
 const UNLOCK_TO_DISABLE: &str = "Unlock first: turning a wipe protection off needs the passphrase.";
-const GOLD: Color = Color::Rgb(255, 215, 0); // #FFD700
-const BG: Color = Color::Rgb(10, 10, 10); // #0A0A0A
-const PANEL: Color = Color::Rgb(26, 26, 26); // #1A1A1A
-const TEXT: Color = Color::Rgb(245, 245, 245);
-const DIM: Color = Color::Rgb(160, 160, 160);
-const DANGER: Color = Color::Rgb(255, 77, 77);
-const OK: Color = Color::Rgb(61, 220, 151);
+// Design tokens: docs/DESIGN.md (dark-first, black and gold).
+const GOLD: Color = Color::Rgb(255, 210, 74); // #FFD24A
+const GOLD_DEEP: Color = Color::Rgb(232, 180, 0); // #E8B400
+const BG: Color = Color::Rgb(0, 0, 0); // #000000 window
+const PANEL: Color = Color::Rgb(11, 11, 13); // #0B0B0D panels
+const SURFACE: Color = Color::Rgb(18, 18, 20); // #121214 inputs, incoming bubbles
+const HAIRLINE: Color = Color::Rgb(58, 54, 40); // borders (hairline, lifted for terminals)
+const TEXT: Color = Color::Rgb(237, 237, 237); // #EDEDED
+const DIM: Color = Color::Rgb(138, 135, 120); // #8A8778 muted
+const DANGER: Color = Color::Rgb(255, 138, 138); // #FF8A8A
+const TOR: Color = Color::Rgb(196, 168, 255); // #C4A8FF
+const I2P: Color = Color::Rgb(126, 224, 198); // #7EE0C6
 
 fn tui_restore_terminal_best_effort() {
     let _ = disable_raw_mode();
@@ -130,6 +135,8 @@ struct ChatLine {
     expires_at: Option<Instant>,
     /// Contact id + ratchet message number for [`DoubleRatchet::wipe_skipped_key`] on expiry.
     wipe_key: Option<(String, u32)>,
+    /// Presentation only: render as outgoing (gold) bubble.
+    outgoing: bool,
 }
 
 /// Passphrase buffers are pre-allocated to this many bytes and never grow, so
@@ -157,10 +164,16 @@ impl ChatLine {
             text: terminal_safe_owned(text.into()),
             expires_at: None,
             wipe_key: None,
+            outgoing: false,
         }
     }
 
-    fn chat(text: impl Into<String>, ttl_secs: u32, wipe_key: Option<(String, u32)>) -> Self {
+    fn chat(
+        text: impl Into<String>,
+        ttl_secs: u32,
+        wipe_key: Option<(String, u32)>,
+        outgoing: bool,
+    ) -> Self {
         let expires_at = if ttl_secs == 0 {
             None
         } else {
@@ -170,6 +183,7 @@ impl ChatLine {
             text: terminal_safe_owned(text.into()),
             expires_at,
             wipe_key,
+            outgoing,
         }
     }
 }
@@ -289,14 +303,6 @@ impl TorStatus {
             format!("{base} · listening")
         } else {
             base
-        }
-    }
-
-    fn style(self) -> Style {
-        match self {
-            TorStatus::Checking => Style::default().fg(DIM),
-            TorStatus::Available => Style::default().fg(OK),
-            TorStatus::Unavailable => Style::default().fg(DANGER),
         }
     }
 }
@@ -419,13 +425,27 @@ impl App {
     }
 
     fn push_chat(&mut self, text: impl Into<String>, contact_id: &str, msg_number: u32) {
+        self.push_chat_dir(text, contact_id, msg_number, false);
+    }
+
+    fn push_chat_out(&mut self, text: impl Into<String>, contact_id: &str, msg_number: u32) {
+        self.push_chat_dir(text, contact_id, msg_number, true);
+    }
+
+    fn push_chat_dir(
+        &mut self,
+        text: impl Into<String>,
+        contact_id: &str,
+        msg_number: u32,
+        outgoing: bool,
+    ) {
         let wipe = if contact_id.is_empty() {
             None
         } else {
             Some((contact_id.to_string(), msg_number))
         };
         self.messages
-            .push(ChatLine::chat(text, self.disappear_ttl_secs, wipe));
+            .push(ChatLine::chat(text, self.disappear_ttl_secs, wipe, outgoing));
     }
 
     /// Drop expired chat lines (zeroize plaintext) and wipe matching skipped ratchet keys.
@@ -2253,7 +2273,7 @@ impl App {
 
         if self.send_jitter_secs > 0 {
             let due = Instant::now() + sample_send_delay(self.send_jitter_secs);
-            self.push_chat(
+            self.push_chat_out(
                 format!("[{peer_label}] you: {text}  (held, random delay before send)"),
                 &contact.id,
                 msg_number,
@@ -2273,7 +2293,7 @@ impl App {
         }
 
         if let Some(why) = self.bridges_hold_reason() {
-            self.push_chat(
+            self.push_chat_out(
                 format!("[{peer_label}] you: {text}  (queued: bridges required, {why})"),
                 &contact.id,
                 msg_number,
@@ -2298,7 +2318,7 @@ impl App {
             }
             let _ = self.persist_session();
             let frame_len = frame.len();
-            self.push_chat(
+            self.push_chat_out(
                 format!("[{peer_label}] you: {text}  ({frame_len} B via Tor)"),
                 &contact.id,
                 msg_number,
@@ -3470,159 +3490,343 @@ fn draw_unlock(f: &mut ratatui::Frame, app: &App, area: Rect) {
     f.render_widget(foot, chunks[2]);
 }
 
+/// Rounded "pill" span (design: status bar pills, always on).
+fn pill(text: impl Into<String>, fg: Color) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(
+            format!(" {} ", text.into()),
+            Style::default().fg(BG).bg(fg).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+    ]
+}
+
+/// Tor transport pill text + colour. Presentation only; the policy lives in send paths.
+fn tor_pill(status: TorStatus, listening: bool) -> (String, Color) {
+    match status {
+        TorStatus::Checking => ("◌ Tor · checking…".into(), DIM),
+        TorStatus::Available if listening => ("● Tor · onion listening".into(), TOR),
+        TorStatus::Available => ("● Tor · SOCKS ready".into(), TOR),
+        TorStatus::Unavailable => ("✕ Tor · SOCKS unavailable".into(), DANGER),
+    }
+}
+
+/// Fail-closed indicator: red when Tor is down (sends are refused, never a clearnet fallback).
+fn fail_closed_pill(status: TorStatus) -> (String, Color) {
+    match status {
+        TorStatus::Unavailable => ("Fail-closed · sending refused".into(), DANGER),
+        _ => ("Fail-closed · no clearnet".into(), GOLD),
+    }
+}
+
+/// Contact row view model (labels only; never message bodies).
+struct ContactRow {
+    label: String,
+    verified: bool,
+    blocked: bool,
+    muted: bool,
+}
+
+impl App {
+    fn contact_rows(&self) -> Vec<ContactRow> {
+        self.session
+            .as_ref()
+            .map(|s| {
+                s.contacts
+                    .iter()
+                    .map(|c| ContactRow {
+                        label: Self::contact_list_label(c),
+                        verified: s.is_verified_id(&c.id),
+                        blocked: s.is_blocked_id(&c.id),
+                        muted: s.is_muted_id(&c.id),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn selected_is_verified(&self) -> Option<bool> {
+        let s = self.session.as_ref()?;
+        let c = self.selected_contact_record()?;
+        Some(s.is_verified_id(&c.id))
+    }
+}
+
+fn avatar_initial(label: &str) -> String {
+    label
+        .chars()
+        .find(|c| c.is_alphanumeric())
+        .map(|c| c.to_uppercase().collect::<String>())
+        .unwrap_or_else(|| "#".into())
+}
+
+fn panel_block(title: &str, focused: bool) -> Block<'static> {
+    let border = if focused { GOLD } else { HAIRLINE };
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(format!(" {title} "), gold_style()))
+        .border_style(Style::default().fg(border))
+        .style(Style::default().bg(PANEL))
+}
+
 fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(4),
             Constraint::Min(5),
             Constraint::Length(3),
-            Constraint::Length(2),
+            Constraint::Length(1),
         ])
         .split(area);
 
+    // ── Header: wordmark + always-on security pills ──────────────────────────
     let listening = app.hs.is_some();
-    let header = Paragraph::new(Line::from(vec![
-        Span::styled(" # HashChat ", gold_style()),
-        Span::styled("│ ", Style::default().fg(DIM)),
-        Span::styled(format!("SAS {}", app.my_sas), Style::default().fg(GOLD)),
-        Span::styled(" │ ", Style::default().fg(DIM)),
-        Span::styled(app.tor_status.label(listening), app.tor_status.style()),
+    let (tor_txt, tor_col) = tor_pill(app.tor_status, listening);
+    let (fc_txt, fc_col) = fail_closed_pill(app.tor_status);
+    let mut pills: Vec<Span> = vec![Span::raw(" ")];
+    pills.extend(pill(tor_txt, tor_col));
+    pills.extend(pill(fc_txt, fc_col));
+    let i2p_col = if app.net.mode.as_str() == "i2p" { I2P } else { DIM };
+    pills.extend(pill("I2P · refused", i2p_col));
+    if let Some(q) = queued_label(app.pending_count()) {
+        pills.extend(pill(q, GOLD_DEEP));
+    }
+    let title_line = Line::from(vec![
+        Span::styled(" # ", Style::default().fg(BG).bg(GOLD).add_modifier(Modifier::BOLD)),
+        Span::styled(" HashChat", gold_style()),
+        Span::styled("   SAS ", Style::default().fg(DIM)),
+        Span::styled(app.my_sas.clone(), Style::default().fg(GOLD)),
         Span::styled(
-            queued_label(app.pending_count())
-                .map(|q| format!(" · {q}"))
-                .unwrap_or_default(),
-            app.tor_status.style(),
-        ),
-        Span::styled(" · ", Style::default().fg(DIM)),
-        Span::styled(format!("mode={}", app.net.mode), Style::default().fg(DIM)),
-        Span::styled(" · ", Style::default().fg(DIM)),
-        Span::styled(
-            format!("ttl={}", format_ttl(app.disappear_ttl_secs)),
+            format!(
+                "   mode {} · posture {} · ttl {} · lock {}",
+                app.net.mode,
+                app.net.posture.as_str(),
+                format_ttl(app.disappear_ttl_secs),
+                format_lock_timeout(app.lock_timeout_secs)
+            ),
             Style::default().fg(DIM),
         ),
-        Span::styled(" · ", Style::default().fg(DIM)),
-        Span::styled(
-            format!("lock={}", format_lock_timeout(app.lock_timeout_secs)),
-            Style::default().fg(DIM),
-        ),
-    ]))
-    .block(
+    ]);
+    let header = Paragraph::new(vec![title_line, Line::from(pills)]).block(
         Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(GOLD))
+            .borders(Borders::BOTTOM)
+            .border_style(Style::default().fg(HAIRLINE))
             .style(Style::default().bg(PANEL)),
     );
     f.render_widget(header, root[0]);
 
     let body = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(28), Constraint::Percentage(72)])
+        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(root[1]);
 
-    let names = app.contact_names();
-    let items: Vec<ListItem> = if names.is_empty() {
-        vec![ListItem::new(Span::styled(
-            "(no contacts)",
-            Style::default().fg(DIM),
-        ))]
+    // ── Contact list: avatar initial, name, one status line ─────────────────
+    let rows = app.contact_rows();
+    let items: Vec<ListItem> = if rows.is_empty() {
+        vec![ListItem::new(vec![
+            Line::from(Span::styled("No contacts yet", Style::default().fg(DIM))),
+            Line::from(Span::styled(
+                ":add-contact <link>",
+                Style::default().fg(GOLD_DEEP),
+            )),
+        ])]
     } else {
-        names
-            .iter()
-            .map(|n| {
-                ListItem::new(Span::styled(
-                    sanitize_for_terminal(n).into_owned(),
-                    Style::default().fg(TEXT),
-                ))
+        rows.iter()
+            .map(|r| {
+                let name = sanitize_for_terminal(&r.label).into_owned();
+                let (status, col) = if r.blocked {
+                    ("⊘ blocked", DANGER)
+                } else if !r.verified {
+                    ("⚠ unverified", DANGER)
+                } else if r.muted {
+                    ("✓ verified · muted", DIM)
+                } else {
+                    ("✓ verified (SAS)", GOLD)
+                };
+                let av_bg = if r.verified { GOLD } else { SURFACE };
+                let av_fg = if r.verified { BG } else { GOLD };
+                ListItem::new(vec![
+                    Line::from(vec![
+                        Span::styled(
+                            format!(" {} ", avatar_initial(&name)),
+                            Style::default().fg(av_fg).bg(av_bg).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(" "),
+                        Span::styled(
+                            name,
+                            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                        ),
+                    ]),
+                    Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(status, Style::default().fg(col)),
+                    ]),
+                    Line::from(""),
+                ])
             })
             .collect()
-    };
-    let contacts_border = if app.focus == Focus::Contacts {
-        Style::default().fg(GOLD)
-    } else {
-        Style::default().fg(DIM)
     };
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(Span::styled(" contacts ", gold_style()))
-                .border_style(contacts_border)
-                .style(Style::default().bg(PANEL)),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::Rgb(40, 40, 20))
-                .fg(GOLD)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("▸ ");
+        .block(panel_block("Chats", app.focus == Focus::Contacts))
+        .highlight_style(Style::default().bg(Color::Rgb(36, 31, 14)))
+        .highlight_symbol("▌");
     f.render_stateful_widget(list, body[0], &mut app.contacts_state);
 
-    let msg_lines: Vec<Line> = if app.messages.is_empty() {
-        vec![Line::from(Span::styled(
-            "No messages. :help for commands. :listen to publish onion.",
-            Style::default().fg(DIM),
-        ))]
-    } else {
-        app.messages
-            .iter()
-            .rev()
-            .take(body[1].height.saturating_sub(2) as usize)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .map(|m| {
-                Line::from(Span::styled(
-                    sanitize_for_terminal(&m.text),
-                    Style::default().fg(TEXT),
-                ))
-            })
-            .collect()
-    };
+    // ── Conversation: verification banner + bubbles ─────────────────────────
+    let chat_area = body[1];
+    let verified = app.selected_is_verified();
+    let banner_h = if verified.is_some() { 1 } else { 0 };
     let chat_title = match app.selected_contact_record() {
-        Some(c) => format!(" chat · SAS {} ", App::contact_sas_short(c)),
-        None => " chat ".to_string(),
+        Some(c) => format!(
+            "{} · SAS {}",
+            App::contact_list_label(c),
+            App::contact_sas_short(c)
+        ),
+        None => "Conversation".to_string(),
     };
-    let chat = Paragraph::new(msg_lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(Span::styled(
-                    sanitize_for_terminal(&chat_title).into_owned(),
-                    gold_style(),
-                ))
-                .border_style(Style::default().fg(GOLD))
-                .style(Style::default().bg(PANEL)),
-        )
-        .wrap(Wrap { trim: false });
-    f.render_widget(chat, body[1]);
+    let chat_block = panel_block(&sanitize_for_terminal(&chat_title), true);
+    let inner = chat_block.inner(chat_area);
+    f.render_widget(chat_block, chat_area);
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(banner_h), Constraint::Min(1)])
+        .split(inner);
+    match verified {
+        Some(true) => f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    " ✓ Verified (SAS) ",
+                    Style::default().fg(BG).bg(GOLD).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "  via Tor v3 · Double Ratchet",
+                    Style::default().fg(DIM),
+                ),
+            ])),
+            parts[0],
+        ),
+        Some(false) => f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    " ⚠ Unverified ",
+                    Style::default().fg(BG).bg(DANGER).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "  compare SAS out of band, then :verify · sending refused",
+                    Style::default().fg(DANGER),
+                ),
+            ]))
+            .style(Style::default().bg(Color::Rgb(40, 16, 16))),
+            parts[0],
+        ),
+        None => {}
+    }
 
-    let input_border = if app.focus == Focus::Input {
-        Style::default().fg(GOLD)
+    let width = parts[1].width as usize;
+    let max_bubble = (width * 3 / 4).max(10);
+    let mut msg_lines: Vec<Line> = Vec::new();
+    if app.messages.is_empty() {
+        msg_lines.push(Line::from(""));
+        msg_lines.push(
+            Line::from(Span::styled(
+                "No messages yet",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            ))
+            .centered(),
+        );
+        msg_lines.push(
+            Line::from(Span::styled(
+                ":help for commands · :listen to publish your onion",
+                Style::default().fg(DIM),
+            ))
+            .centered(),
+        );
     } else {
-        Style::default().fg(DIM)
-    };
+        for m in &app.messages {
+            let mut text = sanitize_for_terminal(&m.text).into_owned();
+            if m.outgoing {
+                // Display only: the bubble side already says "you".
+                if let Some(i) = text.find("] you: ") {
+                    text = text[i + 7..].to_string();
+                }
+            }
+            if m.wipe_key.is_none() && !m.outgoing && m.expires_at.is_none() {
+                // System note: muted, centred, no bubble.
+                msg_lines.push(
+                    Line::from(Span::styled(
+                        format!("· {text} ·"),
+                        Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+                    ))
+                    .centered(),
+                );
+                continue;
+            }
+            let style = if m.outgoing {
+                Style::default().fg(BG).bg(GOLD)
+            } else {
+                Style::default().fg(TEXT).bg(SURFACE)
+            };
+            for chunk in wrap_chars(&text, max_bubble.saturating_sub(2)) {
+                let l = Line::from(Span::styled(format!(" {chunk} "), style));
+                msg_lines.push(if m.outgoing { l.right_aligned() } else { l });
+            }
+            let meta = if m.expires_at.is_some() {
+                "Tor-only · Double Ratchet · ⏱ disappearing"
+            } else {
+                "Tor-only · Double Ratchet"
+            };
+            let ml = Line::from(Span::styled(meta, Style::default().fg(DIM)));
+            msg_lines.push(if m.outgoing { ml.right_aligned() } else { ml });
+            msg_lines.push(Line::from(""));
+        }
+    }
+    let h = parts[1].height as usize;
+    let skip = msg_lines.len().saturating_sub(h);
+    let msg_lines: Vec<Line> = msg_lines.into_iter().skip(skip).collect();
+    f.render_widget(Paragraph::new(msg_lines), parts[1]);
+
+    // ── Composer ────────────────────────────────────────────────────────────
     let input = Paragraph::new(Line::from(vec![
-        Span::styled("> ", gold_style()),
+        Span::styled("› ", gold_style()),
         Span::styled(sanitize_for_terminal(&app.input), Style::default().fg(TEXT)),
         Span::styled("▌", Style::default().fg(GOLD)),
     ]))
     .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(" input ", gold_style()))
-            .border_style(input_border)
-            .style(Style::default().bg(PANEL)),
+        panel_block("Message", app.focus == Focus::Input).style(Style::default().bg(SURFACE)),
     );
     f.render_widget(input, root[2]);
 
-    let status = Paragraph::new(Line::from(Span::styled(
-        sanitize_for_terminal(&app.status_msg),
-        Style::default().fg(DIM),
-    )))
+    let status = Paragraph::new(Line::from(vec![
+        Span::styled(" ", Style::default()),
+        Span::styled(
+            sanitize_for_terminal(&app.status_msg),
+            Style::default().fg(DIM),
+        ),
+    ]))
     .style(Style::default().bg(BG));
     f.render_widget(status, root[3]);
+}
+
+/// Hard-wrap by characters for bubble rendering (display only).
+fn wrap_chars(s: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut n = 0;
+    for ch in s.chars() {
+        if n == width {
+            out.push(std::mem::take(&mut cur));
+            n = 0;
+        }
+        cur.push(ch);
+        n += 1;
+    }
+    if !cur.is_empty() || out.is_empty() {
+        out.push(cur);
+    }
+    out
 }
 
 fn draw_wipe_modal(f: &mut ratatui::Frame, app: &App, area: Rect) {
@@ -4295,5 +4499,113 @@ mod tests {
         assert_ne!(app.status_msg, UNLOCK_TO_DISABLE);
         app.handle_wipe_after("");
         assert_ne!(app.status_msg, UNLOCK_TO_DISABLE);
+    }
+
+    // ── Design-system render tests (presentation only) ──────────────────────
+    fn demo_app(verified_first: bool, tor: TorStatus) -> App {
+        let mut app = locked_app();
+        let mut s = SessionState::from_identity(IdentityOnionState {
+            seed: [1u8; 32],
+            onion: "demo".into(),
+            onion_key: Vec::new(),
+        });
+        for (i, name) in ["Alice", "Bruno", "Carla"].iter().enumerate() {
+            let b = (i as u8) + 3;
+            s.contacts.push(PersistedContact {
+                id: format!("demo-{i}"),
+                display_name: (*name).into(),
+                onion: format!("{}demo.onion", "x".repeat(50)),
+                x25519: [b; 32],
+                ed25519: [b + 9; 32],
+            });
+        }
+        if verified_first {
+            s.verify_contact_id("demo-0");
+        }
+        s.verify_contact_id("demo-2");
+        let _ = s.mute_contact_id("demo-2");
+        app.session = Some(s);
+        app.screen = Screen::Main;
+        app.my_sas = "1234 5678 9012".into();
+        app.tor_status = tor;
+        app.selected_contact = Some(0);
+        app.contacts_state.select(Some(0));
+        app.push_msg("Session unlocked · contacts loaded");
+        app.push_chat("[Alice] Olá! Chegou bem pelo Tor?", "demo-0", 1);
+        app.push_chat_out("[Alice] you: Chegou sim, tudo cifrado ponta a ponta.", "demo-0", 2);
+        app.push_chat("[Alice] Perfeito. Comparei o SAS fora da rede ✓", "demo-0", 3);
+        app.status_msg = "Sent 1024 B via SOCKS (isol)".into();
+        app
+    }
+
+    fn render(app: &mut App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+        let mut term = Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        term.draw(|f| ui(f, app)).unwrap();
+        term.backend().buffer().clone()
+    }
+
+    fn buf_text(b: &ratatui::buffer::Buffer) -> String {
+        b.content().iter().map(|c| c.symbol()).collect()
+    }
+
+    /// Optional: dump coloured cells for docs/screenshots/real (scripts/tui_snapshot.py).
+    fn dump(b: &ratatui::buffer::Buffer, name: &str) {
+        let Ok(dir) = std::env::var("HASHCHAT_SNAPSHOT_DIR") else {
+            return;
+        };
+        let col = |c: Color| match c {
+            Color::Rgb(r, g, b) => format!("{r:02x}{g:02x}{b:02x}"),
+            _ => "-".into(),
+        };
+        let mut out = format!("{} {}\n", b.area.width, b.area.height);
+        for c in b.content() {
+            let bold = c.modifier.contains(Modifier::BOLD) as u8;
+            out.push_str(&format!("{}\t{}\t{}\t{}\n", col(c.fg), col(c.bg), bold, c.symbol()));
+        }
+        std::fs::write(format!("{dir}/{name}.cells"), out).unwrap();
+    }
+
+    #[test]
+    fn design_header_shows_tor_and_fail_closed_pills() {
+        let mut app = demo_app(true, TorStatus::Available);
+        let b = render(&mut app, 120, 34);
+        dump(&b, "hashchat-tui-chat");
+        let t = buf_text(&b);
+        assert!(t.contains("Tor · SOCKS ready"));
+        assert!(t.contains("Fail-closed · no clearnet"));
+        assert!(t.contains("I2P · refused"));
+        assert!(t.contains("✓ Verified (SAS)"));
+        assert!(t.contains("⚠ unverified"));
+    }
+
+    #[test]
+    fn design_fail_closed_turns_red_when_tor_down() {
+        let mut app = demo_app(false, TorStatus::Unavailable);
+        let b = render(&mut app, 120, 34);
+        dump(&b, "hashchat-tui-unverified-tor-down");
+        let t = buf_text(&b);
+        assert!(t.contains("Fail-closed · sending refused"));
+        assert!(t.contains("⚠ Unverified"));
+        let cell = b
+            .content()
+            .iter()
+            .position(|c| c.symbol() == "✕")
+            .map(|i| &b.content()[i])
+            .unwrap();
+        assert_eq!(cell.bg, DANGER);
+    }
+
+    #[test]
+    fn design_outgoing_flag_only_from_send_path() {
+        let app = demo_app(true, TorStatus::Available);
+        let out: Vec<bool> = app.messages.iter().map(|m| m.outgoing).collect();
+        assert_eq!(out, vec![false, false, true, false]);
+    }
+
+    #[test]
+    fn design_wrap_chars_bounds() {
+        assert_eq!(wrap_chars("abcdef", 4), vec!["abcd", "ef"]);
+        assert_eq!(wrap_chars("", 4), vec![""]);
+        assert_eq!(avatar_initial("  bruno"), "B");
     }
 }
