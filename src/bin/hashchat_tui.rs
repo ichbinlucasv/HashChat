@@ -112,6 +112,8 @@ enum Screen {
     SasGrid,
     /// Read-only own contact-link card (`:contact-card`). Esc/Enter returns.
     ContactCard,
+    /// Read-only plans + pay-what-you-want (`:support`). No network.
+    Support,
 }
 
 /// Delivery state of an outgoing bubble (display only; policy lives in send paths).
@@ -900,6 +902,7 @@ impl App {
                 | Screen::SetDuress
                 | Screen::SasGrid
                 | Screen::ContactCard
+                | Screen::Support
         ) {
             return false;
         }
@@ -3151,6 +3154,11 @@ impl App {
                     self.status_msg = "Compare out of band · Esc back".into();
                 }
             }
+            ":support" | ":pay" => {
+                // Static text only: no network, no wallet, no telemetry.
+                self.screen = Screen::Support;
+                self.status_msg = "Privacy is always free · Esc back".into();
+            }
             ":contact-card" => {
                 // Same refusals as :my-contact; the card only displays.
                 if self.net.extreme_blocks_contact_export() {
@@ -3251,6 +3259,7 @@ impl App {
                     "  :sas-grid               SAS comparison grid for the selected contact",
                 );
                 self.push_msg("  :contact-card           your signed contact-link card");
+                self.push_msg("  :support                plans and pay-what-you-want (offline)");
                 self.push_msg("  :my-contact             your signed link + short SAS");
                 self.push_msg("  :sas [link]             short SAS (selected contact or link)");
                 self.push_msg("  :mode [tor|status|…]    network mode (Tor default; fail-closed)");
@@ -3546,6 +3555,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
         Screen::SetDuress => draw_duress_entry(f, app, area),
         Screen::SasGrid => draw_sas_grid(f, app, area),
         Screen::ContactCard => draw_contact_card(f, app, area),
+        Screen::Support => draw_support(f, area),
     }
 }
 
@@ -4356,6 +4366,45 @@ fn draw_contact_card(f: &mut ratatui::Frame, app: &App, area: Rect) {
     );
 }
 
+/// `:support` — plans and pay-what-you-want. Static, offline.
+fn draw_support(f: &mut ratatui::Frame, area: Rect) {
+    use hashchat_rust::entitlement::{PAY_WHAT_YOU_WANT, PLANS, PRINCIPLE, XMR_ADDRESS};
+    blank_backdrop(f, area);
+    let rect = centered_rect(area, area.width.clamp(56, 92), 22);
+    let inner_w = rect.width.saturating_sub(6) as usize;
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("  Support HashChat", gold_style())),
+        Line::from(Span::styled(
+            format!("  {PRINCIPLE}"),
+            Style::default().fg(TEXT),
+        )),
+        Line::from(""),
+    ];
+    for (plan, price) in PLANS {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {plan:<28}"), Style::default().fg(GOLD)),
+            Span::styled((*price).to_string(), Style::default().fg(TEXT)),
+        ]));
+    }
+    lines.push(Line::from(""));
+    for chunk in wrap_chars(PAY_WHAT_YOU_WANT, inner_w) {
+        lines.push(Line::from(Span::styled(chunk, Style::default().fg(DIM))));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("  XMR ", Style::default().fg(DIM)),
+        Span::styled(XMR_ADDRESS, Style::default().fg(GOLD).bg(SURFACE)),
+    ]));
+    lines.push(Line::from(Span::styled(
+        "  Esc back",
+        Style::default().fg(DIM),
+    )));
+    f.render_widget(
+        Paragraph::new(lines).block(card_block("support", false)),
+        rect,
+    );
+}
+
 impl Drop for App {
     fn drop(&mut self) {
         // Also runs during panic unwinding, after active borrows have ended.
@@ -4439,6 +4488,7 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
                 | Screen::SetDuress
                 | Screen::SasGrid
                 | Screen::ContactCard
+                | Screen::Support
         ) {
             app.touch_input();
         }
@@ -4571,7 +4621,7 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
                 }
                 _ => {}
             },
-            Screen::SasGrid | Screen::ContactCard => {
+            Screen::SasGrid | Screen::ContactCard | Screen::Support => {
                 if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
                     app.screen = Screen::Main;
                     app.focus = Focus::Input;
@@ -5061,6 +5111,17 @@ mod tests {
             assert!(t.contains(&format!("  {ch}  ")));
         }
         assert!(t.contains(":verify") && t.contains(":block"));
+    }
+
+    #[test]
+    fn support_screen_is_offline_and_shows_plans() {
+        let mut app = demo_app(false, TorStatus::Unavailable);
+        app.handle_command(":support");
+        assert!(app.screen == Screen::Support);
+        let b = render(&mut app, 120, 34);
+        let t = buf_text(&b);
+        assert!(t.contains("€149") && t.contains("Pay what you want"));
+        assert!(t.contains("<XMR_ADDRESS_TBD>"));
     }
 
     #[test]

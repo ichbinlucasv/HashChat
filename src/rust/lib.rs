@@ -8,6 +8,8 @@ mod disappearing;
 mod deadman;
 mod duress;
 mod emergency_scrub;
+/// Offline supporter license; gates comfort features only, never privacy.
+pub mod entitlement;
 mod failwipe;
 mod envelope;
 mod hidden_service;

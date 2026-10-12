@@ -143,6 +143,12 @@ This is security-critical software.
 
 ---
 
+## Support HashChat
+
+Privacy and anonymity are always free; paying never unlocks privacy, only comfort
+features. See [docs/SUPPORT.md](docs/SUPPORT.md) (plans, pay-what-you-want) and
+[docs/HOW_TO_PAY.md](docs/HOW_TO_PAY.md) (Monero, Bitcoin, Lightning). In the TUI: `:support`.
+
 ## Licence
 
 See [LICENSE](LICENSE).

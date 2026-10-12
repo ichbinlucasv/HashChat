@@ -189,3 +189,25 @@ Implement [docs/DESIGN.md](docs/DESIGN.md) in the real UI, step by step, in Rust
 4. **TUI SAS and contact-link panels** matching the concepts (`:sas`, `:verify`, `:my-contact`, `:add-contact`).
 5. **Android**: once the Rust core is bound (see "Android: maximum Rust"), pilot one screen in Slint (or egui) with the same tokens, then migrate screen by screen.
 6. Replace concept images with real screenshots as each piece lands.
+
+## Sustainability: free + paid model (approved by Lucas, 2026-10-12)
+
+Principle: **privacy and anonymity are always free; paying never unlocks
+privacy, only comfort features.** Free mode is the default.
+
+- Free: tor-only end-to-end messaging, small groups, sas contact verification, fail-closed transport, local encrypted storage.
+- Supporter (paid): large groups, multi-device sync, bigger files, themes, encrypted backup, priority support.
+- Draft prices: €4.99/month, €49/year, €149 lifetime. Bundle with
+  Frihart: €7.99/month or €229 lifetime. Launch offer: €99 lifetime for the
+  first 500 supporters. Pay-what-you-want, any amount.
+- Payments: crypto only. Monero preferred, plus Bitcoin and Lightning, via
+  self-hosted BTCPay Server (Monero plugin) or MoneroPay. Fresh address per
+  invoice, no account, no license server. Prepaid 3/6/12-month packs with a
+  local expiry reminder.
+- Done: offline Ed25519 license module (`src/rust/entitlement.rs`), `:support` screen in the TUI,
+  [docs/SUPPORT.md](docs/SUPPORT.md), [docs/HOW_TO_PAY.md](docs/HOW_TO_PAY.md),
+  [docs/PAYMENTS_SETUP.md](docs/PAYMENTS_SETUP.md).
+- Next: Lucas provides receiving addresses (or an xpub / view-only wallet)
+  and a server for BTCPay; generate the offline signing key and set
+  `MAINTAINER_PUBKEY`; wire each comfort feature to `Entitlement::allows`
+  as it ships.
