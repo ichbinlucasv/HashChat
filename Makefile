@@ -1,5 +1,4 @@
-# HashChat — Rust is the only recommended desktop path.
-# Haskell remains in-tree as transitional / not recommended (see INSTALL.md).
+# HashChat — Rust-only build.
 #
 # OPSEC: targets do not print secrets, cookies, or key material.
 
@@ -10,13 +9,12 @@ TUI_BIN := target/release/hashchat-tui
 .PHONY: help lib tui run-tui test clean
 
 help:
-	@echo "HashChat Makefile (Rust recommended)"
-	@echo "  make lib      - cargo build $(CARGO_FLAGS)  (library / FFI)"
+	@echo "HashChat Makefile (Rust)"
+	@echo "  make lib      - cargo build $(CARGO_FLAGS)  (library)"
 	@echo "  make tui      - cargo build $(CARGO_FLAGS) --bin hashchat-tui --features tui"
 	@echo "  make run-tui  - build tui then ./run-tui"
 	@echo "  make test     - cargo test --lib"
 	@echo "  make clean    - cargo clean"
-	@echo "Haskell desktop: transitional / not recommended (HASHCHAT_ALLOW_HASKELL=1)."
 
 lib:
 	$(CARGO) build $(CARGO_FLAGS)

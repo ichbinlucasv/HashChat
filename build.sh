@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
 #
-# HashChat Build Script (Pure Bash) — Rust-first
+# HashChat Build Script (Pure Bash) — Rust-only
 #
 # Recommended desktop path:
 #   ./build.sh          # Rust library (release, locked)
 #   ./build.sh tui      # Rust hashchat-tui --features tui
-#
-# Transitional Haskell (not recommended; kept compiling if present):
-#   ./build.sh --haskell
-#   ./build.sh tui --haskell
 #
 # High-security builds: Tails or a Qubes disposable; pin toolchains.
 #
@@ -21,16 +17,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 WANT_TUI=0
-WANT_HASKELL=0
 for arg in "$@"; do
   case "$arg" in
     tui|--tui) WANT_TUI=1 ;;
-    --haskell|haskell) WANT_HASKELL=1 ;;
     -h|--help)
-      echo "Usage: ./build.sh [tui] [--haskell]"
+      echo "Usage: ./build.sh [tui]"
       echo "  (default)  cargo build --release --locked"
       echo "  tui        cargo build --release --locked --bin hashchat-tui --features tui"
-      echo "  --haskell  also build transitional Cabal targets (not recommended)"
       exit 0
       ;;
     *)
@@ -45,7 +38,7 @@ if [ -f "$HOME/.cargo/env" ]; then
   source "$HOME/.cargo/env"
 fi
 
-echo "=== Building HashChat (Rust recommended) ==="
+echo "=== Building HashChat (Rust) ==="
 echo "Platform: $(uname -s)"
 echo "Branch tip expected: codeberg-primary"
 echo ""
@@ -78,25 +71,8 @@ else
   echo "[3/3] Skipping Rust TUI (pass 'tui' to build hashchat-tui)."
 fi
 
-if [[ "$WANT_HASKELL" -eq 1 ]]; then
-  echo ""
-  echo "[WARN] Building transitional Haskell (not recommended for desktop)."
-  echo "       Tree kept compiling for parity checks; see INSTALL.md removal criteria."
-  if ! command -v cabal >/dev/null 2>&1; then
-    echo "[ERROR] cabal not found; cannot build --haskell path."
-    exit 1
-  fi
-  cabal update
-  cabal build -f-tui hashchat --enable-tests
-  cabal build -f-tui hashchat-cli --enable-tests
-  if [[ "$WANT_TUI" -eq 1 ]]; then
-    cabal build -f-tui hashchat-tui --enable-tests
-  fi
-fi
-
 echo ""
 echo "=== Build completed ==="
 echo "Recommended run: ./run-tui   (or: make tui)"
 echo "  Primary binary: target/release/hashchat-tui"
-echo "Haskell desktop is transitional / not recommended."
 echo "For maximum security: build inside Tails or a Qubes disposable VM."

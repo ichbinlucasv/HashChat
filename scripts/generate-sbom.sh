@@ -18,7 +18,7 @@ echo "Output directory: $OUTPUT_DIR"
 echo ""
 
 # 1. Rust SBOM (most critical component)
-echo "[1/3] Generating Rust SBOM (cargo-sbom)..."
+echo "[1/2] Generating Rust SBOM (cargo-sbom)..."
 if command -v cargo-sbom >/dev/null 2>&1; then
     cargo sbom --output-format json > "$OUTPUT_DIR/rust-sbom.json" 2>/dev/null || \
     cargo sbom > "$OUTPUT_DIR/rust-sbom.json" || echo "cargo-sbom failed or not fully configured"
@@ -29,40 +29,20 @@ else
     cargo sbom > "$OUTPUT_DIR/rust-sbom.json" 2>/dev/null || echo "  -> cargo-sbom generation failed"
 fi
 
-# 2. Transitional Haskell note (opt-in only; NOT a release path — criterion 2)
-echo "[2/3] Creating transitional Haskell dependency note (non-release)..."
-cat > "$OUTPUT_DIR/haskell-deps.txt" << 'EOF'
-HashChat Haskell Dependencies — TRANSITIONAL / NOT A RELEASE PATH
-
-The recommended desktop client is the Rust binary hashchat-tui (--features tui).
-GHC/Cabal remain in-tree only for opt-in parity checks:
-  HASHCHAT_ALLOW_HASKELL=1 ./run-tui
-  ./build.sh --haskell
-  nix develop .#haskellDev
-
-Direct Cabal deps (if you intentionally maintain the Brick TUI) live in hashchat.cabal.
-Do not treat this file as a release SBOM surface. Rust owns crypto + recommended TUI.
-
-EOF
-echo "  -> Transitional Haskell note written to $OUTPUT_DIR/haskell-deps.txt"
-
 # 3. Overall project summary
-echo "[3/3] Creating project SBOM summary..."
+echo "[2/2] Creating project SBOM summary..."
 cat > "$OUTPUT_DIR/project-sbom-summary.txt" << EOF
 HashChat Project - Basic SBOM Summary
 Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 Primary Security Boundary: Rust (Double Ratchet, Argon2id, AES-GCM, Zeroize, framing, recommended TUI)
-Recommended Desktop: Rust hashchat-tui (--features tui) — Cabal is NOT a release path
+Recommended Desktop: Rust hashchat-tui (--features tui)
 Android UI/Glue: Kotlin (thin layer + Android Keystore + BiometricPrompt)
-Transitional Haskell: Brick TUI over Rust FFI (opt-in only; see haskell-deps.txt)
+Haskell: none (tree removed 2026-10-12; project is 100% Rust)
 
 Rust Direct Dependencies (security-critical):
 - See rust-sbom.json for full list (generated via cargo-sbom when available)
 - Key crates: ring, zeroize, argon2, ed25519-dalek, x25519-dalek, hkdf, sha2, subtle
-
-Haskell (transitional / opt-in only):
-- See haskell-deps.txt and hashchat.cabal — not required for release
 
 Known Weak Areas (documented):
 - Android mlock is best-effort only

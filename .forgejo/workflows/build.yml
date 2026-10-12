@@ -8,7 +8,7 @@ on:
 
 jobs:
   # Required release path: Rust library + hashchat-tui + tests + audit.
-  # Cabal/GHC are intentionally NOT installed or required here (INSTALL criterion 2).
+  # The Haskell tree was removed (INSTALL.md removal criteria 4+5, 2026-10-12).
   build:
     runs-on: ubuntu-latest
     steps:
@@ -77,37 +77,6 @@ jobs:
 
         env:
           CARGO_TERM_COLOR: always
-
-  # Optional / manual: transitional Cabal parity only. Never a required release check.
-  # Trigger via workflow_dispatch or label; do not gate merges on this job.
-  haskell-parity:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Transitional Cabal parity (opt-in only)
-        run: |
-          echo "This job is manual/opt-in. Prefer: ./build.sh --haskell locally"
-          echo "or: nix develop .#haskellDev"
-          echo "See INSTALL.md § Transitional Haskell desktop."
-          sudo apt-get update
-          sudo apt-get install -y curl gcc make libgmp-dev zlib1g-dev libncurses-dev pkg-config libssl-dev
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain stable
-          source "$HOME/.cargo/env"
-          cargo build --release --locked
-          mkdir -p rust-lib
-          cp target/release/libhashchat_rust.so rust-lib/
-          GHCUP_SHA256="480e05e414d2efa5abbda0006984a3343cd4973ead7b5c48d65a55a47b40ce59"
-          mkdir -p "$HOME/.ghcup/bin"
-          curl -sSL "https://downloads.haskell.org/~ghcup/$(uname -m)-linux-ghcup" -o /tmp/ghcup
-          echo "$GHCUP_SHA256  /tmp/ghcup" | sha256sum -c --status
-          install -m 755 /tmp/ghcup "$HOME/.ghcup/bin/ghcup"
-          export PATH="$HOME/.ghcup/bin:$HOME/.cargo/bin:$PATH"
-          ghcup install ghc 9.8.4 --set
-          ghcup install cabal 3.10.3.0 --set
-          cabal update
-          cabal build -f-tui hashchat
-          cabal build -f-tui hashchat-cli
 
   android-stub:
     runs-on: ubuntu-latest

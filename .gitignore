@@ -1,4 +1,4 @@
-# === Build Artifacts (Rust + Haskell) ===
+# === Build Artifacts (Rust; legacy Haskell dirs kept ignored) ===
 target/
 dist-newstyle/
 *.o

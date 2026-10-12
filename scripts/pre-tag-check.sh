@@ -84,7 +84,7 @@ if ! echo "$RECENT_DOCS" | grep -q "THREATMODEL.md"; then
 fi
 
 # No new TODO/FIXME in security-critical files since last tag (or in working tree for dev)
-CRITICAL_FILES="android/src/main/rust/src/lib.rs android/src/main/java/MainActivity.kt scripts/clean-security.sh scripts/pre-tag-check.sh src/rust/*.rs src/haskell/HashChat/Group.hs"
+CRITICAL_FILES="android/src/main/rust/src/lib.rs android/src/main/java/MainActivity.kt scripts/clean-security.sh scripts/pre-tag-check.sh src/rust/*.rs"
 NEW_TODOS=$(git diff --name-only HEAD~5 -- $CRITICAL_FILES 2>/dev/null | xargs -I{} git diff HEAD~5 -- {} 2>/dev/null | grep -E '^\+.*(TODO|FIXME|XXX|HACK)' | grep -v 'TODO (deep ongoing work)' || true)
 if [ -n "$NEW_TODOS" ]; then
     echo "  HARD FAIL (Deep Wave): New TODO/FIXME added in security-critical files since recent commits:"
