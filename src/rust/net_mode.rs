@@ -43,7 +43,6 @@ impl NetworkMode {
             "tor" | "onion" => Ok(NetworkMode::Tor),
             "i2p" | "garlic" => Ok(NetworkMode::I2p),
             "clearnet" | "clear" | "direct" => Ok(NetworkMode::Clearnet),
-            other if other.is_empty() => Err(NetModeError::InvalidMode),
             _ => Err(NetModeError::InvalidMode),
         }
     }
@@ -425,7 +424,7 @@ fn read_persist_str(buf: &[u8], pos: &mut usize) -> Result<String, ()> {
     }
     let n = u32::from_be_bytes(buf[*pos..*pos + 4].try_into().map_err(|_| ())?) as usize;
     *pos += 4;
-    if pos.checked_add(n).map_or(true, |end| end > buf.len()) {
+    if pos.checked_add(n).is_none_or(|end| end > buf.len()) {
         return Err(());
     }
     let s = std::str::from_utf8(&buf[*pos..*pos + n]).map_err(|_| ())?.to_string();
@@ -695,10 +694,9 @@ mod tests {
         let summary = cfg.extreme_lock_summary().unwrap();
         assert!(summary.to_ascii_lowercase().contains("extreme"));
         assert!(summary.to_ascii_lowercase().contains("contact"));
-        assert_eq!(
-            NetModeError::ExtremeContactExport.as_str().contains("contact-link"),
-            true
-        );
+        assert!(NetModeError::ExtremeContactExport
+            .as_str()
+            .contains("contact-link"));
         assert!(NetModeError::ExtremeGroups.as_str().contains("groups"));
         assert!(NetModeError::ExtremeVoice.as_str().contains("voice"));
     }

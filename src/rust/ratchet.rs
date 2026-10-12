@@ -75,6 +75,12 @@ impl Drop for DoubleRatchet {
     }
 }
 
+impl Default for DoubleRatchet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DoubleRatchet {
     pub fn new() -> Self {
         let secret = StaticSecret::random_from_rng(rand::rngs::OsRng);

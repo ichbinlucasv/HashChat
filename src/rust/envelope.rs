@@ -71,6 +71,7 @@ impl StoreKey {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn split_envelope(envelope: &[u8]) -> Result<([u8; SALT_LEN], [u8; NONCE_LEN], &[u8]), &'static str> {
     if envelope.len() < 1 + SALT_LEN + NONCE_LEN + 16 {
         return Err("envelope too short");

@@ -1812,7 +1812,7 @@ impl App {
                 }
                 return;
             }
-            session.pending.drain(..).collect()
+            std::mem::take(&mut session.pending)
         };
         let now = Instant::now();
         let (held, waiting): (Vec<_>, Vec<_>) = waiting
@@ -2113,13 +2113,13 @@ impl App {
             }
         };
         if let Some(session) = self.session.as_ref() {
-            if let Err(_) = session.refuse_send_if_blocked(&contact.id) {
+            if session.refuse_send_if_blocked(&contact.id).is_err() {
                 self.status_msg = "Send refused: contact is blocked.".into();
                 self.push_msg(self.status_msg.clone());
                 return;
             }
             if !allow_unverified {
-                if let Err(_) = session.refuse_send_if_unverified(&contact.id) {
+                if session.refuse_send_if_unverified(&contact.id).is_err() {
                     self.status_msg =
                         "Send refused: contact unverified — compare SAS then :verify (or :send-unverified under Standard)."
                             .into();
@@ -2132,7 +2132,7 @@ impl App {
                     "Send refused: Extreme forbids :send-unverified — :verify required.".into();
                 self.push_msg(self.status_msg.clone());
                 return;
-            } else if let Err(_) = session.refuse_send_if_unverified(&contact.id) {
+            } else if session.refuse_send_if_unverified(&contact.id).is_err() {
                 // Allowed bypass under Standard — note in status, still no onion dump.
                 self.push_msg(
                     "Sending to unverified contact (Standard bypass via :send-unverified).",
@@ -3630,7 +3630,7 @@ fn draw_wipe_modal(f: &mut ratatui::Frame, app: &App, area: Rect) {
     f.render_widget(Clear, area);
     f.render_widget(Block::default().style(Style::default().bg(BG)), area);
 
-    let w = area.width.min(72).max(48);
+    let w = area.width.clamp(48, 72);
     let h = 12u16.min(area.height.saturating_sub(2)).max(10);
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
@@ -3682,7 +3682,7 @@ fn draw_duress_entry(f: &mut ratatui::Frame, app: &App, area: Rect) {
     f.render_widget(Clear, area);
     f.render_widget(Block::default().style(Style::default().bg(BG)), area);
 
-    let w = area.width.min(72).max(48);
+    let w = area.width.clamp(48, 72);
     let h = 11u16.min(area.height.saturating_sub(2)).max(9);
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
@@ -3730,7 +3730,7 @@ fn draw_delete_contact_modal(f: &mut ratatui::Frame, app: &App, area: Rect) {
     f.render_widget(Clear, area);
     f.render_widget(Block::default().style(Style::default().bg(BG)), area);
 
-    let w = area.width.min(72).max(48);
+    let w = area.width.clamp(48, 72);
     let h = 11u16.min(area.height.saturating_sub(2)).max(9);
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;

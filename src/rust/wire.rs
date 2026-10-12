@@ -59,6 +59,7 @@ pub fn frame_v2(hint: &[u8], step: u32, sender_dh: &[u8; 32], ciphertext: &[u8])
 }
 
 /// Parse a v2 wire frame. Rejects v1 / wrong lengths.
+#[allow(clippy::type_complexity)]
 pub fn unframe_v2(bs: &[u8]) -> Result<(Vec<u8>, u32, [u8; 32], Vec<u8>), &'static str> {
     if bs.len() < 2 + 4 + 32 + 4 {
         return Err("frame too short");
@@ -217,7 +218,7 @@ mod tests {
     #[test]
     fn max_plaintext_framed_fits_inbound_cap() {
         // Synthetic worst-case: max plaintext + AEAD overhead + max v2 header.
-        assert!(MAX_FRAMED_SEND_BYTES <= MAX_HS_INBOUND_FRAME);
+        const { assert!(MAX_FRAMED_SEND_BYTES <= MAX_HS_INBOUND_FRAME) };
         assert_eq!(MAX_PLAINTEXT_SEND_BYTES, 8 * 1024);
         let ct_len = MAX_PLAINTEXT_SEND_BYTES + AEAD_CIPHERTEXT_OVERHEAD;
         let framed = frame_v2(&[0u8; 32], 1, &[0u8; 32], &vec![0u8; ct_len]);

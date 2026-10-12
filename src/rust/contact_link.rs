@@ -105,7 +105,7 @@ pub fn hex_encode(bytes: &[u8]) -> String {
 
 pub fn hex_decode(s: &str) -> Result<Vec<u8>, ContactLinkError> {
     let s = s.trim();
-    if s.len() % 2 != 0 || !s.bytes().all(|c| c.is_ascii_hexdigit()) {
+    if !s.len().is_multiple_of(2) || !s.bytes().all(|c| c.is_ascii_hexdigit()) {
         return Err(ContactLinkError::BadHex);
     }
     (0..s.len())

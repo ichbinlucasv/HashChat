@@ -1107,7 +1107,7 @@ mod tests {
             format!("250 OK SERVERHASH={h} SERVERNONCE={n}"),
             "515 nope".to_string(),
         ] {
-            assert!(parse_authchallenge(&[bad.clone()]).is_none(), "{bad}");
+            assert!(parse_authchallenge(std::slice::from_ref(&bad)).is_none(), "{bad}");
         }
     }
 
@@ -1224,10 +1224,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn max_hs_inbound_frame_at_or_below_socks_cap() {
         assert!(MAX_HS_INBOUND_FRAME > 0);
         assert!(MAX_HS_INBOUND_FRAME <= MAX_SOCKS_FRAME);
-        assert!(HS_INBOUND_QUEUE_CAP >= 32 && HS_INBOUND_QUEUE_CAP <= 64);
+        assert!((32..=64).contains(&HS_INBOUND_QUEUE_CAP));
     }
 
     #[test]
@@ -1387,7 +1388,7 @@ mod tests {
         while rx.try_recv().is_ok() {
             n += 1;
         }
-        assert!(n >= 1 && n < 40, "some frames served before cap: {n}");
+        assert!((1..40).contains(&n), "some frames served before cap: {n}");
     }
 
     #[test]
@@ -1437,16 +1438,13 @@ mod tests {
             for incoming in listener.incoming() {
                 let Ok(mut stream) = incoming else { continue };
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                loop {
-                    match read_framed_u16_max(&mut stream, MAX_HS_INBOUND_FRAME) {
-                        Ok(frame) => match tx.try_send(frame) {
-                            Ok(()) => {}
-                            Err(TrySendError::Full(_)) => {
-                                drops_t.fetch_add(1, Ordering::Relaxed);
-                            }
-                            Err(TrySendError::Disconnected(_)) => return,
-                        },
-                        Err(_) => break,
+                while let Ok(frame) = read_framed_u16_max(&mut stream, MAX_HS_INBOUND_FRAME) {
+                    match tx.try_send(frame) {
+                        Ok(()) => {}
+                        Err(TrySendError::Full(_)) => {
+                            drops_t.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(TrySendError::Disconnected(_)) => return,
                     }
                 }
             }

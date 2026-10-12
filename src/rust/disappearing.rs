@@ -53,13 +53,13 @@ pub fn format_ttl(secs: u32) -> String {
     if secs == 0 {
         return "off".into();
     }
-    if secs % 86400 == 0 {
+    if secs.is_multiple_of(86400) {
         return format!("{}d", secs / 86400);
     }
-    if secs % 3600 == 0 {
+    if secs.is_multiple_of(3600) {
         return format!("{}h", secs / 3600);
     }
-    if secs % 60 == 0 {
+    if secs.is_multiple_of(60) {
         return format!("{}m", secs / 60);
     }
     format!("{secs}s")

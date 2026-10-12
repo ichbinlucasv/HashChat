@@ -83,7 +83,7 @@ mod tests {
     #[test]
     fn largest_send_fits_and_one_more_does_not() {
         assert_eq!(MAX_PADDED_DATA, 8446);
-        assert!(MAX_PADDED_DATA >= crate::wire::MAX_PLAINTEXT_SEND_BYTES);
+        const { assert!(MAX_PADDED_DATA >= crate::wire::MAX_PLAINTEXT_SEND_BYTES) };
         assert!(pad(&vec![1u8; MAX_PADDED_DATA]).is_ok());
         assert!(pad(&vec![1u8; MAX_PADDED_DATA + 1]).is_err());
     }

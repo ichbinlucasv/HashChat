@@ -1413,16 +1413,12 @@ pub fn save_disk(
     state: &IdentityOnionState,
 ) -> Result<(), &'static str> {
     let mut session = if state_exists(data_dir) {
-        match load_session(data_dir, mode, passphrase) {
-            Ok(mut s) => {
-                s.identity.seed = state.seed;
-                s.identity.onion = state.onion.clone();
-                s.identity.onion_key = state.onion_key.clone();
-                s
-            }
-            // Wrong passphrase / corrupt: refuse rather than clobber extras.
-            Err(e) => return Err(e),
-        }
+        // Wrong passphrase / corrupt: refuse rather than clobber extras.
+        let mut s = load_session(data_dir, mode, passphrase)?;
+        s.identity.seed = state.seed;
+        s.identity.onion = state.onion.clone();
+        s.identity.onion_key = state.onion_key.clone();
+        s
     } else {
         SessionState::from_identity(IdentityOnionState {
             seed: state.seed,
@@ -2493,7 +2489,7 @@ mod tests {
             x25519: [7u8; 32],
             ed25519: [6u8; 32],
         });
-        assert_eq!(session.mute_contact_id("c2").unwrap(), true);
+        assert!(session.mute_contact_id("c2").unwrap());
         save_session(&dir, PersistMode::Passphrase, b"deny-pass", &session).unwrap();
         let loaded = load_session(&dir, PersistMode::Passphrase, b"deny-pass").unwrap();
         assert_eq!(loaded.blocked_ids, vec!["c1".to_string()]);
@@ -2574,7 +2570,7 @@ mod tests {
         );
         assert!(session.verify_contact_id("bob"));
         assert!(session.block_contact_id("bob"));
-        assert_eq!(session.mute_contact_id("carol").unwrap(), true);
+        assert!(session.mute_contact_id("carol").unwrap());
 
         assert!(session.delete_contact_secure("bob"));
         assert_eq!(session.contacts.len(), 1);
