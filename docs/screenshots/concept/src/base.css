@@ -1,0 +1,12 @@
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:radial-gradient(1200px 700px at 20% 0%,#1b1608 0%,#07070a 55%,#000 100%);font-family:"Inter","DejaVu Sans",sans-serif;color:#EDEDED;width:1600px;height:1000px;padding:56px;display:flex;align-items:center;justify-content:center;gap:48px}
+.mono{font-family:"JetBrains Mono","DejaVu Sans Mono",monospace}
+.win{background:#0B0B0D;border:1px solid #26231a;border-radius:16px;box-shadow:0 40px 120px rgba(0,0,0,.7),0 0 0 1px rgba(255,215,0,.04);overflow:hidden}
+.gold{color:#FFD24A}.muted{color:#8A8778}.dim{color:#5c5a50}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600;letter-spacing:.02em}
+.ok{background:rgba(255,210,74,.12);color:#FFD24A;border:1px solid rgba(255,210,74,.35)}
+.tor{background:rgba(155,110,255,.13);color:#C4A8FF;border:1px solid rgba(155,110,255,.4)}
+.i2p{background:rgba(80,200,170,.12);color:#7EE0C6;border:1px solid rgba(80,200,170,.4)}
+.bad{background:rgba(224,82,82,.12);color:#FF8A8A;border:1px solid rgba(224,82,82,.4)}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
+.tag{position:fixed;right:28px;bottom:20px;font-size:13px;color:#8A8778;letter-spacing:.08em;text-transform:uppercase}
