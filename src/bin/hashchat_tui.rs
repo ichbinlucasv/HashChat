@@ -1624,6 +1624,11 @@ impl App {
             self.status_msg = "Unlock a session first.".into();
             return;
         }
+        if let Some(why) = self.bridges_hold_reason() {
+            self.status_msg = format!(":listen held: bridges required, {why}");
+            self.push_msg(self.status_msg.clone());
+            return;
+        }
         // L-2: wrap onion private-key clone so it zeroizes when dropped.
         let existing = Zeroizing::new(
             self.session
@@ -4204,6 +4209,23 @@ mod tests {
         assert!(app.status_msg.starts_with("Unlock first"));
         app.handle_bridges_require("");
         assert_eq!(app.status_msg, "bridges require=off");
+    }
+
+    #[test]
+    fn listen_held_while_bridges_required_and_inactive() {
+        let mut app = locked_app();
+        let id = LongTermIdentity::generate().unwrap();
+        let identity = IdentityOnionState {
+            seed: id.seed_bytes(),
+            onion: String::new(),
+            onion_key: Vec::new(),
+        };
+        app.session = Some(SessionState::from_identity_with_net(identity, NetConfig::default()));
+        app.net.require_bridges = true;
+        app.bridge_check = Some((Instant::now(), Err("bridges=off".into())));
+        app.listen();
+        assert!(app.hs.is_none());
+        assert!(app.status_msg.starts_with(":listen held: bridges required"));
     }
 
     #[test]
