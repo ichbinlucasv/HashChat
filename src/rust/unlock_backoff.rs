@@ -54,11 +54,9 @@ pub fn unlock_backoff_delay_secs(failures: u32, policy: &UnlockBackoffPolicy) ->
         return 0;
     }
     let step = failures - policy.fail_threshold; // 0 → initial
-    // Cap shift so 2^step cannot overflow u64 multiply path absurdly.
+                                                 // Cap shift so 2^step cannot overflow u64 multiply path absurdly.
     let shift = step.min(31);
-    let delay = policy
-        .initial_delay_secs
-        .saturating_mul(1u64 << shift);
+    let delay = policy.initial_delay_secs.saturating_mul(1u64 << shift);
     delay.min(policy.max_delay_secs)
 }
 

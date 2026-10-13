@@ -367,7 +367,10 @@ mod tests {
         assert!(!XMR_ADDRESS.contains("TBD"));
         assert!(XMR_ADDRESS.starts_with('4') || XMR_ADDRESS.starts_with('8'));
         assert!(XMR_ADDRESS.len() >= 95);
-        assert!(BTC_ADDRESS.contains("TBD"), "no static BTC address; use BTCPay invoices");
+        assert!(
+            BTC_ADDRESS.contains("TBD"),
+            "no static BTC address; use BTCPay invoices"
+        );
         assert!(!LIGHTNING.contains("TBD"));
         assert!(LIGHTNING.contains('@'));
         assert!(MAINTAINER_PUBKEY.is_none());

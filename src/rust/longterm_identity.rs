@@ -145,10 +145,7 @@ pub fn export_encrypted(
 }
 
 /// Import a long-term identity from an Argon2id envelope.
-pub fn import_encrypted(
-    data: &[u8],
-    passphrase: &[u8],
-) -> Result<LongTermIdentity, &'static str> {
+pub fn import_encrypted(data: &[u8], passphrase: &[u8]) -> Result<LongTermIdentity, &'static str> {
     let plain = envelope::open(passphrase, data)?;
     if plain.len() != 32 {
         return Err("invalid long-term identity seed length");
@@ -185,7 +182,9 @@ mod envelope_tests {
             a.x25519_dh_checked(&b.x25519_public()),
             Some(a.x25519_dh(&b.x25519_public()))
         );
-        assert!(a.x25519_dh_checked(&X25519Public::from([0u8; 32])).is_none());
+        assert!(a
+            .x25519_dh_checked(&X25519Public::from([0u8; 32]))
+            .is_none());
         let mut one = [0u8; 32];
         one[0] = 1;
         assert!(a.x25519_dh_checked(&X25519Public::from(one)).is_none());

@@ -244,7 +244,12 @@ impl NetConfig {
                     self.custom_dns = Some(addr.trim().to_string());
                 }
                 Some(_) | None => {
-                    if self.custom_dns.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+                    if self
+                        .custom_dns
+                        .as_ref()
+                        .map(|s| s.is_empty())
+                        .unwrap_or(true)
+                    {
                         return Err(NetModeError::CustomDnsRequired);
                     }
                 }
@@ -295,10 +300,7 @@ impl NetConfig {
         write_persist_str(&mut out, self.dns.as_str());
         write_persist_str(&mut out, self.custom_dns.as_deref().unwrap_or(""));
         write_persist_str(&mut out, self.posture.as_str());
-        write_persist_str(
-            &mut out,
-            if self.socks_isolation { "on" } else { "off" },
-        );
+        write_persist_str(&mut out, if self.socks_isolation { "on" } else { "off" });
         if self.require_bridges {
             write_persist_str(&mut out, "on");
         }
@@ -313,7 +315,8 @@ impl NetConfig {
         let mode_s = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidMode)?;
         let dns_s = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidDns)?;
         let custom_s = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidDns)?;
-        let posture_s = read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidPosture)?;
+        let posture_s =
+            read_persist_str(buf, &mut pos).map_err(|_| NetModeError::InvalidPosture)?;
         let parse_bool = |t: &str| match t.trim().to_ascii_lowercase().as_str() {
             "on" | "1" | "true" | "yes" => Ok(true),
             "off" | "0" | "false" | "no" => Ok(false),
@@ -427,7 +430,9 @@ fn read_persist_str(buf: &[u8], pos: &mut usize) -> Result<String, ()> {
     if pos.checked_add(n).is_none_or(|end| end > buf.len()) {
         return Err(());
     }
-    let s = std::str::from_utf8(&buf[*pos..*pos + n]).map_err(|_| ())?.to_string();
+    let s = std::str::from_utf8(&buf[*pos..*pos + n])
+        .map_err(|_| ())?
+        .to_string();
     *pos += n;
     Ok(s)
 }
@@ -538,7 +543,11 @@ mod tests {
     fn require_bridges_roundtrips_and_defaults_off() {
         let mut cfg = NetConfig::default();
         let five = cfg.to_persist_bytes();
-        assert!(!NetConfig::from_persist_bytes(&five).unwrap().require_bridges);
+        assert!(
+            !NetConfig::from_persist_bytes(&five)
+                .unwrap()
+                .require_bridges
+        );
         cfg.require_bridges = true;
         let six = cfg.to_persist_bytes();
         assert!(six.len() > five.len());

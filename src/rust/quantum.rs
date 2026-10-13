@@ -72,18 +72,25 @@ impl Default for QuantumHybridRatchet {
 impl QuantumHybridRatchet {
     /// Create a fresh hybrid ratchet (stub).
     pub fn new() -> Self {
-        Self { _placeholder: [0u8; 32] }
+        Self {
+            _placeholder: [0u8; 32],
+        }
     }
 
     /// Perform the hybrid key encapsulation (stub).
     /// In production: run ML-KEM-768 encapsulate + X25519, then HKDF the two
     /// shared secrets together with strong domain separation.
-    pub fn encapsulate(&self) -> Result<([u8; KEM_CIPHERTEXT_LEN], [u8; KEM_SHARED_SECRET_LEN]), &'static str> {
+    pub fn encapsulate(
+        &self,
+    ) -> Result<([u8; KEM_CIPHERTEXT_LEN], [u8; KEM_SHARED_SECRET_LEN]), &'static str> {
         Err("Quantum resistance is not yet implemented (long-13). Enable only for testing the interface.")
     }
 
     /// Decapsulate (stub).
-    pub fn decapsulate(&self, _ct: &[u8; KEM_CIPHERTEXT_LEN]) -> Result<[u8; KEM_SHARED_SECRET_LEN], &'static str> {
+    pub fn decapsulate(
+        &self,
+        _ct: &[u8; KEM_CIPHERTEXT_LEN],
+    ) -> Result<[u8; KEM_SHARED_SECRET_LEN], &'static str> {
         Err("Quantum resistance is not yet implemented (long-13).")
     }
 

@@ -84,7 +84,9 @@ pub fn canonical_payload(onion_no_suffix: &str, x25519: &[u8; 32]) -> Vec<u8> {
     out
 }
 
-fn normalize_onion_parts(onion: &str) -> Result<(String /*full*/, String /*no suffix*/), ContactLinkError> {
+fn normalize_onion_parts(
+    onion: &str,
+) -> Result<(String /*full*/, String /*no suffix*/), ContactLinkError> {
     let o = onion.trim().to_lowercase();
     let (full, bare) = if o.ends_with(".onion") {
         let bare = o.trim_end_matches(".onion").to_string();
@@ -132,14 +134,14 @@ pub fn sas_fingerprint(ed25519: &[u8; 32], x25519: &[u8; 32], onion_full: &str) 
     hasher.update(x25519);
     hasher.update(onion_full.as_bytes());
     let dig = hasher.finalize();
-    format!(
-        "{:02X}{:02X}-{:02X}{:02X}",
-        dig[0], dig[1], dig[2], dig[3]
-    )
+    format!("{:02X}{:02X}-{:02X}{:02X}", dig[0], dig[1], dig[2], dig[3])
 }
 
 /// Build a signed contact link from a long-term identity + onion.
-pub fn format_signed_contact_link(id: &LongTermIdentity, onion: &str) -> Result<String, ContactLinkError> {
+pub fn format_signed_contact_link(
+    id: &LongTermIdentity,
+    onion: &str,
+) -> Result<String, ContactLinkError> {
     let (full, bare) = normalize_onion_parts(onion)?;
     let x = id.x25519_public_bytes();
     let ed = id.ed25519_public_bytes();
@@ -180,9 +182,7 @@ pub fn format_bound_contact_link(
 /// Parse + verify a signed contact link. Rejects unsigned / tampered input.
 pub fn parse_signed_contact_link(raw: &str) -> Result<SignedContact, ContactLinkError> {
     let s = raw.trim();
-    let rest = s
-        .strip_prefix(PREFIX)
-        .ok_or(ContactLinkError::BadFormat)?;
+    let rest = s.strip_prefix(PREFIX).ok_or(ContactLinkError::BadFormat)?;
 
     let parts: Vec<&str> = rest.split('/').collect();
     match parts.len() {
@@ -231,9 +231,7 @@ pub fn parse_unsigned_contact_link_insecure(
     raw: &str,
 ) -> Result<(String, [u8; 32]), ContactLinkError> {
     let s = raw.trim();
-    let rest = s
-        .strip_prefix(PREFIX)
-        .ok_or(ContactLinkError::BadFormat)?;
+    let rest = s.strip_prefix(PREFIX).ok_or(ContactLinkError::BadFormat)?;
     let parts: Vec<&str> = rest.split('/').collect();
     if parts.len() != 2 {
         return Err(ContactLinkError::BadFormat);
@@ -275,7 +273,6 @@ pub fn bootstrap_ratchet_from_signed_link(
 pub fn sas_for_signed(contact: &SignedContact) -> String {
     sas_fingerprint(&contact.ed25519, &contact.x25519, &contact.onion)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -319,7 +316,11 @@ mod tests {
     fn tampered_onion_rejects() {
         let id = LongTermIdentity::from_seed([4u8; 32]);
         let link = format_signed_contact_link(&id, demo_onion()).unwrap();
-        let bad = link.replacen(demo_onion(), "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", 1);
+        let bad = link.replacen(
+            demo_onion(),
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+            1,
+        );
         assert_eq!(
             parse_signed_contact_link(&bad).unwrap_err(),
             ContactLinkError::BadSignature
@@ -400,8 +401,9 @@ mod tests {
         );
         let own_sig = {
             let (own_onion, _) = onion_and_key(13);
-            let own = format_bound_contact_link(&attacker, &own_onion, attacker_onion_key.as_bytes())
-                .unwrap();
+            let own =
+                format_bound_contact_link(&attacker, &own_onion, attacker_onion_key.as_bytes())
+                    .unwrap();
             own.rsplit('/').next().unwrap().to_string()
         };
         let swapped = format!("{forged_base}/{own_sig}");

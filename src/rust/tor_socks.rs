@@ -405,9 +405,7 @@ pub fn write_framed_u16(stream: &mut TcpStream, payload: &[u8]) -> Result<(), St
     stream
         .write_all(payload)
         .map_err(|_| "frame body write failed".to_string())?;
-    stream
-        .flush()
-        .map_err(|_| "frame flush failed".to_string())
+    stream.flush().map_err(|_| "frame flush failed".to_string())
 }
 
 /// Read a 2-byte BE length-prefixed frame with an explicit max body length.
@@ -829,7 +827,11 @@ mod tests {
             let _ = client.write_all(&[0xFF, 0xFF]);
         });
         let p = probe("127.0.0.1", addr.port(), 1);
-        assert!(!p.socks_ok, "bare/garbage listener must not pass SOCKS5 probe; note={}", p.note);
+        assert!(
+            !p.socks_ok,
+            "bare/garbage listener must not pass SOCKS5 probe; note={}",
+            p.note
+        );
         handle.join().unwrap();
     }
 

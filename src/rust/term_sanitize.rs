@@ -120,7 +120,12 @@ mod tests {
             '\u{FFF9}', '\u{FFFA}', '\u{FFFB}',
         ] {
             let s = format!("[a]{c}[b]");
-            assert_eq!(sanitize_for_terminal(&s), "[a]\u{FFFD}[b]", "U+{:04X}", c as u32);
+            assert_eq!(
+                sanitize_for_terminal(&s),
+                "[a]\u{FFFD}[b]",
+                "U+{:04X}",
+                c as u32
+            );
             assert!(!is_terminal_safe(&s));
         }
     }

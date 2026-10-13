@@ -92,7 +92,10 @@ pub fn install_terminate_signal_flag() {
     }
     // SAFETY: handler only stores to an AtomicBool — async-signal-safe.
     unsafe {
-        libc::signal(libc::SIGINT, terminate_signal_handler as *const () as libc::sighandler_t);
+        libc::signal(
+            libc::SIGINT,
+            terminate_signal_handler as *const () as libc::sighandler_t,
+        );
         libc::signal(
             libc::SIGTERM,
             terminate_signal_handler as *const () as libc::sighandler_t,

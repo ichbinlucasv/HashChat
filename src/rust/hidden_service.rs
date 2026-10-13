@@ -369,8 +369,7 @@ fn read_frame_with_deadlines(
 }
 
 fn connect_control(host: &str, port: u16) -> Result<TcpStream, String> {
-    let addr = loopback_socket_addr(host, port)
-        .ok_or_else(|| "bad control address".to_string())?;
+    let addr = loopback_socket_addr(host, port).ok_or_else(|| "bad control address".to_string())?;
     let s = TcpStream::connect_timeout(&addr, Duration::from_secs(2))
         .map_err(|_| format!("ControlPort {host}:{port} unreachable"))?;
     let _ = s.set_read_timeout(Some(Duration::from_secs(8)));
@@ -708,8 +707,7 @@ fn control_cmd(conn: &mut ControlConn, cmd: &str) -> Result<Vec<String>, String>
             .map_err(|_| "control write failed".to_string())?;
         s.write_all(b"\r\n")
             .map_err(|_| "control write failed".to_string())?;
-        s.flush()
-            .map_err(|_| "control flush failed".to_string())?;
+        s.flush().map_err(|_| "control flush failed".to_string())?;
     }
     read_control_reply(&mut conn.reader)
 }
@@ -871,12 +869,16 @@ mod tests {
     }
 
     /// Fake ControlPort that answers the bridge read queries only.
-    fn fake_bridge_control(conf: &'static str) -> (std::net::SocketAddr, thread::JoinHandle<Vec<String>>) {
+    fn fake_bridge_control(
+        conf: &'static str,
+    ) -> (std::net::SocketAddr, thread::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let h = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             let mut w = stream.try_clone().unwrap();
             let mut r = BufReader::new(stream);
             let mut got = Vec::new();
@@ -914,7 +916,9 @@ mod tests {
         let sent = h.join().unwrap();
         assert_eq!(st.verdict(), crate::bridges::BridgeVerdict::Active);
         assert_eq!(st.circuits_checked, 1);
-        assert!(sent.iter().all(|c| c.starts_with("GETCONF ") || c.starts_with("GETINFO ")));
+        assert!(sent
+            .iter()
+            .all(|c| c.starts_with("GETCONF ") || c.starts_with("GETINFO ")));
     }
 
     #[test]
@@ -1107,7 +1111,10 @@ mod tests {
             format!("250 OK SERVERHASH={h} SERVERNONCE={n}"),
             "515 nope".to_string(),
         ] {
-            assert!(parse_authchallenge(std::slice::from_ref(&bad)).is_none(), "{bad}");
+            assert!(
+                parse_authchallenge(std::slice::from_ref(&bad)).is_none(),
+                "{bad}"
+            );
         }
     }
 

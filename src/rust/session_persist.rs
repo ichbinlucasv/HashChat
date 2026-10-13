@@ -76,17 +76,17 @@
 //! on v1–v4 load as empty; missing verified set on v1–v5 loads as all contact ids
 //! verified (continuity); missing idle lock on v1–v6 loads as 300 seconds (5m).
 
-use crate::disappearing::DEFAULT_LOCK_TIMEOUT_SECS;
 use crate::binary_check::NO_BINARY_DIGEST;
-use crate::wipe_settings::{WipeSettings, WIPE_SETTINGS_BYTES};
 use crate::clock_check::advance_clock_mark;
-use crate::save_mark::{SaveId, SAVE_ID_BYTES};
-use crate::send_jitter::MAX_SEND_JITTER_SECS;
+use crate::disappearing::DEFAULT_LOCK_TIMEOUT_SECS;
 use crate::envelope::{self, StoreKey};
 use crate::longterm_identity::LongTermIdentity;
 use crate::net_mode::NetConfig;
 use crate::private_fs::{self, PrivateFsError, MAX_PRIVATE_FILE_BYTES};
 use crate::ratchet::{decrypt_with_key, encrypt_with_key};
+use crate::save_mark::{SaveId, SAVE_ID_BYTES};
+use crate::send_jitter::MAX_SEND_JITTER_SECS;
+use crate::wipe_settings::{WipeSettings, WIPE_SETTINGS_BYTES};
 use std::fs;
 use std::path::{Path, PathBuf};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -365,9 +365,8 @@ impl SessionState {
         });
         if let Some(i) = existing {
             let previous = self.contacts[i].clone();
-            let identity_changed = previous.onion != onion
-                || previous.x25519 != x25519
-                || previous.ed25519 != ed25519;
+            let identity_changed =
+                previous.onion != onion || previous.x25519 != x25519 || previous.ed25519 != ed25519;
             let id = previous.id.clone();
             {
                 let c = &mut self.contacts[i];
@@ -456,7 +455,6 @@ impl SessionState {
         }
     }
 
-
     /// Resolve `:block` / `:mute` / `:rename` token to a contact id
     /// (exact id, onion, unique display-name / SAS / id prefix).
     /// Returns `None` if empty, ambiguous, or unknown — caller must refuse without guessing.
@@ -487,9 +485,7 @@ impl SessionState {
                 };
                 let sas = if c.ed25519 != [0u8; 32] && !c.onion.is_empty() {
                     Some(crate::contact_link::sas_fingerprint(
-                        &c.ed25519,
-                        &c.x25519,
-                        &c.onion,
+                        &c.ed25519, &c.x25519, &c.onion,
                     ))
                 } else {
                     None
@@ -837,10 +833,7 @@ pub enum InboundDenyPolicy {
 }
 
 fn data_paths(data_dir: &Path) -> (PathBuf, PathBuf) {
-    (
-        data_dir.join("state.enc"),
-        data_dir.join("machine.key"),
-    )
+    (data_dir.join("state.enc"), data_dir.join("machine.key"))
 }
 
 fn write_len_bytes(out: &mut Vec<u8>, b: &[u8]) {
@@ -1013,8 +1006,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
     if pos + 4 > plain.len() {
         return Err("truncated contacts count");
     }
-    let n_contacts =
-        u32::from_be_bytes(plain[pos..pos + 4].try_into().unwrap()) as usize;
+    let n_contacts = u32::from_be_bytes(plain[pos..pos + 4].try_into().unwrap()) as usize;
     pos += 4;
     let mut contacts = Vec::with_capacity(n_contacts.min(plain.len().saturating_sub(pos) / 76));
     for _ in 0..n_contacts {
@@ -1042,8 +1034,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
     if pos + 4 > plain.len() {
         return Err("truncated ratchets count");
     }
-    let n_ratchets =
-        u32::from_be_bytes(plain[pos..pos + 4].try_into().unwrap()) as usize;
+    let n_ratchets = u32::from_be_bytes(plain[pos..pos + 4].try_into().unwrap()) as usize;
     pos += 4;
     let mut ratchets = Vec::with_capacity(n_ratchets.min(plain.len().saturating_sub(pos) / 8));
     for _ in 0..n_ratchets {
@@ -1055,8 +1046,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
     if pos + 4 > plain.len() {
         return Err("truncated pending count");
     }
-    let n_pending =
-        u32::from_be_bytes(plain[pos..pos + 4].try_into().unwrap()) as usize;
+    let n_pending = u32::from_be_bytes(plain[pos..pos + 4].try_into().unwrap()) as usize;
     pos += 4;
     let mut pending = Vec::with_capacity(n_pending.min(plain.len().saturating_sub(pos) / 8));
     for _ in 0..n_pending {
@@ -1154,8 +1144,9 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
             return Err("truncated wipe settings");
         }
         let flag = plain[pos];
-        let raw: [u8; WIPE_SETTINGS_BYTES] =
-            plain[pos + 1..pos + 1 + WIPE_SETTINGS_BYTES].try_into().unwrap();
+        let raw: [u8; WIPE_SETTINGS_BYTES] = plain[pos + 1..pos + 1 + WIPE_SETTINGS_BYTES]
+            .try_into()
+            .unwrap();
         pos += 1 + WIPE_SETTINGS_BYTES;
         match flag {
             0 => None,
@@ -1398,7 +1389,10 @@ pub fn save_session_with_key(
 }
 
 /// Load with a key from [`unlock_session`] (no KDF run).
-pub fn load_session_with_key(data_dir: &Path, key: &StoreKey) -> Result<SessionState, &'static str> {
+pub fn load_session_with_key(
+    data_dir: &Path,
+    key: &StoreKey,
+) -> Result<SessionState, &'static str> {
     load_session_wrapped(data_dir, &Wrap::Key(key))
 }
 
@@ -1615,7 +1609,9 @@ mod tests {
 
         fs::set_permissions(dir.join("state.enc"), fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(
-            load_disk(&dir, PersistMode::Passphrase, b"alpha").unwrap().seed,
+            load_disk(&dir, PersistMode::Passphrase, b"alpha")
+                .unwrap()
+                .seed,
             state.seed
         );
         let _ = fs::remove_dir_all(&dir);
@@ -1692,7 +1688,11 @@ mod tests {
         let before = fs::read(&kp).unwrap();
         write_private(&kp, &before[..31]).unwrap();
         assert!(load_disk(&dir, PersistMode::InsecureDevMachineKey, b"").is_err());
-        assert_eq!(fs::read(&kp).unwrap().len(), 31, "short key must not be replaced");
+        assert_eq!(
+            fs::read(&kp).unwrap().len(),
+            31,
+            "short key must not be replaced"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2139,8 +2139,7 @@ mod tests {
         // Manually craft a v1 plaintext and wrap it to confirm backward compat.
         let dir = tmp_dir("h3-v1");
         let id = LongTermIdentity::from_seed([0x77u8; 32]);
-        let identity =
-            IdentityOnionState::from_identity(&id, "legacy.onion", b"key".to_vec());
+        let identity = IdentityOnionState::from_identity(&id, "legacy.onion", b"key".to_vec());
         // Use serialize path: save via a temporary SessionState then rewrite as raw v1.
         // Build v1 bytes directly:
         let mut plain = Vec::new();
@@ -2214,10 +2213,7 @@ mod tests {
             b"key".to_vec(),
         ));
         session.net.set_mode(NetworkMode::I2p).unwrap();
-        session
-            .net
-            .set_dns(DnsPreference::Quad9, None)
-            .unwrap();
+        session.net.set_dns(DnsPreference::Quad9, None).unwrap();
         session.net.set_posture(PostureProfile::Standard);
         save_session(&dir, PersistMode::Passphrase, b"v3-pass", &session).unwrap();
 
@@ -2245,10 +2241,7 @@ mod tests {
         let mut loaded = load_session(&dir, PersistMode::Passphrase, b"ext-pass").unwrap();
         assert_eq!(loaded.net.posture, PostureProfile::Extreme);
         assert_eq!(loaded.net.mode, NetworkMode::Tor);
-        assert!(loaded
-            .net
-            .set_mode(NetworkMode::Clearnet)
-            .is_err());
+        assert!(loaded.net.set_mode(NetworkMode::Clearnet).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2257,8 +2250,7 @@ mod tests {
         // Craft a v2 plaintext (contacts/ratchets/pending, no prefs) and wrap it.
         let dir = tmp_dir("v2-compat");
         let id = LongTermIdentity::from_seed([0xAAu8; 32]);
-        let identity =
-            IdentityOnionState::from_identity(&id, "v2.onion", b"k".to_vec());
+        let identity = IdentityOnionState::from_identity(&id, "v2.onion", b"k".to_vec());
         let mut plain = Vec::new();
         plain.push(BLOB_VERSION_V2);
         plain.extend_from_slice(&identity.seed);
@@ -2300,8 +2292,7 @@ mod tests {
         // Craft a real v3 plaintext (net prefs, no TTL) and wrap — load defaults TTL=0.
         let dir = tmp_dir("v3_no_ttl");
         let id = LongTermIdentity::from_seed([0xBBu8; 32]);
-        let identity =
-            IdentityOnionState::from_identity(&id, "old.onion", b"k".to_vec());
+        let identity = IdentityOnionState::from_identity(&id, "old.onion", b"k".to_vec());
         let mut plain = Vec::new();
         plain.push(BLOB_VERSION_V3);
         plain.extend_from_slice(&identity.seed);
@@ -2481,7 +2472,10 @@ mod tests {
             ed25519: [8u8; 32],
         });
         assert!(session.block_contact_id("c1"));
-        assert_eq!(session.mute_contact_id("c1").unwrap_err(), "contact is blocked (unblock first)");
+        assert_eq!(
+            session.mute_contact_id("c1").unwrap_err(),
+            "contact is blocked (unblock first)"
+        );
         session.contacts.push(PersistedContact {
             id: "c2".into(),
             display_name: "SASMUTE".into(),
@@ -2496,7 +2490,10 @@ mod tests {
         assert_eq!(loaded.muted_ids, vec!["c2".to_string()]);
         assert!(loaded.is_blocked_id("c1"));
         assert!(loaded.is_muted_id("c2"));
-        assert_eq!(loaded.refuse_send_if_blocked("c1").unwrap_err(), "blocked contact");
+        assert_eq!(
+            loaded.refuse_send_if_blocked("c1").unwrap_err(),
+            "blocked contact"
+        );
         assert!(loaded.refuse_send_if_blocked("c2").is_ok());
         assert_eq!(
             loaded.inbound_deny_policy("c1"),
@@ -2513,11 +2510,8 @@ mod tests {
     #[test]
     fn block_refuse_helpers_resolve_sas_prefix() {
         let id = LongTermIdentity::from_seed([0xD2u8; 32]);
-        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
-            &id,
-            "me.onion",
-            vec![],
-        ));
+        let mut session =
+            SessionState::from_identity(IdentityOnionState::from_identity(&id, "me.onion", vec![]));
         session.contacts.push(PersistedContact {
             id: "alice".into(),
             display_name: "SASXYZ12".into(),
@@ -2525,13 +2519,22 @@ mod tests {
             x25519: [1u8; 32],
             ed25519: [2u8; 32],
         });
-        assert_eq!(session.resolve_deny_token("SASXYZ").as_deref(), Some("alice"));
-        assert_eq!(session.resolve_deny_token("alice").as_deref(), Some("alice"));
+        assert_eq!(
+            session.resolve_deny_token("SASXYZ").as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            session.resolve_deny_token("alice").as_deref(),
+            Some("alice")
+        );
         // Unique SAS prefix is accepted (fail closed only when ambiguous/unknown).
         assert_eq!(session.resolve_deny_token("SAS").as_deref(), Some("alice"));
         assert!(session.resolve_deny_token("nope").is_none());
         assert!(session.block_contact_id(session.resolve_deny_token("SASXYZ").unwrap()));
-        assert_eq!(session.refuse_send_if_blocked("alice").unwrap_err(), "blocked contact");
+        assert_eq!(
+            session.refuse_send_if_blocked("alice").unwrap_err(),
+            "blocked contact"
+        );
         assert!(session.unblock_contact_id("SASXYZ"));
         assert!(session.refuse_send_if_blocked("alice").is_ok());
     }
@@ -2539,11 +2542,8 @@ mod tests {
     #[test]
     fn delete_contact_secure_wipes_ratchet_pending_and_deny() {
         let id = LongTermIdentity::from_seed([0xD4u8; 32]);
-        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
-            &id,
-            "me.onion",
-            vec![],
-        ));
+        let mut session =
+            SessionState::from_identity(IdentityOnionState::from_identity(&id, "me.onion", vec![]));
         session.contacts.push(PersistedContact {
             id: "bob".into(),
             display_name: "SASBOB".into(),
@@ -2631,8 +2631,7 @@ mod tests {
         // Craft a real v4 plaintext (TTL, no deny lists) and wrap — load defaults empty lists.
         let dir = tmp_dir("v4_no_deny");
         let id = LongTermIdentity::from_seed([0xD3u8; 32]);
-        let identity =
-            IdentityOnionState::from_identity(&id, "oldv4.onion", b"k".to_vec());
+        let identity = IdentityOnionState::from_identity(&id, "oldv4.onion", b"k".to_vec());
         let mut plain = Vec::new();
         plain.push(BLOB_VERSION_V4);
         plain.extend_from_slice(&identity.seed);
@@ -2659,8 +2658,6 @@ mod tests {
         assert!(again.blocked_ids.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
-
-
 
     #[test]
     fn v6_verified_roundtrip_and_refuse_send() {
@@ -2701,8 +2698,7 @@ mod tests {
         // Craft a v5 blob with one contact and empty deny lists — load must mark verified.
         let dir = tmp_dir("v5_verified_cont");
         let id = LongTermIdentity::from_seed([0xC5u8; 32]);
-        let identity =
-            IdentityOnionState::from_identity(&id, "oldv5.onion", b"k".to_vec());
+        let identity = IdentityOnionState::from_identity(&id, "oldv5.onion", b"k".to_vec());
         let mut plain = Vec::new();
         plain.push(BLOB_VERSION_V5);
         plain.extend_from_slice(&identity.seed);
@@ -2737,7 +2733,6 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-
     #[test]
     fn v7_lock_timeout_roundtrip() {
         let dir = tmp_dir("v7_lock");
@@ -2759,8 +2754,7 @@ mod tests {
         // Craft a v6 blob (verified list, no lock field) — load defaults lock to 5m.
         let dir = tmp_dir("v6_no_lock");
         let id = LongTermIdentity::from_seed([0x76u8; 32]);
-        let identity =
-            IdentityOnionState::from_identity(&id, "oldv6.onion", b"k".to_vec());
+        let identity = IdentityOnionState::from_identity(&id, "oldv6.onion", b"k".to_vec());
         let mut plain = Vec::new();
         plain.push(BLOB_VERSION_V6);
         plain.extend_from_slice(&identity.seed);
@@ -2911,7 +2905,10 @@ mod tests {
         assert_eq!(deserialize_blob(&plain).unwrap().clock_mark_unix, 0);
 
         plain[0] = BLOB_VERSION_V9;
-        assert!(deserialize_blob(&plain).is_err(), "v9 without the mark is truncated");
+        assert!(
+            deserialize_blob(&plain).is_err(),
+            "v9 without the mark is truncated"
+        );
         plain.extend_from_slice(&7_200u64.to_be_bytes());
         assert_eq!(deserialize_blob(&plain).unwrap().clock_mark_unix, 7_200);
     }
@@ -2945,9 +2942,15 @@ mod tests {
         assert_eq!(loaded.clock_mark_unix, 7_200);
 
         plain[0] = BLOB_VERSION_V10;
-        assert!(deserialize_blob(&plain).is_err(), "v10 without the digest is truncated");
+        assert!(
+            deserialize_blob(&plain).is_err(),
+            "v10 without the digest is truncated"
+        );
         plain.extend_from_slice(&[0x11u8; 32]);
-        assert_eq!(deserialize_blob(&plain).unwrap().binary_digest, [0x11u8; 32]);
+        assert_eq!(
+            deserialize_blob(&plain).unwrap().binary_digest,
+            [0x11u8; 32]
+        );
         plain.push(0);
         assert!(deserialize_blob(&plain).is_err(), "trailing byte refused");
     }
@@ -2988,7 +2991,10 @@ mod tests {
         assert_eq!(deserialize_blob(&plain).unwrap().wipe_settings, None);
 
         plain[0] = BLOB_VERSION_V11;
-        assert!(deserialize_blob(&plain).is_err(), "v11 without the record is truncated");
+        assert!(
+            deserialize_blob(&plain).is_err(),
+            "v11 without the record is truncated"
+        );
         let base = plain.len();
         plain.push(2);
         plain.extend_from_slice(&[0u8; WIPE_SETTINGS_BYTES]);
@@ -3013,13 +3019,19 @@ mod tests {
         save_session(&dir, PersistMode::Passphrase, b"mark-pass", &session).unwrap();
         let first = load_session(&dir, PersistMode::Passphrase, b"mark-pass").unwrap();
         assert!(first.save_id.is_some());
-        assert_eq!(check_save_mark(&dir, first.save_id.as_ref()), SaveMarkStatus::Match);
+        assert_eq!(
+            check_save_mark(&dir, first.save_id.as_ref()),
+            SaveMarkStatus::Match
+        );
         let old_copy = fs::read(dir.join(STATE_FILE)).unwrap();
 
         save_session(&dir, PersistMode::Passphrase, b"mark-pass", &first).unwrap();
         let second = load_session(&dir, PersistMode::Passphrase, b"mark-pass").unwrap();
         assert_ne!(first.save_id, second.save_id);
-        assert_eq!(check_save_mark(&dir, second.save_id.as_ref()), SaveMarkStatus::Match);
+        assert_eq!(
+            check_save_mark(&dir, second.save_id.as_ref()),
+            SaveMarkStatus::Match
+        );
 
         // Put the older state.enc back: it still opens, but no longer matches.
         write_private(&dir.join(STATE_FILE), &old_copy).unwrap();
@@ -3055,7 +3067,10 @@ mod tests {
         assert_eq!(deserialize_blob(&plain).unwrap().save_id, None);
 
         plain[0] = BLOB_VERSION_V12;
-        assert!(deserialize_blob(&plain).is_err(), "v12 without the id is truncated");
+        assert!(
+            deserialize_blob(&plain).is_err(),
+            "v12 without the id is truncated"
+        );
         let base = plain.len();
         plain.push(2);
         plain.extend_from_slice(&[0x5Au8; SAVE_ID_BYTES]);
@@ -3153,10 +3168,7 @@ mod tests {
             validate_display_name(&max_ok).unwrap().chars().count(),
             MAX_DISPLAY_NAME_LEN
         );
-        assert_eq!(
-            validate_display_name("").unwrap_err(),
-            "empty display name"
-        );
+        assert_eq!(validate_display_name("").unwrap_err(), "empty display name");
         assert_eq!(
             validate_display_name("   ").unwrap_err(),
             "empty display name"
@@ -3193,11 +3205,8 @@ mod tests {
     #[test]
     fn rename_contact_display_name_updates_label_only() {
         let id = LongTermIdentity::from_seed([0xD5u8; 32]);
-        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
-            &id,
-            "me.onion",
-            vec![],
-        ));
+        let mut session =
+            SessionState::from_identity(IdentityOnionState::from_identity(&id, "me.onion", vec![]));
         let onion = "aliceaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion";
         session.contacts.push(PersistedContact {
             id: "c1".into(),
@@ -3241,11 +3250,8 @@ mod tests {
         use crate::net_mode::PostureProfile;
         let dir = tmp_dir("rename-persist");
         let id = LongTermIdentity::from_seed([0xD6u8; 32]);
-        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
-            &id,
-            "r.onion",
-            vec![],
-        ));
+        let mut session =
+            SessionState::from_identity(IdentityOnionState::from_identity(&id, "r.onion", vec![]));
         session.contacts.push(PersistedContact {
             id: "c1".into(),
             display_name: "OLD".into(),
@@ -3253,7 +3259,9 @@ mod tests {
             x25519: [3u8; 32],
             ed25519: [4u8; 32],
         });
-        session.rename_contact_display_name("c1", "Durable").unwrap();
+        session
+            .rename_contact_display_name("c1", "Durable")
+            .unwrap();
         save_session(&dir, PersistMode::Passphrase, b"rn-pass", &session).unwrap();
         let loaded = load_session(&dir, PersistMode::Passphrase, b"rn-pass").unwrap();
         assert_eq!(loaded.contacts[0].display_name, "Durable");
@@ -3262,7 +3270,9 @@ mod tests {
 
         // Extreme: rename stays in RAM; for_disk / save strips contacts.
         session.net.set_posture(PostureProfile::Extreme);
-        session.rename_contact_display_name("c1", "Ephemeral").unwrap();
+        session
+            .rename_contact_display_name("c1", "Ephemeral")
+            .unwrap();
         assert_eq!(session.contacts[0].display_name, "Ephemeral");
         let disk = session.for_disk();
         assert!(disk.contacts.is_empty());
@@ -3272,5 +3282,4 @@ mod tests {
         assert!(again.contacts.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
-
 }

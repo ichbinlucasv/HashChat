@@ -210,7 +210,10 @@ mod tests {
         let mut s = clean();
         s.airplane_mode = true;
         assert_eq!(evaluate_posture(&s), Posture::Degraded);
-        assert_eq!(posture_label(&s), "DEGRADED - Airplane mode (network isolation)");
+        assert_eq!(
+            posture_label(&s),
+            "DEGRADED - Airplane mode (network isolation)"
+        );
         assert!(!action_allowed(Posture::Degraded, "voice"));
     }
 

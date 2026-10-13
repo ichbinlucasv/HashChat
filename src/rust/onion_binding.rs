@@ -71,20 +71,18 @@ pub fn sign_binding(
 }
 
 /// True if `sig` is the onion key's signature over these link keys.
-pub fn verify_binding(
-    onion: &str,
-    ed25519: &[u8; 32],
-    x25519: &[u8; 32],
-    sig: &[u8; 64],
-) -> bool {
+pub fn verify_binding(onion: &str, ed25519: &[u8; 32], x25519: &[u8; 32], sig: &[u8; 64]) -> bool {
     let Some(pk) = onion_public_key(onion) else {
         return false;
     };
     let Ok(vk) = VerifyingKey::from_bytes(&pk) else {
         return false;
     };
-    vk.verify_strict(&binding_message(&pk, ed25519, x25519), &Signature::from_bytes(sig))
-        .is_ok()
+    vk.verify_strict(
+        &binding_message(&pk, ed25519, x25519),
+        &Signature::from_bytes(sig),
+    )
+    .is_ok()
 }
 
 fn base32_decode(s: &str) -> Option<Vec<u8>> {
@@ -160,7 +158,8 @@ pub(crate) mod test_support {
         const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut out = String::new();
         for chunk in data.chunks(3) {
-            let n = chunk.iter().fold(0u32, |a, &b| (a << 8) | u32::from(b)) << (8 * (3 - chunk.len()));
+            let n =
+                chunk.iter().fold(0u32, |a, &b| (a << 8) | u32::from(b)) << (8 * (3 - chunk.len()));
             for i in 0..=chunk.len() {
                 out.push(A[((n >> (18 - 6 * i)) & 63) as usize] as char);
             }
@@ -209,10 +208,19 @@ mod tests {
         let (sig, pk) = sign_binding(spec.as_bytes(), &ed, &x).unwrap();
         assert_eq!(Some(pk), onion_public_key(&onion));
         assert!(verify_binding(&onion, &ed, &x, &sig));
-        assert!(!verify_binding(&onion, &[9u8; 32], &x, &sig), "other identity key");
-        assert!(!verify_binding(&onion, &ed, &[9u8; 32], &sig), "other DH key");
+        assert!(
+            !verify_binding(&onion, &[9u8; 32], &x, &sig),
+            "other identity key"
+        );
+        assert!(
+            !verify_binding(&onion, &ed, &[9u8; 32], &sig),
+            "other DH key"
+        );
         let (other, _) = onion_and_key(3);
-        assert!(!verify_binding(&other, &ed, &x, &sig), "someone else's onion");
+        assert!(
+            !verify_binding(&other, &ed, &x, &sig),
+            "someone else's onion"
+        );
     }
 
     #[test]
