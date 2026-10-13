@@ -1059,6 +1059,32 @@ impl App {
         res.err()
     }
 
+    /// With `:bridges require on` and a published onion service, re-run the
+    /// bridge check (same cache as sends) and withdraw the service when
+    /// bridges stop being active, so the onion is not kept reachable over
+    /// circuits that skip the bridges. Returns true when it withdrew.
+    /// The user publishes again with `:listen` once bridges are back.
+    fn recheck_bridges_while_listening(&mut self) -> bool {
+        if !self.net.require_bridges || self.hs.is_none() {
+            return false;
+        }
+        let Some(why) = self.bridges_hold_reason() else {
+            return false;
+        };
+        self.withdraw_onion_for_bridges(&why);
+        true
+    }
+
+    fn withdraw_onion_for_bridges(&mut self, why: &str) {
+        // Dropping the service closes its ControlPort connection, which makes
+        // Tor forget the ephemeral onion; the key stays in state.enc.
+        self.hs = None;
+        self.hs_drops_seen = 0;
+        self.status_msg = format!("Onion service withdrawn: bridges required, {why}");
+        self.push_msg(self.status_msg.clone());
+        self.push_msg("Run :listen again once :bridges reports bridges active.");
+    }
+
     /// `:clock` shows whether the clock was set back; `:clock-reset` accepts
     /// the current time as correct and lowers the stored mark to it.
     fn handle_clock(&mut self, reset: bool) {
@@ -4449,6 +4475,7 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
         app.check_tor(false);
         app.drain_incoming();
         app.flush_held_sends();
+        app.recheck_bridges_while_listening();
         app.expire_messages();
         if app.idle_should_lock() {
             app.lock_ui();
@@ -4888,6 +4915,28 @@ mod tests {
         app.listen();
         assert!(app.hs.is_none());
         assert!(app.status_msg.starts_with(":listen held: bridges required"));
+    }
+
+    #[test]
+    fn bridges_recheck_needs_a_published_service() {
+        let mut app = locked_app();
+        // Off: nothing to do.
+        assert!(!app.recheck_bridges_while_listening());
+        // On but not listening: no ControlPort query, nothing withdrawn.
+        app.net.require_bridges = true;
+        assert!(!app.recheck_bridges_while_listening());
+        assert!(app.bridge_check.is_none());
+    }
+
+    #[test]
+    fn bridges_withdraw_message_is_short_and_actionable() {
+        let mut app = locked_app();
+        app.withdraw_onion_for_bridges("bridges=off");
+        assert!(app.hs.is_none());
+        assert_eq!(
+            app.status_msg,
+            "Onion service withdrawn: bridges required, bridges=off"
+        );
     }
 
     #[test]
