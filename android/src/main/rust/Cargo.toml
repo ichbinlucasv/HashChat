@@ -22,4 +22,7 @@ argon2 = "0.5" # Real KDF for ratchet export envelope (high-4 / crit-2 OPSEC)
 # OPSEC-critical (mirrored from root crate): Constant-time comparison.
 # Replaces deprecated internal ring API. subtle is the recommended audited primitive.
 subtle = "2.6"
+getrandom = "0.2"
+# Shared device posture policy (and future core) from the desktop crate.
+hashchat-rust = { path = "../../../.." }
 # Note: no Python, no gi-gtk, pure Rust as per project rules.

@@ -2,7 +2,7 @@
 // HashChat Android Double Ratchet - VERBATIM SYNC COPY
 // =============================================================================
 // This is an EXACT copy of src/rust/ratchet.rs for the Android cdylib.
-// 
+//
 // CRITICAL AUDIT RULE (high-4 / expert requirement):
 // - Any modification to DoubleRatchet logic, to_bytes/from_bytes, skipped_keys
 //   handling, zeroization, ratchet_send/recv, dh_ratchet, or the KDF context
@@ -27,7 +27,7 @@
 // - Keep KDF domain separation and zeroize requirements if primitives change
 
 use hkdf::Hkdf;
-use ring::aead::{self, LessSafeKey, UnboundKey, Aad};
+use ring::aead::{self, Aad, LessSafeKey, UnboundKey};
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroize;
@@ -144,7 +144,11 @@ impl DoubleRatchet {
 
     /// Advanced ratchet receive that properly handles skipped keys and out-of-order delivery.
     /// This is a more complete version for real messaging.
-    pub fn ratchet_recv_advanced(&mut self, remote: &PublicKey, msg_number: u32) -> Result<[u8; RATCHET_KEY_LEN], &'static str> {
+    pub fn ratchet_recv_advanced(
+        &mut self,
+        remote: &PublicKey,
+        msg_number: u32,
+    ) -> Result<[u8; RATCHET_KEY_LEN], &'static str> {
         if self.remote_dh.as_ref() != Some(remote) {
             self.dh_ratchet_recv(remote);
         }
@@ -157,8 +161,10 @@ impl DoubleRatchet {
         let mut new_chain = [0u8; RATCHET_KEY_LEN];
         let mut msg_key = [0u8; RATCHET_KEY_LEN];
 
-        hk.expand(b"HashChat-v1-chain", &mut new_chain).map_err(|_| "KDF failed")?;
-        hk.expand(b"HashChat-v1-msg-key", &mut msg_key).map_err(|_| "KDF failed")?;
+        hk.expand(b"HashChat-v1-chain", &mut new_chain)
+            .map_err(|_| "KDF failed")?;
+        hk.expand(b"HashChat-v1-msg-key", &mut msg_key)
+            .map_err(|_| "KDF failed")?;
 
         self.chain_key_recv = new_chain;
 
@@ -248,7 +254,6 @@ impl DoubleRatchet {
         self.remote_dh = Some(*remote);
     }
 
-
     /// Advance the sending chain. Returns (message_key, message_number).
     ///
     /// After `init_symmetric` (signed contact bootstrap), both peers share the same
@@ -268,8 +273,10 @@ impl DoubleRatchet {
         let mut new_chain = [0u8; RATCHET_KEY_LEN];
         let mut msg_key = [0u8; RATCHET_KEY_LEN];
 
-        hk.expand(b"HashChat-v1-chain", &mut new_chain).expect("HKDF failed");
-        hk.expand(b"HashChat-v1-msg-key", &mut msg_key).expect("HKDF failed");
+        hk.expand(b"HashChat-v1-chain", &mut new_chain)
+            .expect("HKDF failed");
+        hk.expand(b"HashChat-v1-msg-key", &mut msg_key)
+            .expect("HKDF failed");
 
         self.chain_key_send = new_chain;
         let count = self.send_count;
@@ -293,8 +300,10 @@ impl DoubleRatchet {
         let mut new_chain = [0u8; RATCHET_KEY_LEN];
         let mut msg_key = [0u8; RATCHET_KEY_LEN];
 
-        hk.expand(b"HashChat-v1-chain", &mut new_chain).expect("HKDF failed");
-        hk.expand(b"HashChat-v1-msg-key", &mut msg_key).expect("HKDF failed");
+        hk.expand(b"HashChat-v1-chain", &mut new_chain)
+            .expect("HKDF failed");
+        hk.expand(b"HashChat-v1-msg-key", &mut msg_key)
+            .expect("HKDF failed");
 
         self.chain_key_recv = new_chain;
         let count = self.recv_count;
@@ -427,50 +436,103 @@ impl DoubleRatchet {
         let version = data[0];
         let mut pos = 1;
 
-        let dh_sec: [u8; 32] = data.get(pos..pos + 32).ok_or("bad dh sec")?.try_into().map_err(|_| "bad dh sec")?;
+        let dh_sec: [u8; 32] = data
+            .get(pos..pos + 32)
+            .ok_or("bad dh sec")?
+            .try_into()
+            .map_err(|_| "bad dh sec")?;
         pos += 32;
-        let dh_pub: [u8; 32] = data.get(pos..pos + 32).ok_or("bad dh pub")?.try_into().map_err(|_| "bad dh pub")?;
+        let dh_pub: [u8; 32] = data
+            .get(pos..pos + 32)
+            .ok_or("bad dh pub")?
+            .try_into()
+            .map_err(|_| "bad dh pub")?;
         pos += 32;
 
         let has_remote = *data.get(pos).ok_or("bad remote flag")? == 1;
         pos += 1;
         let remote_dh = if has_remote {
-            let b: [u8; 32] = data.get(pos..pos + 32).ok_or("bad remote")?.try_into().map_err(|_| "bad remote")?;
+            let b: [u8; 32] = data
+                .get(pos..pos + 32)
+                .ok_or("bad remote")?
+                .try_into()
+                .map_err(|_| "bad remote")?;
             pos += 32;
             Some(PublicKey::from(b))
         } else {
             None
         };
 
-        let root: [u8; 32] = data.get(pos..pos + 32).ok_or("bad root")?.try_into().map_err(|_| "bad root")?;
+        let root: [u8; 32] = data
+            .get(pos..pos + 32)
+            .ok_or("bad root")?
+            .try_into()
+            .map_err(|_| "bad root")?;
         pos += 32;
-        let csend: [u8; 32] = data.get(pos..pos + 32).ok_or("bad csend")?.try_into().map_err(|_| "bad csend")?;
+        let csend: [u8; 32] = data
+            .get(pos..pos + 32)
+            .ok_or("bad csend")?
+            .try_into()
+            .map_err(|_| "bad csend")?;
         pos += 32;
-        let crecv: [u8; 32] = data.get(pos..pos + 32).ok_or("bad crecv")?.try_into().map_err(|_| "bad crecv")?;
+        let crecv: [u8; 32] = data
+            .get(pos..pos + 32)
+            .ok_or("bad crecv")?
+            .try_into()
+            .map_err(|_| "bad crecv")?;
         pos += 32;
 
-        let send = u32::from_be_bytes(data.get(pos..pos + 4).ok_or("bad send")?.try_into().map_err(|_| "bad send")?);
+        let send = u32::from_be_bytes(
+            data.get(pos..pos + 4)
+                .ok_or("bad send")?
+                .try_into()
+                .map_err(|_| "bad send")?,
+        );
         pos += 4;
-        let recv = u32::from_be_bytes(data.get(pos..pos + 4).ok_or("bad recv")?.try_into().map_err(|_| "bad recv")?);
+        let recv = u32::from_be_bytes(
+            data.get(pos..pos + 4)
+                .ok_or("bad recv")?
+                .try_into()
+                .map_err(|_| "bad recv")?,
+        );
         pos += 4;
 
         // v1 blobs predate sends_since_dh; default 0 (next DH after DH_SEND_EVERY sends).
         let sends_since_dh = if version >= 2 {
-            let v = u32::from_be_bytes(data.get(pos..pos + 4).ok_or("bad sends_since_dh")?.try_into().map_err(|_| "bad sends_since_dh")?);
+            let v = u32::from_be_bytes(
+                data.get(pos..pos + 4)
+                    .ok_or("bad sends_since_dh")?
+                    .try_into()
+                    .map_err(|_| "bad sends_since_dh")?,
+            );
             pos += 4;
             v
         } else {
             0
         };
 
-        let sk_len = u32::from_be_bytes(data.get(pos..pos + 4).ok_or("bad sklen")?.try_into().map_err(|_| "bad sklen")?) as usize;
+        let sk_len = u32::from_be_bytes(
+            data.get(pos..pos + 4)
+                .ok_or("bad sklen")?
+                .try_into()
+                .map_err(|_| "bad sklen")?,
+        ) as usize;
         pos += 4;
 
         let mut skipped = std::collections::HashMap::new();
         for _ in 0..sk_len {
-            let num = u32::from_be_bytes(data.get(pos..pos + 4).ok_or("bad snum")?.try_into().map_err(|_| "bad snum")?);
+            let num = u32::from_be_bytes(
+                data.get(pos..pos + 4)
+                    .ok_or("bad snum")?
+                    .try_into()
+                    .map_err(|_| "bad snum")?,
+            );
             pos += 4;
-            let k: [u8; 32] = data.get(pos..pos + 32).ok_or("bad skey")?.try_into().map_err(|_| "bad skey")?;
+            let k: [u8; 32] = data
+                .get(pos..pos + 32)
+                .ok_or("bad skey")?
+                .try_into()
+                .map_err(|_| "bad skey")?;
             pos += 32;
             skipped.insert(num, k);
         }
@@ -557,7 +619,11 @@ mod tests {
         assert_eq!(pt, b"hello");
     }
 
-    fn seal(sender: &mut DoubleRatchet, hint: &[u8; 32], pt: &[u8]) -> (Vec<u8>, [u8; 32], u32, Vec<u8>) {
+    fn seal(
+        sender: &mut DoubleRatchet,
+        hint: &[u8; 32],
+        pt: &[u8],
+    ) -> (Vec<u8>, [u8; 32], u32, Vec<u8>) {
         let (mut key, step) = sender.ratchet_send();
         let dh = *sender.public_key().as_bytes();
         let aad = build_wire_aad(WIRE_VERSION_V2, hint, step, &dh);
@@ -653,7 +719,10 @@ mod tests {
         for i in 1..DH_SEND_EVERY {
             let msg = format!("a{i}");
             let (ct, dh, _, aad) = seal(&mut a, &ha, msg.as_bytes());
-            assert_eq!(dh, pk_a0, "pre-threshold sends must keep bootstrap DH public");
+            assert_eq!(
+                dh, pk_a0,
+                "pre-threshold sends must keep bootstrap DH public"
+            );
             let (pt, _) = b
                 .try_recv_decrypt(&PublicKey::from(dh), &ct, &aad)
                 .expect("b recv pre-dh");

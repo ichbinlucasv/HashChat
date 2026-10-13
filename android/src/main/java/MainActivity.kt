@@ -63,6 +63,10 @@ object HashChatNative {
     // Kotlin + Rust both contribute real checks (see Rust isStrictMode + is_environment_strict).
     external fun isStrictMode(): Boolean
 
+    // Shared Rust device_posture (Kotlin collects signals; Rust decides).
+    external fun evaluatePostureFromSignals(signals: String): ByteArray
+    external fun isActionAllowedForSignals(signals: String, action: String): Boolean
+
     // Combined Kotlin + JNI strict mode (authoritative for refusal decisions).
     // Expands the old stub with real root detection, dangerous props via reflection + files,
     // Build.TAGS test-keys, userdebug, ro.debuggable, etc. + delegates to Rust for /proc/fs signals.
@@ -1003,44 +1007,60 @@ class MainActivity : AppCompatActivity() {
     // debugger attached, recent failed auths, etc. Can later call into Rust for richer posture.
     private var securityPosture: String = "MAX PARANOID (Tails/Qubes + Tor recommended)"
 
+    /** Collect raw platform signals only; Rust `device_posture` decides. */
+    private fun collectDeviceSignalsPayload(): String {
+        val debugger = if (android.os.Debug.isDebuggerConnected()) "1" else "0"
+        val debuggable = if ((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) "1" else "0"
+        val airplane = try {
+            if (android.provider.Settings.Global.getInt(contentResolver, android.provider.Settings.Global.AIRPLANE_MODE_ON) != 0) "1" else "0"
+        } catch (_: Exception) { "0" }
+        val props = try {
+            val c = Class.forName("android.os.SystemProperties")
+            val get = c.getMethod("get", String::class.java)
+            Triple(
+                (get.invoke(null, "ro.debuggable") as? String).orEmpty(),
+                (get.invoke(null, "ro.secure") as? String).orEmpty(),
+                (get.invoke(null, "ro.kernel.qemu") as? String).orEmpty()
+            )
+        } catch (_: Exception) { Triple("", "", "") }
+        val roots = listOf(
+            "/system/bin/su", "/system/xbin/su", "/sbin/su",
+            "/system/app/Superuser.apk", "/system/app/SuperSU.apk"
+        ).filter { java.io.File(it).exists() }
+        val sb = StringBuilder()
+        sb.append("debugger=").append(debugger).append('\n')
+        sb.append("debuggable=").append(debuggable).append('\n')
+        sb.append("airplane=").append(airplane).append('\n')
+        sb.append("fingerprint=").append(android.os.Build.FINGERPRINT.orEmpty()).append('\n')
+        sb.append("model=").append(android.os.Build.MODEL.orEmpty()).append('\n')
+        sb.append("manufacturer=").append(android.os.Build.MANUFACTURER.orEmpty()).append('\n')
+        sb.append("hardware=").append(android.os.Build.HARDWARE.orEmpty()).append('\n')
+        sb.append("tags=").append(android.os.Build.TAGS.orEmpty()).append('\n')
+        sb.append("type=").append(android.os.Build.TYPE.orEmpty()).append('\n')
+        sb.append("ro.debuggable=").append(props.first).append('\n')
+        sb.append("ro.secure=").append(props.second).append('\n')
+        sb.append("ro.kernel.qemu=").append(props.third).append('\n')
+        for (r in roots) sb.append("root=").append(r).append('\n')
+        return sb.toString()
+    }
+
     private fun reEvaluateSecurityPosture(): String {
-        // Real but still pragmatic posture checks (high-5 / expert requirement).
-        // This is the live re-evaluation called on resume, back, screen changes, voice, etc.
-        // Now also pulls basic signal from Rust JNI posture hook for future richer data.
-        val isDebugger = android.os.Debug.isDebuggerConnected()
-        val isEmulator = android.os.Build.FINGERPRINT.contains("generic") ||
-                         android.os.Build.MODEL.contains("Emulator") ||
-                         android.os.Build.MANUFACTURER.contains("Genymotion")
-        val isAirplane = try {
-            android.provider.Settings.Global.getInt(contentResolver, android.provider.Settings.Global.AIRPLANE_MODE_ON) != 0
-        } catch (_: Exception) { false }
-
-        // Call the new Rust posture hook (returns basic delegation string for now)
-        val rustPostureHint = try {
-            String(HashChatNative.getSecurityPosture())
-        } catch (_: Exception) { "" }
-
-        val isLow = isDebugger || isEmulator || isAirplane || securityPosture.contains("LOW", ignoreCase = true)
-
-        return if (isLow) {
-            when {
-                isDebugger -> "LOW - Debugger attached"
-                isEmulator -> "LOW - Emulator / test environment"
-                isAirplane -> "DEGRADED - Airplane mode (network isolation)"
-                else -> "LOW - Degraded security posture"
-            }
-        } else {
-            if (rustPostureHint.contains("mlock limited")) "HIGH (Android - Rust posture hook active)" else "MAX PARANOID (Tails/Qubes + Tor recommended)"
+        val payload = collectDeviceSignalsPayload()
+        return try {
+            String(HashChatNative.evaluatePostureFromSignals(payload))
+        } catch (_: Exception) {
+            // Fail-closed if JNI is missing.
+            "LOW - Posture JNI unavailable"
         }
     }
 
     private fun isActionAllowedInPosture(action: String): Boolean {
-        // Gate dangerous actions when posture is explicitly LOW or degraded.
-        val current = securityPosture.lowercase()
-        if (current.contains("low") || current.contains("degraded")) {
-            return false
+        val payload = collectDeviceSignalsPayload()
+        return try {
+            HashChatNative.isActionAllowedForSignals(payload, action)
+        } catch (_: Exception) {
+            false
         }
-        return true
     }
 
     // === Minimal decoy profile (Tier 1 + Tier 2 plausible deniability) ===

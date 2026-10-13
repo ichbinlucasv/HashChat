@@ -6,21 +6,26 @@
 // More logic (voice processing, persistence helpers, posture signals, framing)
 // should move into this crate. The JNI surface should stay thin and stable.
 // This is the correct architecture for maximum security on Android.
-#![allow(static_mut_refs)]  // Same FFI global ratchet store pattern as desktop src/rust/lib.rs (safe under our usage model)
+#![allow(static_mut_refs)] // Same FFI global ratchet store pattern as desktop src/rust/lib.rs (safe under our usage model)
 
-use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass};
-use jni::sys::{jint, jbyteArray, jboolean};
+use jni::sys::{jboolean, jbyteArray, jint};
+use jni::JNIEnv;
 
-use ring::aead::{UnboundKey, LessSafeKey, Nonce, Aad, AES_256_GCM};
+use argon2::{
+    password_hash::{PasswordHasher, SaltString},
+    Algorithm, Argon2, Params, Version,
+};
 use rand::RngCore;
-use argon2::{Argon2, password_hash::{PasswordHasher, SaltString}, Algorithm, Version, Params};
+use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 
 // Real HKDF-SHA256 for GroupSenderKey advancement (Tier 1 Highest item).
 // These are already in Cargo.toml for parity with the core ratchet work.
 use hkdf::Hkdf;
 use sha2::Sha256;
 use zeroize::Zeroize; // Required for explicit zeroize() on local chunk keys in VoiceStream (Wave 3)
+
+use hashchat_rust::device_posture::{self, DeviceSignals, Posture};
 
 /// Helper: wrap a raw jbyteArray (from Java native) into a high-level JByteArray for jni 0.21+.
 #[inline]
@@ -104,8 +109,15 @@ fn mlock_android_ratchet_store() {
 //
 // The JNI is now the source of truth for the Rust-side signals; Kotlin combines + augments.
 #[no_mangle]
-pub extern "C" fn Java_chat_hashchat_HashChatNative_isStrictMode(_env: JNIEnv, _class: JClass) -> jboolean {
-    if is_environment_strict() { 1 } else { 0 }
+pub extern "C" fn Java_chat_hashchat_HashChatNative_isStrictMode(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    if is_environment_strict() {
+        1
+    } else {
+        0
+    }
 }
 
 // Wave 10: Minimal long-term identity pub for ContactAddress / profile QR (Simplex-style).
@@ -164,7 +176,11 @@ fn is_emulator_or_qemu() -> bool {
     // /proc/cpuinfo often reveals the emulator
     if let Ok(cpu) = std::fs::read_to_string("/proc/cpuinfo") {
         let l = cpu.to_lowercase();
-        if l.contains("qemu") || l.contains("goldfish") || l.contains("ranchu") || l.contains("emulator") {
+        if l.contains("qemu")
+            || l.contains("goldfish")
+            || l.contains("ranchu")
+            || l.contains("emulator")
+        {
             return true;
         }
     }
@@ -194,7 +210,11 @@ fn is_emulator_or_qemu() -> bool {
 
 fn is_debug_build_prop() -> bool {
     // Look for test-keys (signed with dev keys) or userdebug in readable prop files
-    let candidates = ["/default.prop", "/system/build.prop", "/system/default.prop"];
+    let candidates = [
+        "/default.prop",
+        "/system/build.prop",
+        "/system/default.prop",
+    ];
     for c in &candidates {
         if let Ok(s) = std::fs::read_to_string(c) {
             let l = s.to_lowercase();
@@ -206,25 +226,121 @@ fn is_debug_build_prop() -> bool {
     false
 }
 
+/// Build [`DeviceSignals`] from a newline-oriented payload the Kotlin shell sends.
+///
+/// Format (ASCII, one field per line, stable for JNI):
+/// ```text
+/// debugger=0|1
+/// debuggable=0|1
+/// airplane=0|1
+/// fingerprint=...
+/// model=...
+/// manufacturer=...
+/// hardware=...
+/// tags=...
+/// type=...
+/// ro.debuggable=...
+/// ro.secure=...
+/// ro.kernel.qemu=...
+/// root=/path   (repeatable)
+/// ```
+fn signals_from_kotlin_payload(raw: &str) -> DeviceSignals {
+    let mut s = DeviceSignals::default();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        match k {
+            "debugger" => s.debugger_attached = v.trim() == "1",
+            "debuggable" => s.app_debuggable = v.trim() == "1",
+            "airplane" => s.airplane_mode = v.trim() == "1",
+            "fingerprint" => s.build_fingerprint = v.to_string(),
+            "model" => s.build_model = v.to_string(),
+            "manufacturer" => s.build_manufacturer = v.to_string(),
+            "hardware" => s.build_hardware = v.to_string(),
+            "tags" => s.build_tags = v.to_string(),
+            "type" => s.build_type = v.to_string(),
+            "ro.debuggable" => s.prop_ro_debuggable = v.to_string(),
+            "ro.secure" => s.prop_ro_secure = v.to_string(),
+            "ro.kernel.qemu" => s.prop_ro_kernel_qemu = v.to_string(),
+            "root" => {
+                let p = v.trim();
+                if !p.is_empty() {
+                    s.root_paths_present.push(p.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    s
+}
+
+fn jstring_to_string(env: &mut JNIEnv, s: jni::sys::jstring) -> String {
+    if s.is_null() {
+        return String::new();
+    }
+    let js = unsafe { jni::objects::JString::from_raw(s) };
+    env.get_string(&js).map(|j| j.into()).unwrap_or_default()
+}
+
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_getSecurityPosture(
     mut _env: JNIEnv,
     _class: JClass,
 ) -> jbyteArray {
-    // Richer posture signal for Android. Returns structured info that Kotlin can combine
-    // with its own checks (debugger, emulator, airplane). Future: add real /proc inspection
-    // when running under sufficient privileges or with JNI helpers.
-    let msg = b"Android-Rust-Posture: JVM-delegated (mlock best-effort only; real strength = Keystore + app-private + explicit wipe + Zeroize. See docs for limitations)";
+    // Legacy hint kept for older Kotlin paths; prefer evaluatePostureFromSignals.
+    let msg = b"Android-Rust-Posture: shared device_posture (mlock best-effort; Keystore + wipe remain primary)";
     vec_to_java_byte_array(&mut _env, msg)
+}
+
+/// Evaluate posture from Kotlin-collected signals. Returns the label bytes
+/// (e.g. "HIGH" or "LOW - Debugger attached").
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_evaluatePostureFromSignals(
+    mut env: JNIEnv,
+    _class: JClass,
+    signals: jni::sys::jstring,
+) -> jbyteArray {
+    let raw = jstring_to_string(&mut env, signals);
+    let label = device_posture::posture_label(&signals_from_kotlin_payload(&raw));
+    vec_to_java_byte_array(&mut env, label.as_bytes())
+}
+
+/// Fail-closed action gate using the shared Rust policy. Returns JNI `true`
+/// only when the named action is allowed at High posture.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_isActionAllowedForSignals(
+    mut env: JNIEnv,
+    _class: JClass,
+    signals: jni::sys::jstring,
+    action: jni::sys::jstring,
+) -> jboolean {
+    let raw = jstring_to_string(&mut env, signals);
+    let act = jstring_to_string(&mut env, action);
+    let posture = device_posture::evaluate_posture(&signals_from_kotlin_payload(&raw));
+    if device_posture::action_allowed(posture, &act) {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_wipeAll(_env: JNIEnv, _class: JClass) {
-    unsafe { ANDROID_RATCHET_STORE.clear(); }
+    unsafe {
+        ANDROID_RATCHET_STORE.clear();
+    }
 }
 
 #[no_mangle]
-pub extern "C" fn Java_chat_hashchat_HashChatNative_ratchetNew(_env: JNIEnv, _class: JClass) -> jint {
+pub extern "C" fn Java_chat_hashchat_HashChatNative_ratchetNew(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
     unsafe {
         let id = ANDROID_RATCHET_STORE.len() as jint;
         ANDROID_RATCHET_STORE.push(ratchet::DoubleRatchet::new());
@@ -275,7 +391,10 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_encryptWithKey(
     let mut buf = pt;
     buf.resize(buf.len() + AES_256_GCM.tag_len(), 0);
 
-    if lsk.seal_in_place_append_tag(nonce, Aad::empty(), &mut buf).is_err() {
+    if lsk
+        .seal_in_place_append_tag(nonce, Aad::empty(), &mut buf)
+        .is_err()
+    {
         return vec_to_java_byte_array(&mut _env, &[]);
     }
 
@@ -372,13 +491,17 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_ratchetImportEncrypted(
 ) -> jboolean {
     let data_jba = unsafe { wrap_byte_array(data) };
     let dlen = _env.get_array_length(&data_jba).unwrap_or(0) as usize;
-    if dlen < 32 { return false as jboolean; }
+    if dlen < 32 {
+        return false as jboolean;
+    }
 
     let mut data_i8 = vec![0i8; dlen];
     let _ = _env.get_byte_array_region(&data_jba, 0, &mut data_i8);
     let buf: Vec<u8> = data_i8.into_iter().map(|b| b as u8).collect();
 
-    if &buf[0..11] != b"REAL-EXP-v2" { return false as jboolean; }
+    if &buf[0..11] != b"REAL-EXP-v2" {
+        return false as jboolean;
+    }
 
     let pass_jba = unsafe { wrap_byte_array(passphrase) };
     let pass_len = _env.get_array_length(&pass_jba).unwrap_or(0) as usize;
@@ -427,8 +550,14 @@ fn wrap_ratchet_blob(plaintext: &[u8], passphrase: &[u8]) -> Result<Vec<u8>, &'s
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
 
     let salt_str = SaltString::encode_b64(&salt).map_err(|_| "salt")?;
-    let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, Params::new(65536, 3, 1, Some(32)).unwrap());
-    let hash = argon.hash_password(passphrase, &salt_str).map_err(|_| "argon")?;
+    let argon = Argon2::new(
+        Algorithm::Argon2id,
+        Version::V0x13,
+        Params::new(65536, 3, 1, Some(32)).unwrap(),
+    );
+    let hash = argon
+        .hash_password(passphrase, &salt_str)
+        .map_err(|_| "argon")?;
     let binding = hash.hash.unwrap();
     let key_bytes = binding.as_bytes();
     let mut key = [0u8; 32];
@@ -440,7 +569,8 @@ fn wrap_ratchet_blob(plaintext: &[u8], passphrase: &[u8]) -> Result<Vec<u8>, &'s
     let mut buf = plaintext.to_vec();
     let original_len = buf.len() as u32;
     buf.resize(buf.len() + AES_256_GCM.tag_len(), 0);
-    lsk.seal_in_place_append_tag(nonce, Aad::empty(), &mut buf).map_err(|_| "seal")?;
+    lsk.seal_in_place_append_tag(nonce, Aad::empty(), &mut buf)
+        .map_err(|_| "seal")?;
 
     let mut out = b"REAL-EXP-v2".to_vec();
     out.extend_from_slice(&salt);
@@ -455,14 +585,21 @@ fn unwrap_ratchet_blob(blob: &[u8], passphrase: &[u8]) -> Result<Vec<u8>, &'stat
         return Err("bad v2 blob");
     }
 
-    let salt = &blob[11..11+16];
-    let nonce_bytes = &blob[11+16..11+16+12];
-    let orig_len = u32::from_be_bytes(blob[11+16+12..11+16+12+4].try_into().unwrap()) as usize;
-    let ct = &blob[11+16+12+4..];
+    let salt = &blob[11..11 + 16];
+    let nonce_bytes = &blob[11 + 16..11 + 16 + 12];
+    let orig_len =
+        u32::from_be_bytes(blob[11 + 16 + 12..11 + 16 + 12 + 4].try_into().unwrap()) as usize;
+    let ct = &blob[11 + 16 + 12 + 4..];
 
     let salt_str = SaltString::encode_b64(salt).map_err(|_| "salt")?;
-    let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, Params::new(65536, 3, 1, Some(32)).unwrap());
-    let hash = argon.hash_password(passphrase, &salt_str).map_err(|_| "argon")?;
+    let argon = Argon2::new(
+        Algorithm::Argon2id,
+        Version::V0x13,
+        Params::new(65536, 3, 1, Some(32)).unwrap(),
+    );
+    let hash = argon
+        .hash_password(passphrase, &salt_str)
+        .map_err(|_| "argon")?;
     let binding = hash.hash.unwrap();
     let key_bytes = binding.as_bytes();
     let mut key = [0u8; 32];
@@ -472,7 +609,9 @@ fn unwrap_ratchet_blob(blob: &[u8], passphrase: &[u8]) -> Result<Vec<u8>, &'stat
     let lsk = LessSafeKey::new(unbound);
     let nonce = Nonce::assume_unique_for_key(nonce_bytes.try_into().unwrap());
     let mut buf = ct.to_vec();
-    let pt = lsk.open_in_place(nonce, Aad::empty(), &mut buf).map_err(|_| "open")?;
+    let pt = lsk
+        .open_in_place(nonce, Aad::empty(), &mut buf)
+        .map_err(|_| "open")?;
     // Trim to the original plaintext length we stored (removes GCM padding zeros)
     Ok(pt[..orig_len].to_vec())
 }
@@ -484,7 +623,7 @@ fn unwrap_ratchet_blob(blob: &[u8], passphrase: &[u8]) -> Result<Vec<u8>, &'stat
 // whenever a framed blob arrives over the hidden service.
 // Voice chunks are then pushed into the Kotlin queue for processing.
 
-use std::sync::mpsc::{channel, Sender, Receiver};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 
 static mut VOICE_SENDER: Option<Sender<Vec<u8>>> = None;
@@ -507,7 +646,10 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_startTorReceiver(_env: JNIEn
             // - Parse the framed blob (length prefix + type/hint like in Tor.hs)
             // - If voice, call back into Kotlin (or push directly) so the voiceChunkQueue gets it
             // For now we at least print and could forward via a global if needed.
-            println!("[Android Rust Receiver] Tor layer delivered {} bytes", data.len());
+            println!(
+                "[Android Rust Receiver] Tor layer delivered {} bytes",
+                data.len()
+            );
         }
     });
 }
@@ -729,7 +871,9 @@ impl GroupSenderKey {
 
     /// Deserialize (used by importGroupSenderKey)
     pub fn from_bytes(data: &[u8]) -> Option<Self> {
-        if data.len() != 40 { return None; }
+        if data.len() != 40 {
+            return None;
+        }
         Some(GroupSenderKey {
             gsk_ratchet_id: u32::from_be_bytes(data[0..4].try_into().unwrap()),
             gsk_chain_key: data[4..36].try_into().unwrap(),
@@ -809,7 +953,9 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_importGroupSenderKey(
 ) -> jint {
     let data_bytes = unsafe { wrap_byte_array(data) };
     let dlen = _env.get_array_length(&data_bytes).unwrap_or(0) as usize;
-    if dlen < 32 { return -1; }
+    if dlen < 32 {
+        return -1;
+    }
 
     let mut data_i8 = vec![0i8; dlen];
     let _ = _env.get_byte_array_region(&data_bytes, 0, &mut data_i8);
@@ -870,7 +1016,9 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_importGroupRatchet(
     data: jbyteArray,
 ) -> jboolean {
     // During migration, delegate to the existing import path.
-    Java_chat_hashchat_HashChatNative_ratchetImportEncrypted(env, _class, state_id, passphrase, data)
+    Java_chat_hashchat_HashChatNative_ratchetImportEncrypted(
+        env, _class, state_id, passphrase, data,
+    )
 }
 
 // === Cross-device ratchet export (for new device / recovery) ===
@@ -896,11 +1044,16 @@ mod tests {
     #[test]
     fn test_envelope_wrap_unwrap_basic() {
         // Direct test of the new strong Argon2id + AES-GCM helpers
-        let plaintext = b"super-secret-ratchet-state-bytes-including-skipped-keys-and-zeroized-material";
+        let plaintext =
+            b"super-secret-ratchet-state-bytes-including-skipped-keys-and-zeroized-material";
         let pass = b"a-very-strong-passphrase-123-for-testing";
 
-        let wrapped = wrap_ratchet_blob(plaintext, pass).expect("wrap should succeed with Argon2id");
-        assert!(wrapped.starts_with(b"REAL-EXP-v2"), "must use v2 strong envelope");
+        let wrapped =
+            wrap_ratchet_blob(plaintext, pass).expect("wrap should succeed with Argon2id");
+        assert!(
+            wrapped.starts_with(b"REAL-EXP-v2"),
+            "must use v2 strong envelope"
+        );
         assert!(wrapped.len() > plaintext.len() + 16 + 12 + 16);
 
         let unwrapped = unwrap_ratchet_blob(&wrapped, pass).expect("unwrap should succeed");
@@ -924,7 +1077,8 @@ mod tests {
         let wrapped = wrap_ratchet_blob(&state, pass).unwrap();
         let restored = unwrap_ratchet_blob(&wrapped, pass).unwrap();
 
-        let r2 = ratchet::DoubleRatchet::from_bytes(&restored).expect("from_bytes after envelope must work");
+        let r2 = ratchet::DoubleRatchet::from_bytes(&restored)
+            .expect("from_bytes after envelope must work");
         // We can't easily compare private fields, but successful deserialization + no panic is the invariant
         let _ = r2.to_bytes();
     }
@@ -944,7 +1098,10 @@ mod tests {
         r.wipe_skipped_key(msg_num);
 
         // After wipe, the key should no longer be retrievable
-        assert!(r.get_skipped_key(msg_num).is_none(), "skipped key must be gone after wipe");
+        assert!(
+            r.get_skipped_key(msg_num).is_none(),
+            "skipped key must be gone after wipe"
+        );
     }
 
     #[test]
@@ -962,7 +1119,8 @@ mod tests {
         let pass = b"group-member-passphrase";
 
         // Export for group persistence (uses the real envelope now)
-        let wrapped = wrap_ratchet_blob(&state_blob, pass).expect("group export envelope must work");
+        let wrapped =
+            wrap_ratchet_blob(&state_blob, pass).expect("group export envelope must work");
         let restored = unwrap_ratchet_blob(&wrapped, pass).expect("group import must succeed");
 
         let mut restored_ratchet = ratchet::DoubleRatchet::from_bytes(&restored)
@@ -982,7 +1140,7 @@ mod tests {
         // Unframe
         assert!(frame.len() >= 2);
         let len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
-        let data = &frame[2..2+len];
+        let data = &frame[2..2 + len];
         assert_eq!(data, payload);
     }
 
@@ -1015,11 +1173,37 @@ mod tests {
 
     #[test]
     fn test_frontend_posture_gating_simulation() {
-        // Simulates what the frontends (TUI + Android) do: re-evaluate posture then gate voice/group/export.
-        // This test ensures the core primitives used by UI gating remain correct.
-        let posture = "LOW - Debugger attached";
-        assert!(!posture.contains("MAX") && !posture.contains("HIGH"));
-        // In real UI this would prevent "voice", "group", "export" actions.
+        // Shared Rust policy: bad signals => Low, unknown actions refused.
+        let s = DeviceSignals {
+            debugger_attached: true,
+            ..Default::default()
+        };
+        assert_eq!(device_posture::evaluate_posture(&s), Posture::Low);
+        assert!(!device_posture::action_allowed(Posture::Low, "voice"));
+        assert!(!device_posture::action_allowed(Posture::High, "teleport"));
+        let clean = DeviceSignals {
+            build_fingerprint: "google/husky:user/release-keys".into(),
+            build_model: "Pixel".into(),
+            build_manufacturer: "Google".into(),
+            build_hardware: "husky".into(),
+            build_tags: "release-keys".into(),
+            build_type: "user".into(),
+            prop_ro_debuggable: "0".into(),
+            prop_ro_secure: "1".into(),
+            ..Default::default()
+        };
+        assert_eq!(device_posture::evaluate_posture(&clean), Posture::High);
+        assert!(device_posture::action_allowed(Posture::High, "export"));
+    }
+
+    #[test]
+    fn test_signals_payload_parser() {
+        let raw = "debugger=1\nmodel=Emulator\nroot=/system/xbin/su\n";
+        let s = signals_from_kotlin_payload(raw);
+        assert!(s.debugger_attached);
+        assert_eq!(s.build_model, "Emulator");
+        assert_eq!(s.root_paths_present, vec!["/system/xbin/su".to_string()]);
+        assert_eq!(device_posture::evaluate_posture(&s), Posture::Low);
     }
 
     #[test]
