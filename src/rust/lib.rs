@@ -17,6 +17,8 @@ mod failwipe;
 /// Shared group-list encoding for Android and desktop.
 pub mod group_store;
 mod hidden_service;
+/// One-time invitation links carrying the bootstrap salt (M-1).
+pub mod invite;
 mod longterm_identity;
 mod net_mode;
 mod onion_binding;
