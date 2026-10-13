@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use hkdf::Hkdf;
-use ring::aead::{self, LessSafeKey, UnboundKey, Aad};
+use ring::aead::{self, Aad, LessSafeKey, UnboundKey};
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, Zeroizing};
@@ -223,6 +223,65 @@ impl DoubleRatchet {
         self.sends_since_dh = 0;
     }
 
+    /// Like [`Self::init_directional`], but the HKDF salt is a per-session
+    /// contribution so deleting and re-adding the same static contact does not
+    /// recreate the old root (audit M-1). Both peers must use the **same**
+    /// 32-byte salt (exchanged out of band or carried in a one-time invite).
+    /// An all-zero salt matches [`Self::init_directional`].
+    pub fn init_directional_with_salt(
+        &mut self,
+        shared: &[u8; 32],
+        local_static: &[u8; 32],
+        remote_static: &[u8; 32],
+        salt: &[u8; 32],
+    ) {
+        let (lo, hi) = if local_static <= remote_static {
+            (local_static, remote_static)
+        } else {
+            (remote_static, local_static)
+        };
+        let mut info = Vec::with_capacity(32 + 64);
+        info.extend_from_slice(b"HashChat-v3-root");
+        info.extend_from_slice(lo);
+        info.extend_from_slice(hi);
+        let salt_opt = if salt.iter().all(|&b| b == 0) {
+            None
+        } else {
+            Some(salt.as_slice())
+        };
+        let hk = Hkdf::<Sha256>::new(salt_opt, shared);
+        hk.expand(&info, &mut self.root_key).expect("HKDF failed");
+
+        let hk = Hkdf::<Sha256>::new(None, &self.root_key);
+        let mut low_chain = [0u8; RATCHET_KEY_LEN];
+        let mut high_chain = [0u8; RATCHET_KEY_LEN];
+        hk.expand(b"HashChat-v3-chain-low-to-high", &mut low_chain)
+            .expect("HKDF failed");
+        hk.expand(b"HashChat-v3-chain-high-to-low", &mut high_chain)
+            .expect("HKDF failed");
+        if local_static <= remote_static {
+            self.chain_key_send = low_chain;
+            self.chain_key_recv = high_chain;
+        } else {
+            self.chain_key_send = high_chain;
+            self.chain_key_recv = low_chain;
+        }
+        low_chain.zeroize();
+        high_chain.zeroize();
+        self.remote_dh = None;
+        self.send_count = 0;
+        self.recv_count = 0;
+        self.sends_since_dh = 0;
+    }
+
+    /// Fresh 32-byte bootstrap salt (CSPRNG). Mix into
+    /// [`Self::init_directional_with_salt`] on both peers.
+    pub fn fresh_bootstrap_salt() -> [u8; 32] {
+        let mut s = [0u8; 32];
+        getrandom::getrandom(&mut s).expect("getrandom");
+        s
+    }
+
     /// Step of the first message under the current sending DH key. Call right
     /// after [`Self::ratchet_send`]; the previous chain ended just before it.
     pub fn epoch_start(&self) -> u32 {
@@ -276,7 +335,6 @@ impl DoubleRatchet {
         self.remote_dh = Some(*remote);
     }
 
-
     /// Advance the sending chain. Returns (message_key, message_number).
     ///
     /// After `init_symmetric` (signed contact bootstrap), both peers share the same
@@ -296,8 +354,10 @@ impl DoubleRatchet {
         let mut new_chain = [0u8; RATCHET_KEY_LEN];
         let mut msg_key = [0u8; RATCHET_KEY_LEN];
 
-        hk.expand(b"HashChat-v1-chain", &mut new_chain).expect("HKDF failed");
-        hk.expand(b"HashChat-v1-msg-key", &mut msg_key).expect("HKDF failed");
+        hk.expand(b"HashChat-v1-chain", &mut new_chain)
+            .expect("HKDF failed");
+        hk.expand(b"HashChat-v1-msg-key", &mut msg_key)
+            .expect("HKDF failed");
 
         self.chain_key_send = new_chain;
         let count = self.send_count;
@@ -327,8 +387,10 @@ impl DoubleRatchet {
         let mut new_chain = [0u8; RATCHET_KEY_LEN];
         let mut msg_key = [0u8; RATCHET_KEY_LEN];
 
-        hk.expand(b"HashChat-v1-chain", &mut new_chain).expect("HKDF failed");
-        hk.expand(b"HashChat-v1-msg-key", &mut msg_key).expect("HKDF failed");
+        hk.expand(b"HashChat-v1-chain", &mut new_chain)
+            .expect("HKDF failed");
+        hk.expand(b"HashChat-v1-msg-key", &mut msg_key)
+            .expect("HKDF failed");
 
         self.chain_key_recv = new_chain;
         new_chain.zeroize();
@@ -528,7 +590,12 @@ pub fn build_wire_aad(version: u8, hint: &[u8], step: u32, sender_dh: &[u8; 32])
 
 /// Canonical wire AAD for frame v3:
 /// version || hint || step(be32) || epoch_start(be32) || sender_dh(32).
-pub fn build_wire_aad_v3(hint: &[u8], step: u32, epoch_start: u32, sender_dh: &[u8; 32]) -> Vec<u8> {
+pub fn build_wire_aad_v3(
+    hint: &[u8],
+    step: u32,
+    epoch_start: u32,
+    sender_dh: &[u8; 32],
+) -> Vec<u8> {
     let hint = if hint.len() > 32 { &hint[..32] } else { hint };
     let mut aad = Vec::with_capacity(1 + hint.len() + 8 + 32);
     aad.push(WIRE_VERSION_V3);
@@ -586,7 +653,6 @@ pub fn decrypt_with_key(
     Ok(out)
 }
 
-
 /// Move the inner `Vec` out of a `Zeroizing` wrapper (L-2 call-site helper).
 /// The wrapper is left holding an empty `Vec` that zeroizes on drop.
 #[inline]
@@ -640,50 +706,103 @@ impl DoubleRatchet {
         let version = data[0];
         let mut pos = 1;
 
-        let dh_sec: [u8; 32] = data.get(pos..pos + 32).ok_or("bad dh sec")?.try_into().map_err(|_| "bad dh sec")?;
+        let dh_sec: [u8; 32] = data
+            .get(pos..pos + 32)
+            .ok_or("bad dh sec")?
+            .try_into()
+            .map_err(|_| "bad dh sec")?;
         pos += 32;
-        let dh_pub: [u8; 32] = data.get(pos..pos + 32).ok_or("bad dh pub")?.try_into().map_err(|_| "bad dh pub")?;
+        let dh_pub: [u8; 32] = data
+            .get(pos..pos + 32)
+            .ok_or("bad dh pub")?
+            .try_into()
+            .map_err(|_| "bad dh pub")?;
         pos += 32;
 
         let has_remote = *data.get(pos).ok_or("bad remote flag")? == 1;
         pos += 1;
         let remote_dh = if has_remote {
-            let b: [u8; 32] = data.get(pos..pos + 32).ok_or("bad remote")?.try_into().map_err(|_| "bad remote")?;
+            let b: [u8; 32] = data
+                .get(pos..pos + 32)
+                .ok_or("bad remote")?
+                .try_into()
+                .map_err(|_| "bad remote")?;
             pos += 32;
             Some(PublicKey::from(b))
         } else {
             None
         };
 
-        let root: [u8; 32] = data.get(pos..pos + 32).ok_or("bad root")?.try_into().map_err(|_| "bad root")?;
+        let root: [u8; 32] = data
+            .get(pos..pos + 32)
+            .ok_or("bad root")?
+            .try_into()
+            .map_err(|_| "bad root")?;
         pos += 32;
-        let csend: [u8; 32] = data.get(pos..pos + 32).ok_or("bad csend")?.try_into().map_err(|_| "bad csend")?;
+        let csend: [u8; 32] = data
+            .get(pos..pos + 32)
+            .ok_or("bad csend")?
+            .try_into()
+            .map_err(|_| "bad csend")?;
         pos += 32;
-        let crecv: [u8; 32] = data.get(pos..pos + 32).ok_or("bad crecv")?.try_into().map_err(|_| "bad crecv")?;
+        let crecv: [u8; 32] = data
+            .get(pos..pos + 32)
+            .ok_or("bad crecv")?
+            .try_into()
+            .map_err(|_| "bad crecv")?;
         pos += 32;
 
-        let send = u32::from_be_bytes(data.get(pos..pos + 4).ok_or("bad send")?.try_into().map_err(|_| "bad send")?);
+        let send = u32::from_be_bytes(
+            data.get(pos..pos + 4)
+                .ok_or("bad send")?
+                .try_into()
+                .map_err(|_| "bad send")?,
+        );
         pos += 4;
-        let recv = u32::from_be_bytes(data.get(pos..pos + 4).ok_or("bad recv")?.try_into().map_err(|_| "bad recv")?);
+        let recv = u32::from_be_bytes(
+            data.get(pos..pos + 4)
+                .ok_or("bad recv")?
+                .try_into()
+                .map_err(|_| "bad recv")?,
+        );
         pos += 4;
 
         // v1 blobs predate sends_since_dh; default 0 (next DH after DH_SEND_EVERY sends).
         let sends_since_dh = if version >= 2 {
-            let v = u32::from_be_bytes(data.get(pos..pos + 4).ok_or("bad sends_since_dh")?.try_into().map_err(|_| "bad sends_since_dh")?);
+            let v = u32::from_be_bytes(
+                data.get(pos..pos + 4)
+                    .ok_or("bad sends_since_dh")?
+                    .try_into()
+                    .map_err(|_| "bad sends_since_dh")?,
+            );
             pos += 4;
             v
         } else {
             0
         };
 
-        let sk_len = u32::from_be_bytes(data.get(pos..pos + 4).ok_or("bad sklen")?.try_into().map_err(|_| "bad sklen")?) as usize;
+        let sk_len = u32::from_be_bytes(
+            data.get(pos..pos + 4)
+                .ok_or("bad sklen")?
+                .try_into()
+                .map_err(|_| "bad sklen")?,
+        ) as usize;
         pos += 4;
 
         let mut skipped = BTreeMap::new();
         for _ in 0..sk_len {
-            let num = u32::from_be_bytes(data.get(pos..pos + 4).ok_or("bad snum")?.try_into().map_err(|_| "bad snum")?);
+            let num = u32::from_be_bytes(
+                data.get(pos..pos + 4)
+                    .ok_or("bad snum")?
+                    .try_into()
+                    .map_err(|_| "bad snum")?,
+            );
             pos += 4;
-            let k: [u8; 32] = data.get(pos..pos + 32).ok_or("bad skey")?.try_into().map_err(|_| "bad skey")?;
+            let k: [u8; 32] = data
+                .get(pos..pos + 32)
+                .ok_or("bad skey")?
+                .try_into()
+                .map_err(|_| "bad skey")?;
             pos += 32;
             skipped.insert(num, k);
         }
@@ -770,7 +889,11 @@ mod tests {
         assert_eq!(pt, b"hello");
     }
 
-    fn seal(sender: &mut DoubleRatchet, hint: &[u8; 32], pt: &[u8]) -> (Vec<u8>, [u8; 32], u32, Vec<u8>) {
+    fn seal(
+        sender: &mut DoubleRatchet,
+        hint: &[u8; 32],
+        pt: &[u8],
+    ) -> (Vec<u8>, [u8; 32], u32, Vec<u8>) {
         let (mut key, step) = sender.ratchet_send();
         let dh = *sender.public_key().as_bytes();
         let aad = build_wire_aad(WIRE_VERSION_V2, hint, step, &dh);
@@ -866,7 +989,10 @@ mod tests {
         for i in 1..DH_SEND_EVERY {
             let msg = format!("a{i}");
             let (ct, dh, _, aad) = seal(&mut a, &ha, msg.as_bytes());
-            assert_eq!(dh, pk_a0, "pre-threshold sends must keep bootstrap DH public");
+            assert_eq!(
+                dh, pk_a0,
+                "pre-threshold sends must keep bootstrap DH public"
+            );
             let (pt, _) = b
                 .try_recv_decrypt(&PublicKey::from(dh), &ct, &aad)
                 .expect("b recv pre-dh");
@@ -937,7 +1063,6 @@ mod tests {
         let k = r.get_skipped_key(4).expect("key 4 remains");
         assert_eq!(k[0], 0x22);
     }
-
 
     #[test]
     fn counters_saturate_and_recv_refuses_when_exhausted() {
@@ -1186,7 +1311,10 @@ mod tests {
         }
         let last = frames.last().unwrap();
         assert!(last.3 > 0, "last frame belongs to a later epoch");
-        assert_eq!(open_v3(&mut b, last).unwrap(), format!("m{}", DH_SEND_EVERY + 1).as_bytes());
+        assert_eq!(
+            open_v3(&mut b, last).unwrap(),
+            format!("m{}", DH_SEND_EVERY + 1).as_bytes()
+        );
         // The lost frames are still readable if they turn up late.
         assert_eq!(open_v3(&mut b, &frames[1]).unwrap(), b"m1");
         // And the session keeps working both ways.
@@ -1212,5 +1340,42 @@ mod tests {
         bad.3 = late.3 - 1;
         assert!(open_v3(&mut b, &bad).is_err());
         assert_eq!(open_v3(&mut b, &late).unwrap(), b"late");
+    }
+
+    #[test]
+    fn salt_changes_root_vs_unsalted_and_zero_matches() {
+        let shared = [0x44u8; 32];
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let mut r0 = DoubleRatchet::new();
+        r0.init_directional(&shared, &a, &b);
+        let mut r_zero = DoubleRatchet::new();
+        r_zero.init_directional_with_salt(&shared, &a, &b, &[0u8; 32]);
+        assert_eq!(
+            r0.export_state().0,
+            r_zero.export_state().0,
+            "zero salt == init_directional"
+        );
+        let mut salt = [7u8; 32];
+        let mut r1 = DoubleRatchet::new();
+        r1.init_directional_with_salt(&shared, &a, &b, &salt);
+        assert_ne!(
+            r0.export_state().0,
+            r1.export_state().0,
+            "non-zero salt must diverge"
+        );
+        let mut r2 = DoubleRatchet::new();
+        r2.init_directional_with_salt(&shared, &a, &b, &salt);
+        assert_eq!(
+            r1.export_state().0,
+            r2.export_state().0,
+            "same salt must match"
+        );
+        salt[0] ^= 1;
+        let mut r3 = DoubleRatchet::new();
+        r3.init_directional_with_salt(&shared, &a, &b, &salt);
+        assert_ne!(r1.export_state().0, r3.export_state().0);
+        let s = DoubleRatchet::fresh_bootstrap_salt();
+        assert!(s.iter().any(|&b| b != 0));
     }
 }

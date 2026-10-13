@@ -4,16 +4,18 @@ mod binary_check;
 mod bridges;
 mod clock_check;
 mod contact_link;
-mod disappearing;
 mod deadman;
 /// Device posture policy shared with the Android shell.
 pub mod device_posture;
+mod disappearing;
 mod duress;
 mod emergency_scrub;
 /// Offline supporter license; gates comfort features only, never privacy.
 pub mod entitlement;
-mod failwipe;
 mod envelope;
+mod failwipe;
+/// Shared group-list encoding for Android and desktop.
+pub mod group_store;
 mod hidden_service;
 mod longterm_identity;
 mod net_mode;
@@ -31,35 +33,29 @@ mod unlock_backoff;
 mod wipe_settings;
 mod wire;
 
-pub use contact_link::{
-    bootstrap_ratchet_from_signed_link, canonical_payload, format_bound_contact_link, format_signed_contact_link,
-    parse_signed_contact_link, parse_unsigned_contact_link_insecure, sas_fingerprint,
-    sas_for_signed, ContactLinkError, SignedContact,
-};
-pub use disappearing::{
-    extreme_default_lock_timeout, extreme_default_ttl, format_lock_timeout, format_ttl,
-    parse_lock_timeout_token, parse_ttl_token, DEFAULT_LOCK_TIMEOUT_SECS,
-    EXTREME_DEFAULT_LOCK_TIMEOUT_SECS, EXTREME_DEFAULT_TTL_SECS,
-};
 pub use binary_check::{
     binary_status, digest_hex, running_binary_digest, BinaryStatus, NO_BINARY_DIGEST,
 };
-pub use wipe_settings::WipeSettings;
-pub use save_mark::{check_save_mark, SaveMarkStatus, SAVE_MARK_FILE};
+pub use bridges::{
+    evaluate_bridge_status, parse_bridge_line, torrc_snippet, BridgeError, BridgeLine,
+    BridgeStatus, BridgeTransport, BridgeVerdict, MAX_BRIDGE_LINE,
+};
 pub use clock_check::{
     advance_clock_mark, clock_rollback_secs, format_rollback, CLOCK_ROLLBACK_TOLERANCE_SECS,
+};
+pub use contact_link::{
+    bootstrap_ratchet_from_signed_link, canonical_payload, format_bound_contact_link,
+    format_signed_contact_link, parse_signed_contact_link, parse_unsigned_contact_link_insecure,
+    sas_fingerprint, sas_for_signed, ContactLinkError, SignedContact,
 };
 pub use deadman::{
     clear_deadman, deadman_config, deadman_present, set_deadman, touch_deadman, unix_now,
     wipe_if_deadman_due, DeadmanConfig, MAX_DEADMAN_DAYS,
 };
-pub use send_jitter::{
-    format_jitter, parse_jitter_token, sample_send_delay, MAX_SEND_JITTER_SECS,
-};
-pub use padding::{pad as pad_message, unpad as unpad_message, SIZE_CLASSES};
-pub use failwipe::{
-    attempt_failed, attempt_succeeded, begin_attempt, clear_failwipe, failwipe_config,
-    set_failwipe, Attempt, MAX_FAIL_LIMIT,
+pub use disappearing::{
+    extreme_default_lock_timeout, extreme_default_ttl, format_lock_timeout, format_ttl,
+    parse_lock_timeout_token, parse_ttl_token, DEFAULT_LOCK_TIMEOUT_SECS,
+    EXTREME_DEFAULT_LOCK_TIMEOUT_SECS, EXTREME_DEFAULT_TTL_SECS,
 };
 pub use duress::{
     clear_duress, duress_action, duress_configured, is_duress_passphrase, set_duress_passphrase,
@@ -72,43 +68,47 @@ pub use emergency_scrub::{
 pub use envelope::{
     check_new_passphrase, StoreKey, MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME,
 };
-pub use bridges::{
-    evaluate_bridge_status, parse_bridge_line, torrc_snippet, BridgeError, BridgeLine,
-    BridgeStatus, BridgeTransport, BridgeVerdict, MAX_BRIDGE_LINE,
+pub use failwipe::{
+    attempt_failed, attempt_succeeded, begin_attempt, clear_failwipe, failwipe_config,
+    set_failwipe, Attempt, MAX_FAIL_LIMIT,
 };
+pub use group_store::{decode_groups, encode_groups, GroupRecord};
 pub use hidden_service::{
-    cookie_path_from_protocolinfo, query_bridge_status, start_hidden_service_with_key, HiddenService,
-    HS_INBOUND_QUEUE_CAP, MAX_HS_INBOUND_FRAME,
+    cookie_path_from_protocolinfo, query_bridge_status, start_hidden_service_with_key,
+    HiddenService, HS_INBOUND_QUEUE_CAP, MAX_HS_INBOUND_FRAME,
 };
 pub use longterm_identity::LongTermIdentity;
 pub use longterm_identity::{
     export_encrypted as longterm_export_encrypted, import_encrypted as longterm_import_encrypted,
 };
 pub use net_mode::{DnsPreference, NetConfig, NetModeError, NetworkMode, PostureProfile};
+pub use padding::{pad as pad_message, unpad as unpad_message, SIZE_CLASSES};
+pub use private_fs::MAX_PRIVATE_FILE_BYTES;
 pub use ratchet::{
     build_wire_aad, build_wire_aad_v3, decrypt_with_key, encrypt_with_key, take_zeroizing_vec,
     DoubleRatchet, WIRE_VERSION_V2, WIRE_VERSION_V3,
 };
-pub use private_fs::MAX_PRIVATE_FILE_BYTES;
+pub use save_mark::{check_save_mark, SaveMarkStatus, SAVE_MARK_FILE};
+pub use send_jitter::{format_jitter, parse_jitter_token, sample_send_delay, MAX_SEND_JITTER_SECS};
 pub use session_persist::{
     check_state_storage, commit_outgoing, commit_outgoing_with_key, load_disk, load_session,
-    load_session_with_key, save_disk, save_session, save_session_with_key, unlock_session,
-    state_exists, validate_display_name, wipe_disk, ContactUpsert, IdentityOnionState,
+    load_session_with_key, save_disk, save_session, save_session_with_key, state_exists,
+    unlock_session, validate_display_name, wipe_disk, ContactUpsert, IdentityOnionState,
     InboundDenyPolicy, PersistMode, PersistedContact, SessionState, ERR_QUEUE_FULL,
     MAX_DISPLAY_NAME_LEN, MAX_PENDING_FRAMES,
 };
 pub use term_sanitize::{is_terminal_safe, sanitize_for_terminal};
-pub use unlock_backoff::{unlock_backoff_delay_secs, UnlockBackoffPolicy};
 pub use tor_socks::{
     is_loopback_host, is_onion_destination, probe as tor_probe, read_framed_u16,
     read_framed_u16_max, socks5_connect_with_auth, socks5_send, socks_isolation_credentials,
     socks_isolation_for_contact, socks_isolation_for_onion, write_framed_u16, SocksIsolationCreds,
     TorProbe, MAX_SOCKS_FRAME,
 };
+pub use unlock_backoff::{unlock_backoff_delay_secs, UnlockBackoffPolicy};
+pub use wipe_settings::WipeSettings;
 pub use wire::{
-    check_plaintext_send_size, frame_v2, frame_v3, unframe_v2, unframe_v3, FrameV3,
-    MAX_FRAMED_SEND_BYTES, MAX_FRAMED_V3_BYTES,
-    MAX_PLAINTEXT_SEND_BYTES,
+    check_plaintext_send_size, frame_v2, frame_v3, frame_v3_sealed, is_sealed_hint, unframe_v2,
+    unframe_v3, FrameV3, MAX_FRAMED_SEND_BYTES, MAX_FRAMED_V3_BYTES, MAX_PLAINTEXT_SEND_BYTES,
 };
 
 // long-13: gated quantum module. Only compiled with `cargo build --features quantum`.
@@ -311,4 +311,3 @@ mod memlock_tests {
         let _ = mlock_bytes(&[]);
     }
 }
-

@@ -106,7 +106,13 @@ pub struct FrameV3 {
 }
 
 /// Largest v3 frame: header with a 32-byte hint plus the biggest padded class sealed.
-pub const MAX_FRAMED_V3_BYTES: usize = 1 + 1 + 32 + 4 + 4 + 32 + 4
+pub const MAX_FRAMED_V3_BYTES: usize = 1
+    + 1
+    + 32
+    + 4
+    + 4
+    + 32
+    + 4
     + crate::padding::SIZE_CLASSES[crate::padding::SIZE_CLASSES.len() - 1]
     + AEAD_CIPHERTEXT_OVERHEAD;
 
@@ -174,6 +180,24 @@ pub fn unframe_v3(bs: &[u8]) -> Result<FrameV3, &'static str> {
         sender_dh,
         ciphertext: bs[pos..].to_vec(),
     })
+}
+
+/// Sealed-sender v3 frame: the cleartext hint is empty so a network observer
+/// cannot read a contact name or id from the frame header. Routing stays on
+/// the destination onion; the peer learns who wrote the frame only after AEAD
+/// opens (or via an out-of-band contact map). Same layout as [`frame_v3`].
+pub fn frame_v3_sealed(
+    step: u32,
+    epoch_start: u32,
+    sender_dh: &[u8; 32],
+    ciphertext: &[u8],
+) -> Vec<u8> {
+    frame_v3(&[], step, epoch_start, sender_dh, ciphertext)
+}
+
+/// True when the frame carries no sender hint (sealed-sender style).
+pub fn is_sealed_hint(hint: &[u8]) -> bool {
+    hint.is_empty()
 }
 
 #[cfg(test)]
@@ -301,5 +325,24 @@ mod tests {
         let framed = frame_v3(&[0u8; 32], 1, 0, &[0u8; 32], &ct);
         assert_eq!(framed.len(), MAX_FRAMED_V3_BYTES);
         assert!(framed.len() <= MAX_HS_INBOUND_FRAME);
+    }
+
+    #[test]
+    fn sealed_v3_has_empty_hint() {
+        let dh = [9u8; 32];
+        let framed = frame_v3_sealed(2, 1, &dh, b"ct");
+        let f = unframe_v3(&framed).unwrap();
+        assert!(is_sealed_hint(&f.hint));
+        assert_eq!(f.step, 2);
+        assert_eq!(f.epoch_start, 1);
+        assert_eq!(f.sender_dh, dh);
+        assert_eq!(f.ciphertext, b"ct");
+    }
+
+    #[test]
+    fn named_hint_is_not_sealed() {
+        let framed = frame_v3(b"alice", 1, 1, &[0u8; 32], b"x");
+        let f = unframe_v3(&framed).unwrap();
+        assert!(!is_sealed_hint(&f.hint));
     }
 }
