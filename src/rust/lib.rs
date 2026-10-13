@@ -72,7 +72,7 @@ pub use failwipe::{
     attempt_failed, attempt_succeeded, begin_attempt, clear_failwipe, failwipe_config,
     set_failwipe, Attempt, MAX_FAIL_LIMIT,
 };
-pub use group_store::{decode_groups, encode_groups, GroupRecord};
+pub use group_store::{decode_groups, encode_groups, GroupBook, GroupBookError, GroupRecord};
 pub use hidden_service::{
     cookie_path_from_protocolinfo, query_bridge_status, start_hidden_service_with_key,
     HiddenService, HS_INBOUND_QUEUE_CAP, MAX_HS_INBOUND_FRAME,
