@@ -11,7 +11,7 @@ Source: `android/src/main/java/MainActivity.kt` (1091 lines) and the JNI crate i
 | Kotlin today | Rust target | Status |
 |---|---|---|
 | `isStrictModeEnabled`, `shouldRefuseInStrictMode`, `reEvaluateSecurityPosture`, `isActionAllowedInPosture` (signal interpretation and gating) | `hashchat_rust::device_posture` | **Done:** JNI `evaluatePostureFromSignals` / `isActionAllowedForSignals`; Kotlin collects signals only |
-| `loadPersistedGroups`, `persistGroups` (group list serialization) | `hashchat_rust::group_store` | Encoding done (`encode_groups` / `decode_groups`); Keystore wrap + JNI bind next |
+| `loadPersistedGroups`, `persistGroups`, member add/remove, leave group (group list state) | `hashchat_rust::group_store::GroupBook` | **Done:** Rust owns the list (validation, limits, legacy `name:ids` migration); JNI `groupBook*`; Kotlin only renders and wraps `groupBookExport()` with the Keystore. Per-member sender-key blobs are not persisted yet |
 | `performCrossDeviceExport` (export flow logic) | `session_persist` | Open |
 | `addMessage`, message list state, delivery state | shared message model (as in the TUI) | Open |
 | Decoy/extreme profile state (`onToggleDecoyProfile`, `EXTREME_MODE`) | `duress` | Open |
@@ -21,4 +21,4 @@ Source: `android/src/main/java/MainActivity.kt` (1091 lines) and the JNI crate i
 ## Notes
 - The JNI crate depends on `hashchat-rust` (path) and calls shared `device_posture` / will grow toward other shared modules.
 - Kotlin keeps collecting raw signals only; Rust decides. Unknown action names are refused.
-- Next: Keystore-backed group list via `group_store`, then migrate message-list / decoy state.
+- Next: migrate message-list / delivery state, then decoy/extreme profile state (`duress`). Persisting group sender keys needs a user-derived key from profile unlock (still open).

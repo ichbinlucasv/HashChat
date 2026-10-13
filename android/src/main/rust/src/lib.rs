@@ -26,6 +26,7 @@ use sha2::Sha256;
 use zeroize::Zeroize; // Required for explicit zeroize() on local chunk keys in VoiceStream (Wave 3)
 
 use hashchat_rust::device_posture::{self, DeviceSignals, Posture};
+use hashchat_rust::group_store::{GroupBook, GroupBookError};
 
 /// Helper: wrap a raw jbyteArray (from Java native) into a high-level JByteArray for jni 0.21+.
 #[inline]
@@ -334,6 +335,152 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_wipeAll(_env: JNIEnv, _class
     unsafe {
         ANDROID_RATCHET_STORE.clear();
     }
+    with_group_book(|b| b.clear());
+}
+
+// ============================================================================
+// Group list owned by Rust (Android maximum-Rust step 2).
+// Kotlin renders the names/members returned here and wraps `groupBookExport`
+// with the Keystore before writing `groups.enc`. Validation and limits live in
+// the shared `hashchat_rust::group_store::GroupBook`.
+// Every mutating call returns "" on success or a short error label.
+// ============================================================================
+
+static GROUP_BOOK: std::sync::Mutex<Option<GroupBook>> = std::sync::Mutex::new(None);
+
+fn with_group_book<R>(f: impl FnOnce(&mut GroupBook) -> R) -> R {
+    let mut guard = match GROUP_BOOK.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    f(guard.get_or_insert_with(GroupBook::new))
+}
+
+fn group_result_label(r: Result<(), GroupBookError>) -> &'static str {
+    match r {
+        Ok(()) => "",
+        Err(e) => e.label(),
+    }
+}
+
+fn string_to_jstring(env: &mut JNIEnv, s: &str) -> jni::sys::jstring {
+    match env.new_string(s) {
+        Ok(js) => js.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+fn member_id(id: jint) -> Result<u32, GroupBookError> {
+    u32::try_from(id).map_err(|_| GroupBookError::NoSuchMember)
+}
+
+/// Replace the group list with Keystore-unwrapped bytes from `groups.enc`.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_groupBookLoad(
+    mut env: JNIEnv,
+    _class: JClass,
+    plain: jbyteArray,
+) -> jni::sys::jstring {
+    let arr = unsafe { wrap_byte_array(plain) };
+    let label = match env.convert_byte_array(arr) {
+        Ok(mut bytes) => {
+            let r = with_group_book(|b| b.load(&bytes));
+            bytes.zeroize();
+            group_result_label(r)
+        }
+        Err(_) => GroupBookError::Malformed.label(),
+    };
+    string_to_jstring(&mut env, label)
+}
+
+/// Encoded group list for Keystore wrapping.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_groupBookExport(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jbyteArray {
+    let mut out = with_group_book(|b| b.export());
+    let arr = vec_to_java_byte_array(&mut env, &out);
+    out.zeroize();
+    arr
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_groupBookCreate(
+    mut env: JNIEnv,
+    _class: JClass,
+    name: jni::sys::jstring,
+) -> jni::sys::jstring {
+    let name = jstring_to_string(&mut env, name);
+    let label = group_result_label(with_group_book(|b| b.create(&name)));
+    string_to_jstring(&mut env, label)
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_groupBookRemoveGroup(
+    mut env: JNIEnv,
+    _class: JClass,
+    name: jni::sys::jstring,
+) -> jni::sys::jstring {
+    let name = jstring_to_string(&mut env, name);
+    let label = group_result_label(with_group_book(|b| b.remove_group(&name).map(|_| ())));
+    string_to_jstring(&mut env, label)
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_groupBookAddMember(
+    mut env: JNIEnv,
+    _class: JClass,
+    name: jni::sys::jstring,
+    id: jint,
+) -> jni::sys::jstring {
+    let name = jstring_to_string(&mut env, name);
+    let r = member_id(id).and_then(|id| with_group_book(|b| b.add_member(&name, id)));
+    string_to_jstring(&mut env, group_result_label(r))
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_groupBookRemoveMember(
+    mut env: JNIEnv,
+    _class: JClass,
+    name: jni::sys::jstring,
+    id: jint,
+) -> jni::sys::jstring {
+    let name = jstring_to_string(&mut env, name);
+    let r = member_id(id).and_then(|id| with_group_book(|b| b.remove_member(&name, id)));
+    string_to_jstring(&mut env, group_result_label(r))
+}
+
+/// Group names, sorted, one per line.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_groupBookNames(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jstring {
+    let names = with_group_book(|b| b.names().join("\n"));
+    string_to_jstring(&mut env, &names)
+}
+
+/// Member ids of one group (empty when the group does not exist).
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_groupBookMembers(
+    mut env: JNIEnv,
+    _class: JClass,
+    name: jni::sys::jstring,
+) -> jni::sys::jintArray {
+    let name = jstring_to_string(&mut env, name);
+    let ids: Vec<jint> = with_group_book(|b| {
+        b.members(&name)
+            .map(|m| m.iter().filter_map(|id| jint::try_from(*id).ok()).collect())
+            .unwrap_or_default()
+    });
+    let Ok(arr) = env.new_int_array(ids.len() as jni::sys::jsize) else {
+        return std::ptr::null_mut();
+    };
+    if env.set_int_array_region(&arr, 0, &ids).is_err() {
+        return std::ptr::null_mut();
+    }
+    arr.into_raw()
 }
 
 #[no_mangle]

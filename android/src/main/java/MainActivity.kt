@@ -67,6 +67,18 @@ object HashChatNative {
     external fun evaluatePostureFromSignals(signals: String): ByteArray
     external fun isActionAllowedForSignals(signals: String, action: String): Boolean
 
+    // Group list owned by Rust (shared group_store::GroupBook). Mutating calls
+    // return "" on success or a short error label. Kotlin only renders and
+    // wraps groupBookExport() with the Keystore.
+    external fun groupBookLoad(plain: ByteArray): String
+    external fun groupBookExport(): ByteArray
+    external fun groupBookCreate(name: String): String
+    external fun groupBookRemoveGroup(name: String): String
+    external fun groupBookAddMember(name: String, id: Int): String
+    external fun groupBookRemoveMember(name: String, id: Int): String
+    external fun groupBookNames(): String
+    external fun groupBookMembers(name: String): IntArray
+
     // Combined Kotlin + JNI strict mode (authoritative for refusal decisions).
     // Expands the old stub with real root detection, dangerous props via reflection + files,
     // Build.TAGS test-keys, userdebug, ro.debuggable, etc. + delegates to Rust for /proc/fs signals.
@@ -720,91 +732,47 @@ class MainActivity : AppCompatActivity() {
     private var currentGroup: String? = null
     private var isInGroupMode = false
 
-    // Load persisted groups from Keystore + JNI (real encrypted persistence - roundtrip)
+    // Rebuild the Kotlin view cache from the Rust-owned group list.
+    private fun refreshGroupsFromRust() {
+        groups.clear()
+        HashChatNative.groupBookNames().lines().filter { it.isNotEmpty() }.forEach { gname ->
+            groups[gname] = HashChatNative.groupBookMembers(gname).toMutableList()
+        }
+    }
+
+    // Load groups.enc: Keystore unwrap in Kotlin, parse/validate in Rust (GroupBook).
+    // Old "name:id,id" files from earlier builds are migrated by the Rust loader.
+    // Limit: per-member sender-key blobs are not persisted yet, so restored ids
+    // name ratchets that must be re-established after a restart.
     private fun loadPersistedGroups() {
         val groupsFile = File(filesDir, "groups.enc")
         if (groupsFile.exists()) {
             try {
-                val wrapped = groupsFile.readBytes()
-                val plain = HashChatKeystore.decryptFromStorage(wrapped)
-                // Format: "GroupName:rid1,rid2\n..."
-                val content = String(plain)
-                groups.clear()
-                content.lines().filter { it.contains(":") }.forEach { line ->
-                    val parts = line.split(":")
-                    if (parts.size == 2) {
-                        val gname = parts[0]
-                        val rids = parts[1].split(",").mapNotNull { it.toIntOrNull() }.toMutableList()
-                        if (rids.isNotEmpty()) {
-                            groups[gname] = rids
-                            // Real roundtrip: try to import the ratchets using JNI
-                            rids.forEach { rid ->
-                                // Wave 10: Legacy demo-pass import path excised. Real roundtrip now requires
-                                // user-derived key from HashChatKeystore (passed from profile unlock).
-                                // Passing empty here is migration-only and will produce incomplete groups.
-                                // Groups should be re-created by user in production.
-                                if (EXTREME_MODE || HashChatNative.isStrictModeEnabled()) {
-                                    throw IllegalStateException("EXTREME/STRICT: Legacy group ratchet import disabled (demo-pass removed in Wave 10)")
-                                }
-                                try {
-                                    // Wave 10: Legacy demo-pass fully excised. Real import now requires
-                                    // user-derived key from profile unlock + HashChatKeystore.
-                                    // ByteArray(0) paths removed — groups must be re-imported with real keys
-                                    // or re-created by the user after profile unlock.
-                                    throw IllegalStateException("Group ratchet import requires real Keystore-derived key (demo-pass paths removed Wave 10)")
-                                } catch (e: Exception) {
-                                    // Real groups use proper user-derived Keystore key.
-                                }
-                            }
-                        }
-                    }
+                val plain = HashChatKeystore.decryptFromStorage(groupsFile.readBytes())
+                val err = HashChatNative.groupBookLoad(plain)
+                plain.fill(0)
+                if (err.isNotEmpty()) {
+                    Toast.makeText(this, "Group list not loaded: $err", Toast.LENGTH_LONG).show()
                 }
             } catch (e: Exception) {
-                // fallback to demo if corrupted
+                Toast.makeText(this, "Group list could not be unwrapped", Toast.LENGTH_LONG).show()
             }
         }
-        if (groups.isEmpty()) {
-            if (EXTREME_MODE || HashChatNative.isStrictModeEnabled()) {
-                // Wave 10: No auto demo groups. User must explicitly create groups.
-                // This closes the last auto "DemoGroup" creation path that previously bypassed real identity flows.
-                throw IllegalStateException("EXTREME/STRICT: No group persistence fallback allowed (demo auto-create removed Wave 10)")
-            }
-            // No automatic DemoGroup creation. Groups start empty until user action.
-            // Real groups are created via onShowGroupMembers + member add flows (which use proper GroupSenderKey).
-        }
+        refreshGroupsFromRust()
+        // No automatic demo groups: groups start empty until user action.
     }
 
-    // =====================================================================
-    // Wave 10: LEGACY DEMO-PASS SURFACES FULLY EXCISED (Critical #4)
-    // - getInsecureGroupDemoPassphrase() and DEMO_INSECURE const removed from production paths
-    // - All import/export now require real user-derived keys from HashChatKeystore
-    // - Hard failures in EXTREME/STRICT mode for any legacy paths
-    // - Migration placeholders using ByteArray(0) replaced with explicit exceptions
-    // This closes the last major visible demo-pass surface flagged in Wave 8/9 reviews.
-    // =====================================================================
-
-    // Save group state encrypted (Keystore + JNI export - real roundtrip)
+    // Save the group list: encoded by Rust, wrapped by the Keystore.
+    // Refused in EXTREME/STRICT mode (groups are disabled there).
     private fun persistGroups() {
-        val sb = StringBuilder()
-        groups.forEach { (gname, rids) ->
-            sb.append(gname).append(":").append(rids.joinToString(",")).append("\n")
-            rids.forEach { rid ->
-                // Wave 10: Real export via JNI + Keystore. Legacy demo-pass paths fully excised.
-                if (EXTREME_MODE || HashChatNative.isStrictModeEnabled()) {
-                    throw IllegalStateException("EXTREME/STRICT: Group export disabled (demo-pass paths removed Wave 10)")
-                }
-                // Real path: must derive key from user profile unlock + HashChatKeystore
-                // For now we throw to force proper implementation instead of silent weak paths.
-                throw IllegalStateException("Group export requires real user-derived Keystore key (demo-pass removed Wave 10)")
-                val wrapped = HashChatKeystore.encryptForStorage(exported)
-                // In full version the wrapped blob per-rid would be stored alongside the groups.enc metadata.
-            }
+        if (EXTREME_MODE || HashChatNative.isStrictModeEnabled()) {
+            Toast.makeText(this, "EXTREME/STRICT: group persistence disabled", Toast.LENGTH_LONG).show()
+            return
         }
-        val groupsFile = File(filesDir, "groups.enc")
-        val plain = sb.toString().toByteArray()
+        val plain = HashChatNative.groupBookExport()
         val wrapped = HashChatKeystore.encryptForStorage(plain)
-        groupsFile.writeBytes(wrapped)
-        Toast.makeText(this, "Groups persisted with real Keystore + JNI ratchet export roundtrip", Toast.LENGTH_SHORT).show()
+        plain.fill(0)
+        File(filesDir, "groups.enc").writeBytes(wrapped)
     }
 
     fun onShowGroupMembers(v: View) {
@@ -831,7 +799,7 @@ class MainActivity : AppCompatActivity() {
             } else {
                 // Show members for selected group (detail screen)
                 groups[currentGroup]?.forEach { rid ->
-                    groupMembers.add("Member ratchet: $rid (sender-key active, persisted)")
+                    groupMembers.add("Member ratchet: $rid")
                 }
                 if (groupMembers.isEmpty()) {
                     groupMembers.add("No members - add via QR or TUI")
@@ -859,11 +827,18 @@ class MainActivity : AppCompatActivity() {
             .setItems(arrayOf("Remove member (wipe sender key + persist)", "View ratchet info", "Generate/Scan QR", "Add member", "Leave group (wipe + persist)")) { _, which ->
                 when (which) {
                     0 -> {
+                        val g = currentGroup ?: return@setItems
+                        val rid = groups[g]?.getOrNull(position) ?: return@setItems
+                        val err = HashChatNative.groupBookRemoveMember(g, rid)
+                        if (err.isNotEmpty()) {
+                            Toast.makeText(this, "Remove refused: $err", Toast.LENGTH_LONG).show()
+                            return@setItems
+                        }
+                        refreshGroupsFromRust()
                         groupMembers.removeAt(position)
-                        currentGroup?.let { g -> groups[g]?.removeAt(position) }
                         messageList.adapter?.notifyDataSetChanged()
                         persistGroups()
-                        Toast.makeText(this, "Member removed + key wiped + persisted", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, "Member removed + persisted", Toast.LENGTH_SHORT).show()
                     }
                     1 -> Toast.makeText(this, "E2EE sender-key + Tor + Keystore ratchet", Toast.LENGTH_SHORT).show()
                     2 -> onScanGroupQR(findViewById(android.R.id.content))
@@ -880,14 +855,22 @@ class MainActivity : AppCompatActivity() {
                         }
                         // Use proper GroupSenderKey for per-member forward secrecy (A1 + A3)
                         val newGskId = HashChatNative.createGroupSenderKey(HashChatNative.ratchetNew())
-                        currentGroup?.let { g -> groups[g]?.add(newGskId) }
-                        groupMembers.add("Member sender-key: $newGskId (GroupSenderKey, persisted)")
+                        val g = currentGroup ?: return@setItems
+                        val err = HashChatNative.groupBookAddMember(g, newGskId)
+                        if (err.isNotEmpty()) {
+                            Toast.makeText(this, "Add refused: $err", Toast.LENGTH_LONG).show()
+                            return@setItems
+                        }
+                        refreshGroupsFromRust()
+                        groupMembers.add("Member sender-key: $newGskId")
                         messageList.adapter?.notifyDataSetChanged()
                         persistGroups()
                         Toast.makeText(this, "Member added with proper sender key (GroupSenderKey + persisted)", Toast.LENGTH_SHORT).show()
                     }
                     4 -> {
-                        currentGroup?.let { g -> groups.remove(g) }
+                        currentGroup?.let { g -> HashChatNative.groupBookRemoveGroup(g) }
+                        refreshGroupsFromRust()
+                        currentGroup = null
                         groupMembers.clear()
                         isInGroupMode = false
                         persistGroups()
