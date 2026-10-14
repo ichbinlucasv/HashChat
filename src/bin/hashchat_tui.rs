@@ -17,6 +17,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use hashchat_rust::invite;
 use hashchat_rust::{
     attempt_failed, attempt_succeeded, begin_attempt, binary_status,
     bootstrap_ratchet_from_signed_link, build_wire_aad_v3, check_new_passphrase,
@@ -2150,6 +2151,14 @@ impl App {
             self.status_msg = "Unlock first.".into();
             return;
         }
+        if invite::is_invite_link(link) {
+            self.redeem_invite(link);
+            return;
+        }
+        if invite::is_invite_reply(link) {
+            self.accept_invite_reply(link);
+            return;
+        }
         let local = self.session.as_ref().unwrap().identity.identity();
         let boot = bootstrap_ratchet_from_signed_link(&local, link);
         let parsed = parse_signed_contact_link(link);
@@ -2165,62 +2174,7 @@ impl App {
                             .into();
                     return;
                 }
-                let onion_tail = Self::onion_tail(&peer.onion);
-                let (select_idx, up) = {
-                    let session = self.session.as_mut().unwrap();
-                    let up = session.upsert_contact_from_link(
-                        &peer.onion,
-                        peer.x25519,
-                        peer.ed25519,
-                        &sas,
-                    );
-                    session.set_ratchet_bytes(&up.id, take_zeroizing_vec(ratchet.to_bytes()));
-                    let idx = session.contacts.iter().position(|c| c.id == up.id);
-                    (idx, up)
-                };
-                let was_update = up.was_update;
-                let verified = up.verified;
-                if up.identity_changed {
-                    // Loud notice: the SAS the user compared no longer applies.
-                    let (old_label, old_sas) = up
-                        .previous
-                        .as_ref()
-                        .map(|p| (Self::contact_list_label(p), Self::contact_sas_short(p)))
-                        .unwrap_or_default();
-                    self.push_msg(format!(
-                        "!! SAFETY NUMBER CHANGED for {old_label}: SAS {old_sas} -> {sas}. \
-                         Contact is now UNVERIFIED; sending is refused until you compare \
-                         the new SAS out of band and run :verify."
-                    ));
-                }
-                match self.persist_session() {
-                    Ok(()) => {
-                        let verb = if was_update { "Updated" } else { "Added" };
-                        let trust = if verified {
-                            "verified"
-                        } else {
-                            "unverified — :verify after SAS compare"
-                        };
-                        self.status_msg = if up.identity_changed {
-                            format!("SAS CHANGED · {verb} contact (SAS {sas}, {trust})")
-                        } else {
-                            format!("{verb} contact (SAS {sas}, {trust})")
-                        };
-                        if was_update {
-                            self.push_msg(format!("{verb} {sas} — onion …{onion_tail} ({trust})"));
-                        } else {
-                            self.push_msg(format!(
-                                "{verb} {sas} [unverified] — onion …{onion_tail}; compare SAS then :verify (peer must :add-contact you too)"
-                            ));
-                        }
-                        if let Some(i) = select_idx {
-                            self.select_contact(i);
-                            // Prefer add/update verb in status over generic Selected line.
-                            self.status_msg = format!("{verb} contact (SAS {sas}, {trust})");
-                        }
-                    }
-                    Err(_) => self.status_msg = "Failed to persist contact.".into(),
-                }
+                self.install_contact(&peer.onion, peer.x25519, peer.ed25519, &sas, &ratchet);
             }
             (Err(_), _) => {
                 self.status_msg = "Contact refused (bad signature or format).".into();
@@ -2229,6 +2183,235 @@ impl App {
                 self.status_msg = "Contact parse failed after verify.".into();
             }
         }
+    }
+
+    /// Load the open-invite ledger from the unlocked session.
+    fn pending_invites(&self) -> invite::PendingInvites {
+        self.session
+            .as_ref()
+            .and_then(|s| invite::PendingInvites::from_bytes(&s.pending_invites).ok())
+            .unwrap_or_default()
+    }
+
+    /// Write the ledger back into the session (caller persists).
+    fn store_pending_invites(&mut self, book: &invite::PendingInvites) {
+        if let Some(session) = self.session.as_mut() {
+            session.pending_invites.zeroize();
+            session.pending_invites = book.to_bytes();
+        }
+    }
+
+    /// `:invite [ttl]`: issue a one-time invite link (default 24 h, max 7 days).
+    fn handle_invite(&mut self, args: &str) {
+        if self.session.is_none() {
+            self.status_msg = "Unlock first.".into();
+            return;
+        }
+        if self.net.extreme_blocks_contact_export() {
+            self.status_msg =
+                "extreme posture refuses invite export (minimize link sharing)".into();
+            self.push_msg(self.status_msg.clone());
+            return;
+        }
+        if let Err(e) = self.net.require_messenger_transport() {
+            self.status_msg = format!(":invite refused: {e}");
+            self.push_msg(self.status_msg.clone());
+            return;
+        }
+        let now = unix_now();
+        let mut book = self.pending_invites();
+        book.purge_expired(now);
+        match args {
+            "count" | "list" => {
+                self.store_pending_invites(&book);
+                self.status_msg = format!("{} open invite(s)", book.len());
+                self.push_msg(self.status_msg.clone());
+                return;
+            }
+            "revoke-all" => {
+                book = invite::PendingInvites::new();
+                self.store_pending_invites(&book);
+                self.status_msg = match self.persist_session() {
+                    Ok(()) => "All open invites revoked.".into(),
+                    Err(_) => "Revoked in memory; failed to persist.".into(),
+                };
+                self.push_msg(self.status_msg.clone());
+                return;
+            }
+            _ => {}
+        }
+        let ttl = if args.is_empty() {
+            Some(24 * 3600)
+        } else {
+            invite::parse_invite_ttl(args)
+        };
+        let Some(ttl) = ttl else {
+            self.status_msg =
+                "Usage: :invite [30m|12h|7d] | :invite count | :invite revoke-all".into();
+            return;
+        };
+        let (id, onion, onion_key) = {
+            let s = self.session.as_ref().unwrap();
+            (
+                s.identity.identity(),
+                s.identity.onion.clone(),
+                Zeroizing::new(s.identity.onion_key.clone()),
+            )
+        };
+        if onion.is_empty() || onion_key.is_empty() {
+            self.status_msg = "No onion yet: :listen first, then :invite.".into();
+            return;
+        }
+        match book.issue(&id, &onion, Some(&onion_key), now, ttl) {
+            Ok(link) => {
+                self.store_pending_invites(&book);
+                match self.persist_session() {
+                    Ok(()) => {
+                        self.push_msg(format!(
+                            "One-time invite (valid {}, single use): {link}",
+                            format_ttl(ttl.min(u32::MAX as u64) as u32)
+                        ));
+                        self.push_msg(
+                            "Share it privately. The peer runs :add-contact <invite> and sends back a reply; you run :add-contact <reply>.",
+                        );
+                        self.status_msg = format!("Invite issued · {} open", book.len());
+                    }
+                    Err(_) => {
+                        self.status_msg = "Invite not issued: failed to persist the ledger.".into();
+                    }
+                }
+            }
+            Err(e) => self.status_msg = format!("Invite refused: {e}"),
+        }
+    }
+
+    /// Redeemer: `:add-contact hashchat://invite/v1/...`.
+    fn redeem_invite(&mut self, link: &str) {
+        if !self.my_contact_link.starts_with("hashchat://contact/v1/") {
+            self.status_msg =
+                "Cannot redeem yet: your own contact link is needed for the reply (:listen first)."
+                    .into();
+            return;
+        }
+        let local = self.session.as_ref().unwrap().identity.identity();
+        let (ratchet, sas, inv) = match invite::bootstrap_from_invite(&local, link, unix_now()) {
+            Ok(v) => v,
+            Err(e) => {
+                self.status_msg = format!("Invite refused: {e}");
+                return;
+            }
+        };
+        if !is_onion_destination(&inv.onion) {
+            self.status_msg = "Invite refused (onion not v3)".into();
+            return;
+        }
+        if !inv.onion_bound {
+            self.status_msg =
+                "Invite refused: it does not prove control of its onion. Ask for a new one.".into();
+            return;
+        }
+        let reply = match invite::format_invite_reply(&inv, &self.my_contact_link) {
+            Ok(r) => r,
+            Err(e) => {
+                self.status_msg = format!("Invite reply failed: {e}");
+                return;
+            }
+        };
+        if self.install_contact(&inv.onion, inv.x25519, inv.ed25519, &sas, &ratchet) {
+            self.push_msg(format!("Send this reply back privately (once): {reply}"));
+        }
+    }
+
+    /// Inviter: `:add-contact hashchat://invite-reply/v1/...`.
+    fn accept_invite_reply(&mut self, reply: &str) {
+        let local = self.session.as_ref().unwrap().identity.identity();
+        let mut book = self.pending_invites();
+        let result = book.accept_reply(&local, reply, unix_now());
+        // The invite is spent even when the reply is bad: save that first.
+        self.store_pending_invites(&book);
+        let _ = self.persist_session();
+        let (ratchet, sas, peer) = match result {
+            Ok(v) => v,
+            Err(e) => {
+                self.status_msg = format!("Invite reply refused: {e}");
+                return;
+            }
+        };
+        if !is_onion_destination(&peer.onion) || !peer.onion_bound {
+            self.status_msg =
+                "Invite reply refused: its contact link does not prove control of a v3 onion. Issue a new :invite."
+                    .into();
+            return;
+        }
+        self.install_contact(&peer.onion, peer.x25519, peer.ed25519, &sas, &ratchet);
+    }
+
+    /// Upsert a verified-link contact with a fresh ratchet and persist.
+    /// Returns true when the contact was saved.
+    fn install_contact(
+        &mut self,
+        onion: &str,
+        x25519: [u8; 32],
+        ed25519: [u8; 32],
+        sas: &str,
+        ratchet: &DoubleRatchet,
+    ) -> bool {
+        let sas = sas.to_string();
+        let onion_tail = Self::onion_tail(onion);
+        let (select_idx, up) = {
+            let session = self.session.as_mut().unwrap();
+            let up = session.upsert_contact_from_link(onion, x25519, ed25519, &sas);
+            session.set_ratchet_bytes(&up.id, take_zeroizing_vec(ratchet.to_bytes()));
+            let idx = session.contacts.iter().position(|c| c.id == up.id);
+            (idx, up)
+        };
+        let was_update = up.was_update;
+        let verified = up.verified;
+        if up.identity_changed {
+            // Loud notice: the SAS the user compared no longer applies.
+            let (old_label, old_sas) = up
+                .previous
+                .as_ref()
+                .map(|p| (Self::contact_list_label(p), Self::contact_sas_short(p)))
+                .unwrap_or_default();
+            self.push_msg(format!(
+                "!! SAFETY NUMBER CHANGED for {old_label}: SAS {old_sas} -> {sas}. \
+                 Contact is now UNVERIFIED; sending is refused until you compare \
+                 the new SAS out of band and run :verify."
+            ));
+        }
+        match self.persist_session() {
+            Ok(()) => {
+                let verb = if was_update { "Updated" } else { "Added" };
+                let trust = if verified {
+                    "verified"
+                } else {
+                    "unverified — :verify after SAS compare"
+                };
+                self.status_msg = if up.identity_changed {
+                    format!("SAS CHANGED · {verb} contact (SAS {sas}, {trust})")
+                } else {
+                    format!("{verb} contact (SAS {sas}, {trust})")
+                };
+                if was_update {
+                    self.push_msg(format!("{verb} {sas} — onion …{onion_tail} ({trust})"));
+                } else {
+                    self.push_msg(format!(
+                        "{verb} {sas} [unverified] — onion …{onion_tail}; compare SAS then :verify (the peer must add you too: your link or an invite reply)"
+                    ));
+                }
+                if let Some(i) = select_idx {
+                    self.select_contact(i);
+                    // Prefer add/update verb in status over generic Selected line.
+                    self.status_msg = format!("{verb} contact (SAS {sas}, {trust})");
+                }
+            }
+            Err(_) => {
+                self.status_msg = "Failed to persist contact.".into();
+                return false;
+            }
+        }
+        true
     }
 
     fn send_text(&mut self, text: &str, allow_unverified: bool) {
@@ -3282,6 +3465,9 @@ impl App {
                 self.push_msg("  :listen                 publish Tor v3 onion (ControlPort)");
                 self.push_msg("  :add-contact <link>     verify signed link + bootstrap ratchet");
                 self.push_msg(
+                    "  :invite [ttl]           one-time invite link (fresh salt, single use)",
+                );
+                self.push_msg(
                     "  :sas-grid               SAS comparison grid for the selected contact",
                 );
                 self.push_msg("  :contact-card           your signed contact-link card");
@@ -3378,6 +3564,10 @@ impl App {
                         "Groups not available in this TUI (desktop text/Tor path only).".into();
                 }
                 self.push_msg(self.status_msg.clone());
+            }
+            other if other == ":invite" || other.starts_with(":invite ") => {
+                let args = other.strip_prefix(":invite").unwrap_or("").trim();
+                self.handle_invite(args);
             }
             other if other.starts_with(":add-contact ") => {
                 let link = other.strip_prefix(":add-contact ").unwrap_or("").trim();

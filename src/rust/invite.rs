@@ -266,6 +266,12 @@ fn reply_tag(salt: &[u8; 32], invite_id: &[u8; 16], contact_link: &str) -> [u8; 
     out
 }
 
+/// Parse an invite lifetime such as `30m`, `12h` or `7d` (1 s to 7 days).
+pub fn parse_invite_ttl(raw: &str) -> Option<u64> {
+    let secs = u64::from(crate::disappearing::parse_ttl_token(raw).ok()?);
+    (1..=MAX_INVITE_TTL_SECS).contains(&secs).then_some(secs)
+}
+
 /// True when `raw` looks like an invite link (not yet verified).
 pub fn is_invite_link(raw: &str) -> bool {
     raw.trim().starts_with(PREFIX)
@@ -584,6 +590,15 @@ mod tests {
             pending.accept_reply(&bob, &reply, NOW + 3).err(),
             Some(InviteError::UnknownOrUsed)
         );
+    }
+
+    #[test]
+    fn invite_ttl_parsing() {
+        assert_eq!(parse_invite_ttl("30m"), Some(1800));
+        assert_eq!(parse_invite_ttl("7d"), Some(MAX_INVITE_TTL_SECS));
+        assert_eq!(parse_invite_ttl("8d"), None);
+        assert_eq!(parse_invite_ttl("off"), None);
+        assert_eq!(parse_invite_ttl("soon"), None);
     }
 
     #[test]
