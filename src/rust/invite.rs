@@ -20,8 +20,21 @@
 //! hands it out exactly once and forgets it. The redeemer's side cannot be
 //! forced to forget a link, so "one-time" is enforced by the inviter.
 //!
-//! Status: library only. The TUI still uses reusable contact links; wiring
-//! `:invite` and carrying the invite id in the first frame is open.
+//! # Reply
+//! ```text
+//! hashchat://invite-reply/v1/<invite-id>/<tag>/<contact-link body>
+//! ```
+//! The redeemer answers with its own signed contact link (the part after
+//! `hashchat://contact/v1/`), the invite id and a 16-byte `<tag>`:
+//! HMAC-SHA256 keyed by the invite salt over the id and the full contact link.
+//! The tag proves the reply was made by someone holding the whole invite and
+//! that the contact link was not swapped on the way. It cannot stop someone
+//! who intercepted the invite itself; comparing the SAS out of band still
+//! decides trust.
+//!
+//! Status: the TUI issues invites (`:invite`), redeems them and accepts
+//! replies through `:add-contact`. Carrying the reply inside the first
+//! frame instead of out of band is open.
 
 use crate::contact_link::{
     hex_decode, hex_encode, parse_signed_contact_link, sas_fingerprint, ContactLinkError,
@@ -33,6 +46,10 @@ use x25519_dalek::PublicKey as X25519Public;
 use zeroize::Zeroize;
 
 const PREFIX: &str = "hashchat://invite/v1/";
+const REPLY_PREFIX: &str = "hashchat://invite-reply/v1/";
+const CONTACT_PREFIX: &str = "hashchat://contact/v1/";
+const REPLY_TAG_LABEL: &[u8] = b"hc-invite-reply-v1";
+const REPLY_TAG_LEN: usize = 16;
 const PAYLOAD_TAG: &[u8] = b"hc-invite-v1";
 /// Most open invites one profile keeps; older ones must be redeemed or expire.
 pub const MAX_PENDING_INVITES: usize = 64;
@@ -46,6 +63,7 @@ pub enum InviteError {
     BadOnionBinding,
     Expired,
     UnknownOrUsed,
+    BadReplyTag,
     TooManyPending,
     BadTtl,
     DhFailed,
@@ -59,6 +77,7 @@ impl std::fmt::Display for InviteError {
             Self::BadOnionBinding => "onion key signature missing or does not match",
             Self::Expired => "invite has expired",
             Self::UnknownOrUsed => "invite is unknown or was already used",
+            Self::BadReplyTag => "invite reply was not made from this invite",
             Self::TooManyPending => "too many open invites",
             Self::BadTtl => "invite lifetime out of range",
             Self::DhFailed => "static DH / ratchet init failed",
@@ -235,6 +254,60 @@ pub fn bootstrap_from_invite(
     Ok((r, sas, inv))
 }
 
+fn reply_tag(salt: &[u8; 32], invite_id: &[u8; 16], contact_link: &str) -> [u8; REPLY_TAG_LEN] {
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, salt);
+    let mut ctx = ring::hmac::Context::with_key(&key);
+    ctx.update(REPLY_TAG_LABEL);
+    ctx.update(invite_id);
+    ctx.update(contact_link.as_bytes());
+    let full = ctx.sign();
+    let mut out = [0u8; REPLY_TAG_LEN];
+    out.copy_from_slice(&full.as_ref()[..REPLY_TAG_LEN]);
+    out
+}
+
+/// True when `raw` looks like an invite link (not yet verified).
+pub fn is_invite_link(raw: &str) -> bool {
+    raw.trim().starts_with(PREFIX)
+}
+
+/// True when `raw` looks like an invite reply (not yet verified).
+pub fn is_invite_reply(raw: &str) -> bool {
+    raw.trim().starts_with(REPLY_PREFIX)
+}
+
+/// Redeemer side: the reply to send back to the inviter out of band.
+/// `my_contact_link` must be this profile's signed contact link.
+pub fn format_invite_reply(inv: &Invite, my_contact_link: &str) -> Result<String, InviteError> {
+    let link = my_contact_link.trim();
+    let body = link
+        .strip_prefix(CONTACT_PREFIX)
+        .ok_or(InviteError::BadFormat)?;
+    let tag = reply_tag(&inv.salt, &inv.invite_id, link);
+    Ok(format!(
+        "{REPLY_PREFIX}{}/{}/{body}",
+        hex_encode(&inv.invite_id),
+        hex_encode(&tag)
+    ))
+}
+
+/// Split a reply into invite id, tag and the redeemer's contact link.
+/// Signatures are checked later, in [`PendingInvites::accept_reply`].
+fn split_invite_reply(raw: &str) -> Result<([u8; 16], [u8; REPLY_TAG_LEN], String), InviteError> {
+    let rest = raw
+        .trim()
+        .strip_prefix(REPLY_PREFIX)
+        .ok_or(InviteError::BadFormat)?;
+    let mut it = rest.splitn(3, '/');
+    let id = fixed::<16>(it.next().ok_or(InviteError::BadFormat)?)?;
+    let tag = fixed::<REPLY_TAG_LEN>(it.next().ok_or(InviteError::BadFormat)?)?;
+    let body = it.next().ok_or(InviteError::BadFormat)?;
+    if body.is_empty() || body.len() > 1024 {
+        return Err(InviteError::BadFormat);
+    }
+    Ok((id, tag, format!("{CONTACT_PREFIX}{body}")))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingEntry {
     salt: [u8; 32],
@@ -327,6 +400,37 @@ impl PendingInvites {
                 let r = salted_ratchet(local, &peer.x25519, &salt)?;
                 Ok((r, sas_fingerprint(&peer.ed25519, &peer.x25519, &peer.onion)))
             });
+        salt.zeroize();
+        result
+    }
+
+    /// Inviter completes the session from a reply made by
+    /// [`format_invite_reply`]. The invite is consumed first (one try per
+    /// invite), then the salt-keyed tag is checked in constant time, then the
+    /// contact link signature. Returns the ratchet, the peer's SAS and the
+    /// peer's verified contact link fields.
+    pub fn accept_reply(
+        &mut self,
+        local: &LongTermIdentity,
+        reply: &str,
+        now: u64,
+    ) -> Result<(DoubleRatchet, String, crate::contact_link::SignedContact), InviteError> {
+        let (invite_id, tag, link) = split_invite_reply(reply)?;
+        let mut salt = self.redeem(&invite_id, now)?;
+        let mut want = reply_tag(&salt, &invite_id, &link);
+        let tag_ok: bool = subtle::ConstantTimeEq::ct_eq(&want[..], &tag[..]).into();
+        want.zeroize();
+        let result = if !tag_ok {
+            Err(InviteError::BadReplyTag)
+        } else {
+            parse_signed_contact_link(&link)
+                .map_err(InviteError::from)
+                .and_then(|peer| {
+                    let r = salted_ratchet(local, &peer.x25519, &salt)?;
+                    let sas = sas_fingerprint(&peer.ed25519, &peer.x25519, &peer.onion);
+                    Ok((r, sas, peer))
+                })
+        };
         salt.zeroize();
         result
     }
@@ -432,6 +536,74 @@ mod tests {
             Some(InviteError::UnknownOrUsed)
         );
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn reply_roundtrip_once_and_tag_binds_link() {
+        let (bob, alice) = pair();
+        let carol = LongTermIdentity::from_seed([0xC3; 32]);
+        let mut pending = PendingInvites::new();
+        let link = pending.issue(&bob, ONION_B, None, NOW, 3600).unwrap();
+        assert!(is_invite_link(&link) && !is_invite_reply(&link));
+
+        let (mut r_alice, _sas, inv) = bootstrap_from_invite(&alice, &link, NOW + 1).unwrap();
+        let alice_link = format_signed_contact_link(&alice, ONION_A).unwrap();
+        let reply = format_invite_reply(&inv, &alice_link).unwrap();
+        assert!(is_invite_reply(&reply));
+        assert!(format_invite_reply(&inv, "hashchat://other/v1/x").is_err());
+
+        // A reply whose contact link was swapped (here: Carol's) fails the tag
+        // and still burns the invite.
+        let carol_link = format_signed_contact_link(&carol, ONION_A).unwrap();
+        let mut pending2 = pending.clone();
+        let (id_hex, rest) = reply
+            .strip_prefix(REPLY_PREFIX)
+            .unwrap()
+            .split_once('/')
+            .unwrap();
+        let tag_hex = rest.split_once('/').unwrap().0;
+        let swapped = format!(
+            "{REPLY_PREFIX}{id_hex}/{tag_hex}/{}",
+            carol_link.strip_prefix(CONTACT_PREFIX).unwrap()
+        );
+        assert_eq!(
+            pending2.accept_reply(&bob, &swapped, NOW + 2).err(),
+            Some(InviteError::BadReplyTag)
+        );
+        assert!(pending2.is_empty());
+
+        let (mut r_bob, sas_b, peer) = pending.accept_reply(&bob, &reply, NOW + 2).unwrap();
+        assert_eq!(peer.x25519, alice.x25519_public_bytes());
+        assert_eq!(
+            sas_b,
+            sas_fingerprint(&peer.ed25519, &peer.x25519, &peer.onion)
+        );
+        assert!(talk(&mut r_alice, &mut r_bob));
+        assert!(talk(&mut r_bob, &mut r_alice));
+        assert_eq!(
+            pending.accept_reply(&bob, &reply, NOW + 3).err(),
+            Some(InviteError::UnknownOrUsed)
+        );
+    }
+
+    #[test]
+    fn reply_parser_rejects_junk() {
+        for bad in [
+            "",
+            "hashchat://invite-reply/v1/",
+            "hashchat://invite-reply/v1/zz/00/x",
+            "hashchat://invite-reply/v1/00000000000000000000000000000000/00",
+            "hashchat://invite-reply/v1/00000000000000000000000000000000/00000000000000000000000000000000/",
+        ] {
+            assert!(split_invite_reply(bad).is_err(), "{bad}");
+        }
+        let long = format!(
+            "{REPLY_PREFIX}{}/{}/{}",
+            "0".repeat(32),
+            "0".repeat(32),
+            "a".repeat(1025)
+        );
+        assert!(split_invite_reply(&long).is_err());
     }
 
     #[test]
