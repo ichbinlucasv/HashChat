@@ -44,7 +44,10 @@
 //! v12 = + save id: one flag byte (0 = none), then 16 random bytes that each
 //! save also writes to `state.mark`, used to notice an older copy of
 //! `state.enc` put back in place ([`crate::save_mark`]).
-//! Load accepts v1–v12; save always writes v12. Older blobs load empty deny lists;
+//! v13 = + open one-time invites ([`crate::invite::PendingInvites::to_bytes`],
+//! u32 BE length + bytes; empty = none), so an invite issued before a restart
+//! can still be accepted once and never twice.
+//! Load accepts v1–v13; save always writes v13. Older blobs load empty deny lists;
 //! pre-v6 contacts are treated as **verified** for continuity (new `:add-contact`
 //! entries start unverified). Pre-v7 loads default idle lock to 5 minutes.
 //!
@@ -108,6 +111,7 @@ const BLOB_VERSION_V9: u8 = 9;
 const BLOB_VERSION_V10: u8 = 10;
 const BLOB_VERSION_V11: u8 = 11;
 const BLOB_VERSION_V12: u8 = 12;
+const BLOB_VERSION_V13: u8 = 13;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PersistMode {
@@ -277,6 +281,10 @@ pub struct SessionState {
     /// at unlock through [`crate::save_mark::check_save_mark`].
     #[zeroize(skip)]
     pub save_id: Option<SaveId>,
+    /// Open one-time invites issued by this profile (v13+), as
+    /// [`crate::invite::PendingInvites::to_bytes`]. Holds the bootstrap salts,
+    /// so it is zeroized with the state. Empty under Extreme on disk.
+    pub pending_invites: Vec<u8>,
 }
 
 impl SessionState {
@@ -297,6 +305,7 @@ impl SessionState {
             binary_digest: NO_BINARY_DIGEST,
             wipe_settings: None,
             save_id: None,
+            pending_invites: Vec::new(),
         }
     }
 
@@ -318,6 +327,7 @@ impl SessionState {
             binary_digest: NO_BINARY_DIGEST,
             wipe_settings: None,
             save_id: None,
+            pending_invites: Vec::new(),
         }
     }
 
@@ -790,6 +800,7 @@ impl SessionState {
             binary_digest: self.binary_digest,
             wipe_settings: self.wipe_settings,
             save_id: self.save_id,
+            pending_invites: Vec::new(),
         }
     }
 
@@ -818,6 +829,8 @@ impl SessionState {
         self.binary_digest.zeroize();
         self.wipe_settings = None;
         self.save_id = None;
+        self.pending_invites.zeroize();
+        self.pending_invites.clear();
     }
 }
 
@@ -892,7 +905,7 @@ fn serialize_blob(state: &SessionState) -> Vec<u8> {
 
 fn serialize_blob_at(state: &SessionState, now_unix: u64) -> Vec<u8> {
     let mut plain = Vec::new();
-    plain.push(BLOB_VERSION_V12);
+    plain.push(BLOB_VERSION_V13);
     plain.extend_from_slice(&state.identity.seed);
     write_len_str(&mut plain, &state.identity.onion);
     write_len_bytes(&mut plain, &state.identity.onion_key);
@@ -972,6 +985,9 @@ fn serialize_blob_at(state: &SessionState, now_unix: u64) -> Vec<u8> {
         }
     }
 
+    // open one-time invites (v13+)
+    write_len_bytes(&mut plain, &state.pending_invites);
+
     plain
 }
 
@@ -980,7 +996,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         return Err("empty state blob");
     }
     let ver = plain[0];
-    if !(BLOB_VERSION_V1..=BLOB_VERSION_V12).contains(&ver) {
+    if !(BLOB_VERSION_V1..=BLOB_VERSION_V13).contains(&ver) {
         return Err("bad state blob version");
     }
     if plain.len() < 33 {
@@ -1174,6 +1190,19 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         None
     };
 
+    // v13: open one-time invites. Validated here so a bad record fails the
+    // load instead of surfacing later at `:add-contact`.
+    let pending_invites = if ver >= BLOB_VERSION_V13 {
+        let mut raw = read_len_bytes(plain, &mut pos)?;
+        if crate::invite::PendingInvites::from_bytes(&raw).is_err() {
+            raw.zeroize();
+            return Err("bad pending invites record");
+        }
+        raw
+    } else {
+        Vec::new()
+    };
+
     if pos != plain.len() {
         return Err("trailing junk in state blob");
     }
@@ -1194,6 +1223,7 @@ fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
         binary_digest,
         wipe_settings,
         save_id,
+        pending_invites,
     })
 }
 
@@ -3082,6 +3112,70 @@ mod tests {
         );
         plain.push(0);
         assert!(deserialize_blob(&plain).is_err(), "trailing byte refused");
+    }
+
+    #[test]
+    fn v12_blob_loads_without_invites_and_v13_roundtrips() {
+        let id = LongTermIdentity::from_seed([0x7Du8; 32]);
+        let identity = IdentityOnionState::from_identity(&id, "oldv12.onion", b"k".to_vec());
+        let mut plain = v7_blob_bytes(&identity, 300);
+        plain[0] = BLOB_VERSION_V12;
+        plain.extend_from_slice(&0u32.to_be_bytes());
+        plain.extend_from_slice(&7_200u64.to_be_bytes());
+        plain.extend_from_slice(&[0x11u8; 32]);
+        plain.push(0);
+        plain.extend_from_slice(&[0u8; WIPE_SETTINGS_BYTES]);
+        plain.push(0);
+        plain.extend_from_slice(&[0u8; SAVE_ID_BYTES]);
+        assert!(deserialize_blob(&plain).unwrap().pending_invites.is_empty());
+
+        plain[0] = BLOB_VERSION_V13;
+        assert!(
+            deserialize_blob(&plain).is_err(),
+            "v13 without the invites record is truncated"
+        );
+        let base = plain.len();
+        plain.extend_from_slice(&3u32.to_be_bytes());
+        plain.extend_from_slice(&[1, 2, 3]);
+        assert!(
+            deserialize_blob(&plain).is_err(),
+            "a record that is not whole 56-byte entries is refused"
+        );
+        plain.truncate(base);
+
+        let mut book = crate::invite::PendingInvites::new();
+        book.issue(&id, &"a".repeat(56), None, 1_000, 3_600)
+            .unwrap();
+        let raw = book.to_bytes();
+        plain.extend_from_slice(&(raw.len() as u32).to_be_bytes());
+        plain.extend_from_slice(&raw);
+        let loaded = deserialize_blob(&plain).unwrap();
+        assert_eq!(loaded.pending_invites, raw);
+        let back = crate::invite::PendingInvites::from_bytes(&loaded.pending_invites).unwrap();
+        assert_eq!(back.len(), 1);
+    }
+
+    #[test]
+    fn invites_survive_save_but_not_extreme_disk_or_wipe() {
+        use crate::net_mode::PostureProfile;
+        let id = LongTermIdentity::from_seed([0x7Eu8; 32]);
+        let mut session = SessionState::from_identity(IdentityOnionState::from_identity(
+            &id,
+            "inv.onion",
+            vec![],
+        ));
+        let mut book = crate::invite::PendingInvites::new();
+        book.issue(&id, &"b".repeat(56), None, 1_000, 3_600)
+            .unwrap();
+        session.pending_invites = book.to_bytes();
+        let back = deserialize_blob(&serialize_blob_at(&session, 1_000)).unwrap();
+        assert_eq!(back.pending_invites, session.pending_invites);
+
+        session.net.set_posture(PostureProfile::Extreme);
+        assert!(session.for_disk().pending_invites.is_empty());
+
+        session.wipe_memory_secure();
+        assert!(session.pending_invites.is_empty());
     }
 
     #[test]
