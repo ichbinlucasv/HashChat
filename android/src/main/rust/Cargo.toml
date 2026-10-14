@@ -23,6 +23,7 @@ argon2 = "0.5" # Real KDF for ratchet export envelope (high-4 / crit-2 OPSEC)
 # Replaces deprecated internal ring API. subtle is the recommended audited primitive.
 subtle = "2.6"
 getrandom = "0.2"
+libc = "0.2"   # best-effort mlock of the ratchet slots (cfg target_os = "android")
 # Shared device posture policy (and future core) from the desktop crate.
 hashchat-rust = { path = "../../../.." }
 # Note: no Python, no gi-gtk, pure Rust as per project rules.

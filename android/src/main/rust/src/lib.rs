@@ -11,6 +11,7 @@
 use jni::objects::{JByteArray, JClass};
 use jni::sys::{jboolean, jbyteArray, jint};
 use jni::JNIEnv;
+use std::sync::{Mutex, MutexGuard};
 
 use argon2::{
     password_hash::{PasswordHasher, SaltString},
@@ -48,7 +49,18 @@ fn vec_to_java_byte_array(env: &mut JNIEnv, data: &[u8]) -> jbyteArray {
 // with desktop for groups, cross-device export, and disappearing message key wiping.
 mod ratchet;
 
-static mut ANDROID_RATCHET_STORE: Vec<ratchet::DoubleRatchet> = Vec::new();
+// Native state shared by every JNI call. Kotlin may call from several
+// threads (UI, Tor receiver, voice), so each store sits behind a Mutex;
+// the former `static mut` stores were a data race. A poisoned lock is
+// recovered: the data is still the last consistent value.
+static ANDROID_RATCHET_STORE: Mutex<Vec<ratchet::DoubleRatchet>> = Mutex::new(Vec::new());
+
+/// Slots reserved (and best-effort mlocked) for ratchets at init.
+const RATCHET_SLOTS_RESERVED: usize = 64;
+
+fn lock<T>(m: &'static Mutex<T>) -> MutexGuard<'static, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_init(_env: JNIEnv, _class: JClass) {
@@ -83,13 +95,18 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_init(_env: JNIEnv, _class: J
 // ============================================================================
 #[cfg(target_os = "android")]
 fn mlock_android_ratchet_store() {
-    unsafe {
-        let ptr = ANDROID_RATCHET_STORE.as_ptr() as *const libc::c_void;
-        let len = std::mem::size_of_val(&ANDROID_RATCHET_STORE);
-        // Best-effort only — ignore result. No panic on failure (would break init on many devices).
-        let _ = libc::mlock(ptr, len);
-        // Future: pair with munlock on explicit wipe paths + madvise(MADV_DONTNEED).
+    let mut store = lock(&ANDROID_RATCHET_STORE);
+    let have = store.capacity();
+    if have < RATCHET_SLOTS_RESERVED {
+        store.reserve(RATCHET_SLOTS_RESERVED - store.len());
     }
+    let ptr = store.as_ptr() as *const libc::c_void;
+    let len = store.capacity() * std::mem::size_of::<ratchet::DoubleRatchet>();
+    // Best-effort only — ignore result. No panic on failure (would break init on many devices).
+    // Covers the slot array, not the heap buffers each ratchet owns.
+    // SAFETY: `ptr..ptr+len` is the live allocation owned by `store`, held under the lock.
+    let _ = unsafe { libc::mlock(ptr, len) };
+    // Future: pair with munlock on explicit wipe paths + madvise(MADV_DONTNEED).
 }
 
 #[cfg(not(target_os = "android"))]
@@ -332,9 +349,9 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_isActionAllowedForSignals(
 
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_wipeAll(_env: JNIEnv, _class: JClass) {
-    unsafe {
-        ANDROID_RATCHET_STORE.clear();
-    }
+    lock(&ANDROID_RATCHET_STORE).clear();
+    lock(&ANDROID_GROUP_SENDER_KEY_STORE).clear();
+    lock(&VOICE_STREAMS).clear();
     with_group_book(|b| b.clear());
 }
 
@@ -488,11 +505,10 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_ratchetNew(
     _env: JNIEnv,
     _class: JClass,
 ) -> jint {
-    unsafe {
-        let id = ANDROID_RATCHET_STORE.len() as jint;
-        ANDROID_RATCHET_STORE.push(ratchet::DoubleRatchet::new());
-        id
-    }
+    let mut store = lock(&ANDROID_RATCHET_STORE);
+    let id = store.len() as jint;
+    store.push(ratchet::DoubleRatchet::new());
+    id
 }
 
 #[no_mangle]
@@ -604,25 +620,30 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_ratchetExportEncrypted(
     state_id: jint,
     passphrase: jbyteArray,
 ) -> jbyteArray {
-    unsafe {
-        if (state_id as usize) < ANDROID_RATCHET_STORE.len() {
-            let ratchet = &ANDROID_RATCHET_STORE[state_id as usize];
-            let serialized = ratchet.to_bytes();
+    let serialized = {
+        let store = lock(&ANDROID_RATCHET_STORE);
+        usize::try_from(state_id)
+            .ok()
+            .and_then(|i| store.get(i))
+            .map(|r| r.to_bytes())
+    };
+    if let Some(mut serialized) = serialized {
+        // v2: real Argon2id + AES-256-GCM envelope
+        let pass_jba = unsafe { wrap_byte_array(passphrase) };
+        let pass_len = _env.get_array_length(&pass_jba).unwrap_or(0) as usize;
+        let mut pass_bytes = vec![0u8; pass_len];
+        if pass_len > 0 {
+            let mut p_i8 = vec![0i8; pass_len];
+            let _ = _env.get_byte_array_region(&pass_jba, 0, &mut p_i8);
+            pass_bytes = p_i8.into_iter().map(|b| b as u8).collect();
+        }
 
-            // v2: real Argon2id + AES-256-GCM envelope
-            let pass_jba = unsafe { wrap_byte_array(passphrase) };
-            let pass_len = _env.get_array_length(&pass_jba).unwrap_or(0) as usize;
-            let mut pass_bytes = vec![0u8; pass_len];
-            if pass_len > 0 {
-                let mut p_i8 = vec![0i8; pass_len];
-                let _ = _env.get_byte_array_region(&pass_jba, 0, &mut p_i8);
-                pass_bytes = p_i8.into_iter().map(|b| b as u8).collect();
-            }
-
-            match wrap_ratchet_blob(&serialized, &pass_bytes) {
-                Ok(protected) => return vec_to_java_byte_array(&mut _env, &protected),
-                Err(_) => return vec_to_java_byte_array(&mut _env, &[]),
-            }
+        let wrapped = wrap_ratchet_blob(&serialized, &pass_bytes);
+        serialized.zeroize();
+        pass_bytes.zeroize();
+        match wrapped {
+            Ok(protected) => return vec_to_java_byte_array(&mut _env, &protected),
+            Err(_) => return vec_to_java_byte_array(&mut _env, &[]),
         }
     }
     vec_to_java_byte_array(&mut _env, &[])
@@ -664,23 +685,28 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_ratchetImportEncrypted(
         Err(_) => return false as jboolean,
     };
 
-    unsafe {
-        if (state_id as usize) < ANDROID_RATCHET_STORE.len() {
-            if let Ok(restored) = ratchet::DoubleRatchet::from_bytes(&serialized) {
-                ANDROID_RATCHET_STORE[state_id as usize] = restored;
-                return true as jboolean;
-            }
-        } else {
-            if let Ok(restored) = ratchet::DoubleRatchet::from_bytes(&serialized) {
-                while ANDROID_RATCHET_STORE.len() <= state_id as usize {
-                    ANDROID_RATCHET_STORE.push(ratchet::DoubleRatchet::new());
-                }
-                ANDROID_RATCHET_STORE[state_id as usize] = restored;
-                return true as jboolean;
-            }
-        }
+    let Ok(restored) = ratchet::DoubleRatchet::from_bytes(&serialized) else {
+        return false as jboolean;
+    };
+    put_ratchet_at(state_id, restored) as jboolean
+}
+
+/// Store `restored` in slot `state_id`, growing the store if needed.
+/// Negative ids are refused; so is a gap of more than the reserved slots,
+/// so a bad id from Kotlin cannot make the store allocate without bound.
+fn put_ratchet_at(state_id: jint, restored: ratchet::DoubleRatchet) -> bool {
+    let Ok(idx) = usize::try_from(state_id) else {
+        return false;
+    };
+    let mut store = lock(&ANDROID_RATCHET_STORE);
+    if idx >= store.len() + RATCHET_SLOTS_RESERVED {
+        return false;
     }
-    false as jboolean
+    while store.len() <= idx {
+        store.push(ratchet::DoubleRatchet::new());
+    }
+    store[idx] = restored;
+    true
 }
 
 // === Strong Argon2id + AES-256-GCM envelope for ratchet blobs (high-4 OPSEC) ===
@@ -773,7 +799,7 @@ fn unwrap_ratchet_blob(blob: &[u8], passphrase: &[u8]) -> Result<Vec<u8>, &'stat
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 
-static mut VOICE_SENDER: Option<Sender<Vec<u8>>> = None;
+static VOICE_SENDER: Mutex<Option<Sender<Vec<u8>>>> = Mutex::new(None);
 
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_startTorReceiver(_env: JNIEnv, _class: JClass) {
@@ -782,9 +808,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_startTorReceiver(_env: JNIEn
     // For now we start a simple forwarding thread that the Kotlin side can feed.
     let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = channel();
 
-    unsafe {
-        VOICE_SENDER = Some(tx);
-    }
+    *lock(&VOICE_SENDER) = Some(tx);
 
     thread::spawn(move || {
         for data in rx {
@@ -807,16 +831,15 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_feedReceivedData(
     _class: JClass,
     data: jbyteArray,
 ) {
-    unsafe {
-        if let Some(ref sender) = VOICE_SENDER {
-            let data_jba = wrap_byte_array(data);
-            let len = _env.get_array_length(&data_jba).unwrap_or(0) as usize;
-            let mut data_i8 = vec![0i8; len];
-            let _ = _env.get_byte_array_region(&data_jba, 0, &mut data_i8);
-            let buf: Vec<u8> = data_i8.into_iter().map(|b| b as u8).collect();
-            let _ = sender.send(buf);
-        }
-    }
+    let Some(sender) = lock(&VOICE_SENDER).clone() else {
+        return;
+    };
+    let data_jba = unsafe { wrap_byte_array(data) };
+    let len = _env.get_array_length(&data_jba).unwrap_or(0) as usize;
+    let mut data_i8 = vec![0i8; len];
+    let _ = _env.get_byte_array_region(&data_jba, 0, &mut data_i8);
+    let buf: Vec<u8> = data_i8.into_iter().map(|b| b as u8).collect();
+    let _ = sender.send(buf);
 }
 
 // Tor framing helpers can be added here too (frameForWire equivalent in Rust for Android)
@@ -904,7 +927,7 @@ impl VoiceStream {
     }
 }
 
-static mut VOICE_STREAMS: Vec<VoiceStream> = Vec::new();
+static VOICE_STREAMS: Mutex<Vec<VoiceStream>> = Mutex::new(Vec::new());
 
 // Internal Rust function for voice chunk processing.
 // This is where real per-stream ratchet logic will eventually live.
@@ -918,18 +941,14 @@ fn process_voice_chunk_internal(encrypted: &[u8]) -> Vec<u8> {
     // 4. Wipe the used key (and prune skipped keys if needed)
     // 5. Return plaintext
 
-    unsafe {
-        // ALL RECOMMENDATIONS deep wave: Real per-stream direction
-        if VOICE_STREAMS.is_empty() {
-            VOICE_STREAMS.push(VoiceStream::new(0));
-        }
-
-        // Moving toward full per-stream Double Ratchet (key chain, zeroize on close, skipped keys)
-        let result = VOICE_STREAMS[0].process_chunk(encrypted);
-
-        // Lifecycle note: Full stream destruction + key erasure on close planned for future waves
-        result
+    let mut streams = lock(&VOICE_STREAMS);
+    // ALL RECOMMENDATIONS deep wave: Real per-stream direction
+    if streams.is_empty() {
+        streams.push(VoiceStream::new(0));
     }
+    // Moving toward full per-stream Double Ratchet (key chain, zeroize on close, skipped keys)
+    // Lifecycle note: Full stream destruction + key erasure on close planned for future waves
+    streams[0].process_chunk(encrypted)
 }
 
 #[no_mangle]
@@ -1030,7 +1049,7 @@ impl GroupSenderKey {
 }
 
 // Store for group sender keys (per-member sending chains) — this is the one we'll use
-static mut ANDROID_GROUP_SENDER_KEY_STORE: Vec<GroupSenderKey> = Vec::new();
+static ANDROID_GROUP_SENDER_KEY_STORE: Mutex<Vec<GroupSenderKey>> = Mutex::new(Vec::new());
 
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_createGroupSenderKey(
@@ -1038,11 +1057,10 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_createGroupSenderKey(
     _class: JClass,
     ratchet_id: jint,
 ) -> jint {
-    unsafe {
-        let idx = ANDROID_GROUP_SENDER_KEY_STORE.len();
-        ANDROID_GROUP_SENDER_KEY_STORE.push(GroupSenderKey::new(ratchet_id as u32));
-        idx as jint
-    }
+    let mut store = lock(&ANDROID_GROUP_SENDER_KEY_STORE);
+    let idx = store.len();
+    store.push(GroupSenderKey::new(ratchet_id as u32));
+    idx as jint
 }
 
 #[no_mangle]
@@ -1051,13 +1069,21 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_advanceGroupSenderKey(
     _class: JClass,
     group_key_id: jint,
 ) -> jbyteArray {
-    unsafe {
-        if (group_key_id as usize) < ANDROID_GROUP_SENDER_KEY_STORE.len() {
-            let msg_key = ANDROID_GROUP_SENDER_KEY_STORE[group_key_id as usize].advance();
-            return vec_to_java_byte_array(&mut _env, &msg_key);
+    let msg_key = {
+        let mut store = lock(&ANDROID_GROUP_SENDER_KEY_STORE);
+        usize::try_from(group_key_id)
+            .ok()
+            .and_then(|i| store.get_mut(i))
+            .map(|k| k.advance())
+    };
+    match msg_key {
+        Some(mut k) => {
+            let out = vec_to_java_byte_array(&mut _env, &k);
+            k.zeroize();
+            out
         }
+        None => vec_to_java_byte_array(&mut _env, &[]),
     }
-    vec_to_java_byte_array(&mut _env, &[])
 }
 
 // === Group Sender Key Export/Import using strong envelope (A1 - cleaned) ===
@@ -1068,24 +1094,29 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_exportGroupSenderKey(
     group_key_id: jint,
     passphrase: jbyteArray,
 ) -> jbyteArray {
-    unsafe {
-        if (group_key_id as usize) < ANDROID_GROUP_SENDER_KEY_STORE.len() {
-            let gsk = &ANDROID_GROUP_SENDER_KEY_STORE[group_key_id as usize];
-            let serialized = gsk.to_bytes();
+    let serialized = {
+        let store = lock(&ANDROID_GROUP_SENDER_KEY_STORE);
+        usize::try_from(group_key_id)
+            .ok()
+            .and_then(|i| store.get(i))
+            .map(|k| k.to_bytes())
+    };
+    if let Some(mut serialized) = serialized {
+        let pass_bytes = unsafe { wrap_byte_array(passphrase) };
+        let pass_len = _env.get_array_length(&pass_bytes).unwrap_or(0) as usize;
+        let mut pass_vec = vec![0u8; pass_len];
+        if pass_len > 0 {
+            let mut p_i8 = vec![0i8; pass_len];
+            let _ = _env.get_byte_array_region(&pass_bytes, 0, &mut p_i8);
+            pass_vec = p_i8.into_iter().map(|b| b as u8).collect();
+        }
 
-            let pass_bytes = unsafe { wrap_byte_array(passphrase) };
-            let pass_len = _env.get_array_length(&pass_bytes).unwrap_or(0) as usize;
-            let mut pass_vec = vec![0u8; pass_len];
-            if pass_len > 0 {
-                let mut p_i8 = vec![0i8; pass_len];
-                let _ = _env.get_byte_array_region(&pass_bytes, 0, &mut p_i8);
-                pass_vec = p_i8.into_iter().map(|b| b as u8).collect();
-            }
-
-            match wrap_ratchet_blob(&serialized, &pass_vec) {
-                Ok(protected) => return vec_to_java_byte_array(&mut _env, &protected),
-                Err(_) => return vec_to_java_byte_array(&mut _env, &[]),
-            }
+        let wrapped = wrap_ratchet_blob(&serialized, &pass_vec);
+        serialized.zeroize();
+        pass_vec.zeroize();
+        match wrapped {
+            Ok(protected) => return vec_to_java_byte_array(&mut _env, &protected),
+            Err(_) => return vec_to_java_byte_array(&mut _env, &[]),
         }
     }
     vec_to_java_byte_array(&mut _env, &[])
@@ -1120,11 +1151,10 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_importGroupSenderKey(
     match unwrap_ratchet_blob(&buf, &pass_vec) {
         Ok(serialized) => {
             if let Some(gsk) = GroupSenderKey::from_bytes(&serialized) {
-                unsafe {
-                    let idx = ANDROID_GROUP_SENDER_KEY_STORE.len();
-                    ANDROID_GROUP_SENDER_KEY_STORE.push(gsk);
-                    return idx as jint;
-                }
+                let mut store = lock(&ANDROID_GROUP_SENDER_KEY_STORE);
+                let idx = store.len();
+                store.push(gsk);
+                return idx as jint;
             }
             -1
         }
@@ -1364,5 +1394,35 @@ mod tests {
         let wrapped = wrap_ratchet_blob(&state, pass).unwrap();
         let _ = unwrap_ratchet_blob(&wrapped, pass).unwrap();
         // Post-voice posture refresh would update UI (tested via integration in frontends)
+    }
+}
+
+#[cfg(test)]
+mod store_tests {
+    use super::*;
+
+    #[test]
+    fn ratchet_slots_refuse_negative_and_huge_ids() {
+        assert!(!put_ratchet_at(-1, ratchet::DoubleRatchet::new()));
+        assert!(!put_ratchet_at(jint::MAX, ratchet::DoubleRatchet::new()));
+        assert!(put_ratchet_at(3, ratchet::DoubleRatchet::new()));
+        assert!(lock(&ANDROID_RATCHET_STORE).len() >= 4);
+    }
+
+    #[test]
+    fn group_sender_keys_survive_concurrent_callers() {
+        let handles: Vec<_> = (0..8)
+            .map(|t| {
+                std::thread::spawn(move || {
+                    for _ in 0..50 {
+                        lock(&ANDROID_GROUP_SENDER_KEY_STORE).push(GroupSenderKey::new(t));
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert!(lock(&ANDROID_GROUP_SENDER_KEY_STORE).len() >= 400);
     }
 }
