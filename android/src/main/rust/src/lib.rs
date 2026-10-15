@@ -988,9 +988,11 @@ pub struct GroupSenderKey {
 
 impl GroupSenderKey {
     pub fn new(ratchet_id: u32) -> Self {
+        let mut chain = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut chain);
         GroupSenderKey {
             gsk_ratchet_id: ratchet_id,
-            gsk_chain_key: [0u8; 32],
+            gsk_chain_key: chain,
             gsk_msg_count: 0,
         }
     }
@@ -1160,6 +1162,102 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_importGroupSenderKey(
         }
         Err(_) => -1,
     }
+}
+
+
+// === Group sender-key book (Android maximum-Rust: Keystore-wrapped at rest) ===
+// Binary format (no passphrase; Kotlin wraps with HashChatKeystore):
+//   magic "HCGSKv1\\n" (8) + count u32 BE + count × 40-byte GroupSenderKey records.
+// Slot indices are stable across restart so GroupBook member ids still resolve.
+const GSK_BOOK_MAGIC: &[u8; 8] = b"HCGSKv1\n";
+const GSK_RECORD_LEN: usize = 40;
+const GSK_BOOK_MAX: usize = 512;
+
+fn export_group_sender_key_book(store: &[GroupSenderKey]) -> Result<Vec<u8>, &'static str> {
+    if store.len() > GSK_BOOK_MAX {
+        return Err("too-many");
+    }
+    let mut out = Vec::with_capacity(8 + 4 + store.len() * GSK_RECORD_LEN);
+    out.extend_from_slice(GSK_BOOK_MAGIC);
+    out.extend_from_slice(&(store.len() as u32).to_be_bytes());
+    for k in store {
+        out.extend_from_slice(&k.to_bytes());
+    }
+    Ok(out)
+}
+
+fn load_group_sender_key_book(raw: &[u8]) -> Result<Vec<GroupSenderKey>, &'static str> {
+    if raw.len() < 12 || !raw.starts_with(GSK_BOOK_MAGIC) {
+        return Err("malformed");
+    }
+    let count = u32::from_be_bytes(raw[8..12].try_into().map_err(|_| "malformed")?) as usize;
+    if count > GSK_BOOK_MAX {
+        return Err("too-many");
+    }
+    let need = 12 + count * GSK_RECORD_LEN;
+    if raw.len() != need {
+        return Err("malformed");
+    }
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let start = 12 + i * GSK_RECORD_LEN;
+        let rec = &raw[start..start + GSK_RECORD_LEN];
+        let gsk = GroupSenderKey::from_bytes(rec).ok_or("malformed")?;
+        out.push(gsk);
+    }
+    Ok(out)
+}
+
+/// Encoded GSK store for Keystore wrapping (`group_sender_keys.enc`).
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_groupSenderKeyBookExport(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jbyteArray {
+    let store = lock(&ANDROID_GROUP_SENDER_KEY_STORE);
+    match export_group_sender_key_book(&store) {
+        Ok(mut out) => {
+            let arr = vec_to_java_byte_array(&mut env, &out);
+            out.zeroize();
+            arr
+        }
+        Err(_) => vec_to_java_byte_array(&mut env, &[]),
+    }
+}
+
+/// Replace the GSK store with Keystore-unwrapped bytes from `group_sender_keys.enc`.
+/// Returns "" on success or a short error label.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_groupSenderKeyBookLoad(
+    mut env: JNIEnv,
+    _class: JClass,
+    plain: jbyteArray,
+) -> jni::sys::jstring {
+    let arr = unsafe { wrap_byte_array(plain) };
+    let label = match env.convert_byte_array(arr) {
+        Ok(mut bytes) => {
+            let label = match load_group_sender_key_book(&bytes) {
+                Ok(next) => {
+                    *lock(&ANDROID_GROUP_SENDER_KEY_STORE) = next;
+                    ""
+                }
+                Err(e) => e,
+            };
+            bytes.zeroize();
+            label
+        }
+        Err(_) => "malformed",
+    };
+    string_to_jstring(&mut env, label)
+}
+
+/// Wipe the GSK store (called with group wipe; Keystore file deleted in Kotlin).
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_groupSenderKeyBookClear(
+    _env: JNIEnv,
+    _class: JClass,
+) {
+    lock(&ANDROID_GROUP_SENDER_KEY_STORE).clear();
 }
 
 // === Higher-level group ratchet export (Tier 3 migration target) ===
@@ -1424,5 +1522,41 @@ mod store_tests {
             h.join().unwrap();
         }
         assert!(lock(&ANDROID_GROUP_SENDER_KEY_STORE).len() >= 400);
+    }
+
+    #[test]
+    fn group_sender_key_book_roundtrip_preserves_slots() {
+        lock(&ANDROID_GROUP_SENDER_KEY_STORE).clear();
+        let mut a = GroupSenderKey::new(7);
+        let _ = a.advance();
+        let mut b = GroupSenderKey::new(9);
+        let _ = b.advance();
+        let _ = b.advance();
+        {
+            let mut store = lock(&ANDROID_GROUP_SENDER_KEY_STORE);
+            store.push(a.clone());
+            store.push(b.clone());
+        }
+        let blob = export_group_sender_key_book(&lock(&ANDROID_GROUP_SENDER_KEY_STORE)).unwrap();
+        assert!(blob.starts_with(b"HCGSKv1\n"));
+        lock(&ANDROID_GROUP_SENDER_KEY_STORE).clear();
+        let restored = load_group_sender_key_book(&blob).unwrap();
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored[0].gsk_ratchet_id, 7);
+        assert_eq!(restored[0].gsk_msg_count, 1);
+        assert_eq!(restored[0].gsk_chain_key, a.gsk_chain_key);
+        assert_eq!(restored[1].gsk_ratchet_id, 9);
+        assert_eq!(restored[1].gsk_msg_count, 2);
+        assert_eq!(restored[1].gsk_chain_key, b.gsk_chain_key);
+        assert!(load_group_sender_key_book(b"nope").is_err());
+        assert!(load_group_sender_key_book(&blob[..11]).is_err());
+    }
+
+    #[test]
+    fn group_sender_key_new_uses_random_chain() {
+        let a = GroupSenderKey::new(1);
+        let b = GroupSenderKey::new(1);
+        assert_ne!(a.gsk_chain_key, [0u8; 32]);
+        assert_ne!(a.gsk_chain_key, b.gsk_chain_key);
     }
 }

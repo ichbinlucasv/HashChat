@@ -43,7 +43,7 @@ Significant progress has been made on most items below. This document is kept ho
 ### Immediate Polish Items (Critical Remaining)
 0. **Haskell desktop retirement** — **Done (2026-10-12).** All five removal criteria in INSTALL.md are met: criterion 4 by the removal commits on `codeberg-primary` (tree, Cabal/GHC tooling, `haskell-parity` CI job, `HASHCHAT_ALLOW_HASKELL` hatch and Haskell-only C FFI deleted; `cargo test --lib`, release TUI build, clippy and CI security gate green), criterion 5 by explicit approval from the maintainer, Lucas, on 2026-10-12.
 1. **Remove legacy dead code** — Massive stubFunction block in Main.hs removed (done in this pass).
-2. **Android "demo-pass" hardening** — Hardcoded passphrase in group persistence flagged with expert warnings + scoped constant. Must be replaced with user-derived + Keystore in production.
+2. **Android "demo-pass" hardening** — **Done for group sender keys (2026-10-15).** Demo-pass excised earlier (Wave 10). Group list and group sender-key book now persist via Android Keystore wrap (`groups.enc` + `group_sender_keys.enc`); Rust owns the books (`groupBook*` / `groupSenderKeyBook*`), chain keys are random at create, no passphrase on disk.
 3. **Honest docs** — ROADMAP + README refresh in progress (this update).
 
 ### High-value OPSEC / hardening (active)
@@ -174,7 +174,7 @@ Document owner: keep this section updated after the philosophy decision.
 ## Android: maximum Rust (approved by Lucas, 2026-10-12)
 Goal: move as much of the Android app as possible into Rust, keeping only the minimal Kotlin/Java shell Android requires (Activity entry, permissions, lifecycle).
 1. Inventory Kotlin code in `android/` and classify: must-stay shell vs. movable logic. **Done:** [docs/ANDROID_RUST_INVENTORY.md](docs/ANDROID_RUST_INVENTORY.md). Device posture policy is `device_posture` in the shared crate; **JNI binding done** (`evaluatePostureFromSignals` / `isActionAllowedForSignals`); Android crate path-depends on `hashchat-rust`.
-2. Move all crypto, Tor, messaging, storage and state logic into the Rust crate (shared with desktop where possible). **In progress:** the group list is owned by Rust (`group_store::GroupBook` via JNI `groupBook*`; Kotlin renders and Keystore-wraps only). The native ratchet, group sender-key and voice stores are Mutex-guarded (no `static mut`), slot ids are bounded, and exported key bytes are zeroized (2026-10-14). Still open: persisting group sender keys (needs a user-derived key), message-list and decoy state, export flow.
+2. Move all crypto, Tor, messaging, storage and state logic into the Rust crate (shared with desktop where possible). **In progress:** the group list is owned by Rust (`group_store::GroupBook` via JNI `groupBook*`; Kotlin renders and Keystore-wraps only). The native ratchet, group sender-key and voice stores are Mutex-guarded (no `static mut`), slot ids are bounded, and exported key bytes are zeroized (2026-10-14). **Group sender keys persist (2026-10-15):** `groupSenderKeyBookExport`/`Load` with Keystore-wrapped `group_sender_keys.enc` (stable slot indices for GroupBook member ids; random chain keys at create). Still open: message-list and decoy state, export flow.
 3. Evaluate a Rust UI (Slint or egui via android-activity) on a prototype screen; adopt only if stable and accessible.
 4. Migrate screens incrementally; never break the working app; tests green at every step.
 5. End state: Kotlin limited to a thin generated shell.

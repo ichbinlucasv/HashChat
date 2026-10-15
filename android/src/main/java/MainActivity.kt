@@ -79,6 +79,12 @@ object HashChatNative {
     external fun groupBookNames(): String
     external fun groupBookMembers(name: String): IntArray
 
+    // Group sender-key book (Rust-owned). Kotlin only Keystore-wraps the bytes
+    // for group_sender_keys.enc — no demo-pass, no user passphrase on disk.
+    external fun groupSenderKeyBookExport(): ByteArray
+    external fun groupSenderKeyBookLoad(plain: ByteArray): String
+    external fun groupSenderKeyBookClear()
+
     // Combined Kotlin + JNI strict mode (authoritative for refusal decisions).
     // Expands the old stub with real root detection, dangerous props via reflection + files,
     // Build.TAGS test-keys, userdebug, ro.debuggable, etc. + delegates to Rust for /proc/fs signals.
@@ -463,7 +469,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun wipeAll() {
-        // TODO: call JNI rust_wipe + Haskell wipeAll + clear Android Keystore blobs
+        try {
+            HashChatNative.wipeAll()
+            HashChatNative.groupSenderKeyBookClear()
+        } catch (_: Exception) { }
+        File(filesDir, "groups.enc").delete()
+        File(filesDir, "group_sender_keys.enc").delete()
         Toast.makeText(this, "PANIC WIPE executed (all material destroyed)", Toast.LENGTH_LONG).show()
         finish()
     }
@@ -740,10 +751,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Load groups.enc: Keystore unwrap in Kotlin, parse/validate in Rust (GroupBook).
+    // Load groups.enc + group_sender_keys.enc: Keystore unwrap in Kotlin,
+    // parse/validate in Rust (GroupBook + GroupSenderKey book).
     // Old "name:id,id" files from earlier builds are migrated by the Rust loader.
-    // Limit: per-member sender-key blobs are not persisted yet, so restored ids
-    // name ratchets that must be re-established after a restart.
+    // Sender-key slots are restored by index so GroupBook member ids still resolve.
+    // No demo-pass: wrapping key is Android Keystore (hardware-backed when available).
     private fun loadPersistedGroups() {
         val groupsFile = File(filesDir, "groups.enc")
         if (groupsFile.exists()) {
@@ -758,11 +770,26 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Group list could not be unwrapped", Toast.LENGTH_LONG).show()
             }
         }
+        val gskFile = File(filesDir, "group_sender_keys.enc")
+        if (gskFile.exists()) {
+            try {
+                val plain = HashChatKeystore.decryptFromStorage(gskFile.readBytes())
+                val err = HashChatNative.groupSenderKeyBookLoad(plain)
+                plain.fill(0)
+                if (err.isNotEmpty()) {
+                    Toast.makeText(this, "Group sender keys not loaded: $err", Toast.LENGTH_LONG).show()
+                    HashChatNative.groupSenderKeyBookClear()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(this, "Group sender keys could not be unwrapped", Toast.LENGTH_LONG).show()
+                HashChatNative.groupSenderKeyBookClear()
+            }
+        }
         refreshGroupsFromRust()
         // No automatic demo groups: groups start empty until user action.
     }
 
-    // Save the group list: encoded by Rust, wrapped by the Keystore.
+    // Save the group list and sender-key book: encoded by Rust, wrapped by Keystore.
     // Refused in EXTREME/STRICT mode (groups are disabled there).
     private fun persistGroups() {
         if (EXTREME_MODE || HashChatNative.isStrictModeEnabled()) {
@@ -773,6 +800,16 @@ class MainActivity : AppCompatActivity() {
         val wrapped = HashChatKeystore.encryptForStorage(plain)
         plain.fill(0)
         File(filesDir, "groups.enc").writeBytes(wrapped)
+
+        val gskPlain = HashChatNative.groupSenderKeyBookExport()
+        if (gskPlain.isNotEmpty()) {
+            val gskWrapped = HashChatKeystore.encryptForStorage(gskPlain)
+            gskPlain.fill(0)
+            File(filesDir, "group_sender_keys.enc").writeBytes(gskWrapped)
+        } else {
+            // Empty store: remove any stale ciphertext so a wipe cannot leave keys behind.
+            File(filesDir, "group_sender_keys.enc").delete()
+        }
     }
 
     fun onShowGroupMembers(v: View) {
