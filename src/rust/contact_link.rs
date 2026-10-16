@@ -473,6 +473,56 @@ mod tests {
         assert_eq!(short(b"yes"), short(b"a slightly longer reply"));
     }
 
+    /// Sealed-sender v3: empty hint on frame and in AAD; peer opens without a name.
+    #[test]
+    fn mutual_bootstrap_v3_sealed_roundtrip() {
+        use crate::padding::{pad, unpad};
+        use crate::ratchet::{build_wire_aad_v3, encrypt_with_key};
+        use crate::wire::{frame_v3_sealed, is_sealed_hint, unframe_v3};
+
+        let alice = LongTermIdentity::from_seed([0xA1; 32]);
+        let bob = LongTermIdentity::from_seed([0xB2; 32]);
+        let onion_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let onion_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let link_a = format_signed_contact_link(&alice, onion_a).unwrap();
+        let link_b = format_signed_contact_link(&bob, onion_b).unwrap();
+        let (mut r_a, _) = bootstrap_ratchet_from_signed_link(&alice, &link_b).unwrap();
+        let (mut r_b, _) = bootstrap_ratchet_from_signed_link(&bob, &link_a).unwrap();
+
+        let (key, step) = r_b.ratchet_send();
+        let epoch = r_b.epoch_start();
+        let dh = r_b.public_key().to_bytes();
+        let aad = build_wire_aad_v3(&[], step, epoch, &dh);
+        let ct = encrypt_with_key(&key, &pad(b"sealed-ping").unwrap(), &aad).unwrap();
+        let wire = frame_v3_sealed(step, epoch, &dh, &ct);
+        let f = unframe_v3(&wire).unwrap();
+        assert!(is_sealed_hint(&f.hint));
+        let aad2 = build_wire_aad_v3(&f.hint, f.step, f.epoch_start, &f.sender_dh);
+        let (padded, _) = r_a
+            .try_recv_decrypt_epoch(
+                &X25519Public::from(f.sender_dh),
+                f.step,
+                f.epoch_start,
+                &f.ciphertext,
+                &aad2,
+            )
+            .expect("alice opens sealed frame");
+        assert_eq!(unpad(&padded).unwrap(), b"sealed-ping");
+
+        // Named-hint AAD must not open a sealed ciphertext (binding check).
+        let bad_aad = build_wire_aad_v3(&bob.x25519_public_bytes(), step, epoch, &dh);
+        let (mut r_a2, _) = bootstrap_ratchet_from_signed_link(&alice, &link_b).unwrap();
+        assert!(r_a2
+            .try_recv_decrypt_epoch(
+                &X25519Public::from(f.sender_dh),
+                f.step,
+                f.epoch_start,
+                &f.ciphertext,
+                &bad_aad,
+            )
+            .is_err());
+    }
+
     /// Mutual signed bootstrap + wire v2 encrypt/decrypt (desktop two-peer path).
     #[test]
     fn mutual_bootstrap_wire_roundtrip() {

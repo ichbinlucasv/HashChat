@@ -26,7 +26,8 @@ use hashchat_rust::{
     deadman_config, digest_hex, disable_core_dumps_best_effort, duress_configured,
     encrypt_with_key, extreme_default_lock_timeout, extreme_default_ttl, failwipe_config,
     format_bound_contact_link, format_jitter, format_lock_timeout, format_rollback, format_ttl,
-    frame_v3, install_panic_scrub_hook, install_terminate_signal_flag, is_onion_destination,
+    frame_v3, frame_v3_sealed, install_panic_scrub_hook, install_terminate_signal_flag,
+    is_onion_destination, is_sealed_hint,
     is_terminal_safe, mlockall_current, pad_message, parse_bridge_line, parse_jitter_token,
     parse_lock_timeout_token, parse_signed_contact_link, parse_ttl_token, push_char_no_realloc,
     query_bridge_status, register_scrub_callback, running_binary_digest, sample_send_delay,
@@ -266,6 +267,9 @@ struct App {
     lock_timeout_secs: u32,
     /// Maximum random send delay in seconds (0 = off). Synced into session blob v8+.
     send_jitter_secs: u32,
+    /// When true, outbound 1:1 frames use empty-hint sealed-sender framing (M-1).
+    /// Default on; `:sealed off` falls back to a named static-key hint.
+    sealed_send: bool,
     /// Frames committed but not yet handed to Tor because of send jitter.
     held_sends: Vec<HeldSend>,
     /// Last bridge check for `:bridges require on`: when, and why sends were
@@ -325,6 +329,44 @@ fn queued_label(n: usize) -> Option<String> {
     (n > 0).then(|| format!("{n} queued"))
 }
 
+/// Order contacts for inbound trial-decrypt.
+///
+/// - Named 32-byte hint: matching static key first.
+/// - Sealed (empty) hint: active chat first, then SAS-verified, then others.
+///
+/// Stable within each priority band (original index order).
+fn inbound_contact_order(
+    contacts: &[PersistedContact],
+    hint: &[u8],
+    active_id: Option<&str>,
+    verified_ids: &[String],
+) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..contacts.len()).collect();
+    if is_sealed_hint(hint) {
+        order.sort_by_key(|&i| {
+            let id = contacts[i].id.as_str();
+            let band = if active_id == Some(id) {
+                0u8
+            } else if verified_ids.iter().any(|v| v == id) {
+                1
+            } else {
+                2
+            };
+            (band, i)
+        });
+    } else if hint.len() == 32 {
+        order.sort_by_key(|&i| {
+            let band = if contacts[i].x25519.as_slice() == hint {
+                0u8
+            } else {
+                1
+            };
+            (band, i)
+        });
+    }
+    order
+}
+
 impl TorStatus {
     fn label(self, listening: bool) -> String {
         let base = match self {
@@ -374,6 +416,7 @@ impl App {
             disappear_ttl_secs: 0,
             lock_timeout_secs: DEFAULT_LOCK_TIMEOUT_SECS,
             send_jitter_secs: 0,
+            sealed_send: true,
             held_sends: Vec::new(),
             bridge_check: None,
             clock_behind_secs: None,
@@ -1225,6 +1268,36 @@ impl App {
         self.push_msg(line);
     }
 
+    fn handle_sealed(&mut self, args: &str) {
+        let args = args.trim();
+        if args.is_empty() || args == "status" || args == "show" {
+            let line = format!(
+                "sealed={} (empty-hint outbound frames; :sealed off uses a named static-key hint)",
+                if self.sealed_send { "on" } else { "off" }
+            );
+            self.status_msg = line.clone();
+            self.push_msg(line);
+            return;
+        }
+        let on = match args {
+            "on" | "true" | "1" => true,
+            "off" | "false" | "0" => false,
+            _ => {
+                let msg = "bad sealed (use on|off)";
+                self.status_msg = msg.into();
+                self.push_msg(msg);
+                return;
+            }
+        };
+        self.sealed_send = on;
+        let line = format!(
+            "Sealed sender set to {} (session only; not persisted)",
+            if on { "on" } else { "off" }
+        );
+        self.status_msg = line.clone();
+        self.push_msg(line);
+    }
+
     fn handle_lock_timeout(&mut self, args: &str) {
         let args = args.trim();
         if args.is_empty() || args == "status" || args == "show" {
@@ -1363,6 +1436,7 @@ impl App {
         self.disappear_ttl_secs = 0;
         self.lock_timeout_secs = DEFAULT_LOCK_TIMEOUT_SECS;
         self.send_jitter_secs = 0;
+        self.sealed_send = true;
         self.clock_behind_secs = None;
         self.binary_changed = false;
         self.wipe_settings_changed.clear();
@@ -2071,17 +2145,19 @@ impl App {
             .ok_or_else(|| "no session".to_string())?;
         session.net = net;
         let contacts = session.contacts.clone();
-        // Wire hint is the sender's static x25519 — try matching contacts first.
-        let mut order: Vec<usize> = (0..contacts.len()).collect();
-        if hint.len() == 32 {
-            order.sort_by_key(|&i| {
-                if contacts[i].x25519.as_slice() == hint.as_slice() {
-                    0
-                } else {
-                    1
-                }
-            });
-        }
+        let verified_ids = session.verified_ids.clone();
+        let active_id = self
+            .selected_contact
+            .and_then(|i| contacts.get(i).map(|c| c.id.clone()));
+        // Named hint: sender's static x25519. Sealed (empty) hint: trial-decrypt
+        // active contact first, then verified, then the rest — AEAD failure does
+        // not commit ratchet state, so wrong contacts stay untouched.
+        let order = inbound_contact_order(
+            &contacts,
+            &hint,
+            active_id.as_deref(),
+            &verified_ids,
+        );
         for idx in order {
             let c = &contacts[idx];
             // Fail-closed block: do not decrypt or display for blocked contacts.
@@ -2090,6 +2166,8 @@ impl App {
                     if hint.len() == 32 && c.x25519.as_slice() == hint.as_slice() {
                         return Err("blocked".into());
                     }
+                    // Sealed frames have no cleartext sender id — skip blocked
+                    // contacts without claiming the whole frame is blocked.
                     continue;
                 }
                 InboundDenyPolicy::DecryptNoDisplay | InboundDenyPolicy::Accept => {}
@@ -2512,11 +2590,16 @@ impl App {
                 return;
             };
 
-            let hint = local.x25519_public_bytes();
+            // Sealed-sender: empty cleartext hint + matching empty AAD hint.
+            // Named fallback (`:sealed off`) keeps the static x25519 hint for
+            // peers / tooling that still route by header identity.
+            let named_hint = local.x25519_public_bytes();
+            let use_sealed = self.sealed_send;
+            let hint: &[u8] = if use_sealed { &[] } else { &named_hint };
             let (mut msg_key, step) = ratchet.ratchet_send();
             let sender_dh = ratchet.public_key().to_bytes();
             let epoch_start = ratchet.epoch_start();
-            let aad = build_wire_aad_v3(&hint, step, epoch_start, &sender_dh);
+            let aad = build_wire_aad_v3(hint, step, epoch_start, &sender_dh);
             let mut padded = match pad_message(text.as_bytes()) {
                 Ok(p) => p,
                 Err(_) => {
@@ -2535,7 +2618,11 @@ impl App {
                     return;
                 }
             };
-            let frame = frame_v3(&hint, step, epoch_start, &sender_dh, &ct);
+            let frame = if use_sealed {
+                frame_v3_sealed(step, epoch_start, &sender_dh, &ct)
+            } else {
+                frame_v3(&named_hint, step, epoch_start, &sender_dh, &ct)
+            };
             let rbytes = ratchet.to_bytes();
             (frame, rbytes, step)
         };
@@ -3200,10 +3287,11 @@ impl App {
             self.net.posture.as_str()
         ));
         self.push_msg(format!(
-            "disappear={} · lock-timeout={} · jitter={}",
+            "disappear={} · lock-timeout={} · jitter={} · sealed={}",
             format_ttl(self.disappear_ttl_secs),
             format_lock_timeout(self.lock_timeout_secs),
-            format_jitter(self.send_jitter_secs)
+            format_jitter(self.send_jitter_secs),
+            if self.sealed_send { "on" } else { "off" }
         ));
 
         let (contacts, blocked, muted, unverified) = match self.session.as_ref() {
@@ -3338,6 +3426,7 @@ impl App {
                 self.disappear_ttl_secs = 0;
                 self.lock_timeout_secs = DEFAULT_LOCK_TIMEOUT_SECS;
                 self.send_jitter_secs = 0;
+                self.sealed_send = true;
                 self.net = NetConfig::from_env();
                 self.contacts_state = ListState::default();
                 self.selected_contact = None;
@@ -3437,6 +3526,10 @@ impl App {
                     "lock-timeout={} (idle auto-lock; local UI — not remote wipe)",
                     format_lock_timeout(self.lock_timeout_secs)
                 ));
+                self.push_msg(format!(
+                    "sealed={} (empty-hint outbound; :sealed off for named hint)",
+                    if self.sealed_send { "on" } else { "off" }
+                ));
                 if let Some(s) = self.session.as_ref() {
                     let unverified = s
                         .contacts
@@ -3486,6 +3579,9 @@ impl App {
                 self.push_msg("  :lock-timeout [off|…]   idle auto-lock (default 5m; Extreme→1m)");
                 self.push_msg(
                     "  :jitter [off|30s|2m]    random delay before each send (default off)",
+                );
+                self.push_msg(
+                    "  :sealed [on|off]        empty-hint sealed sender (default on)",
                 );
                 self.push_msg("  :block / :unblock [id]  refuse send + drop inbound (fail-closed)");
                 self.push_msg("  :mute / :unmute [id]    suppress inbound UI (decrypt for sync)");
@@ -3672,6 +3768,10 @@ impl App {
             other if other == ":jitter" || other.starts_with(":jitter ") => {
                 let args = other.strip_prefix(":jitter").unwrap_or("").trim();
                 self.handle_jitter(args);
+            }
+            other if other == ":sealed" || other.starts_with(":sealed ") => {
+                let args = other.strip_prefix(":sealed").unwrap_or("").trim();
+                self.handle_sealed(args);
             }
             other if other == ":lock-timeout" || other.starts_with(":lock-timeout ") => {
                 let args = other.strip_prefix(":lock-timeout").unwrap_or("").trim();
@@ -3975,11 +4075,12 @@ fn draw_main(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         Span::styled(app.my_sas.clone(), Style::default().fg(GOLD)),
         Span::styled(
             format!(
-                "   mode {} · posture {} · ttl {} · lock {}",
+                "   mode {} · posture {} · ttl {} · lock {} · sealed {}",
                 app.net.mode,
                 app.net.posture.as_str(),
                 format_ttl(app.disappear_ttl_secs),
-                format_lock_timeout(app.lock_timeout_secs)
+                format_lock_timeout(app.lock_timeout_secs),
+                if app.sealed_send { "on" } else { "off" }
             ),
             Style::default().fg(DIM),
         ),
@@ -5133,6 +5234,75 @@ mod tests {
     fn bridges_help_for_unknown_args() {
         let out = bridges_text("help");
         assert!(out.iter().any(|l| l.contains(":bridges torrc LINE")));
+    }
+
+    #[test]
+    fn sealed_defaults_on_and_toggles() {
+        let mut app = locked_app();
+        assert!(app.sealed_send);
+        app.handle_sealed("");
+        assert!(app.status_msg.starts_with("sealed=on"));
+        app.handle_sealed("off");
+        assert!(!app.sealed_send);
+        assert!(app.status_msg.contains("off"));
+        app.handle_sealed("on");
+        assert!(app.sealed_send);
+        app.handle_sealed("maybe");
+        assert!(app.sealed_send); // unchanged on bad arg
+        assert!(app.status_msg.starts_with("bad sealed"));
+    }
+
+    #[test]
+    fn inbound_order_sealed_prefers_active_then_verified() {
+        let contacts = vec![
+            PersistedContact {
+                id: "c0".into(),
+                display_name: "a".into(),
+                onion: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion".into(),
+                x25519: [1u8; 32],
+                ed25519: [2u8; 32],
+            },
+            PersistedContact {
+                id: "c1".into(),
+                display_name: "b".into(),
+                onion: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.onion".into(),
+                x25519: [3u8; 32],
+                ed25519: [4u8; 32],
+            },
+            PersistedContact {
+                id: "c2".into(),
+                display_name: "c".into(),
+                onion: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccc.onion".into(),
+                x25519: [5u8; 32],
+                ed25519: [6u8; 32],
+            },
+        ];
+        let verified = vec!["c2".into()];
+        let order = inbound_contact_order(&contacts, &[], Some("c1"), &verified);
+        assert_eq!(order, vec![1, 2, 0]); // active, verified, other
+    }
+
+    #[test]
+    fn inbound_order_named_hint_matches_first() {
+        let contacts = vec![
+            PersistedContact {
+                id: "c0".into(),
+                display_name: "a".into(),
+                onion: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion".into(),
+                x25519: [1u8; 32],
+                ed25519: [2u8; 32],
+            },
+            PersistedContact {
+                id: "c1".into(),
+                display_name: "b".into(),
+                onion: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.onion".into(),
+                x25519: [9u8; 32],
+                ed25519: [4u8; 32],
+            },
+        ];
+        let hint = [9u8; 32];
+        let order = inbound_contact_order(&contacts, &hint, None, &[]);
+        assert_eq!(order, vec![1, 0]);
     }
 
     #[test]
