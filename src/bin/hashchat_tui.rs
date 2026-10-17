@@ -5288,7 +5288,8 @@ mod tests {
     fn inviter_opens_in_band_hello_once_and_ignores_junk() {
         let bob = LongTermIdentity::generate().unwrap();
         let alice = LongTermIdentity::generate().unwrap();
-        let bob_onion = format!("{}.onion", "b".repeat(56));
+        let bob_onion =
+            "aibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibejsqd.onion".to_string();
         let mut app = unlocked_app_with(&bob, &bob_onion);
         let now = unix_now();
         let mut book = invite::PendingInvites::new();
@@ -5301,8 +5302,11 @@ mod tests {
         assert_eq!(app.pending_invites().len(), 1);
 
         let (_r, _sas, inv) = invite::bootstrap_from_invite(&alice, &link, now).unwrap();
-        let alice_link =
-            hashchat_rust::format_signed_contact_link(&alice, &"a".repeat(56)).unwrap();
+        let alice_link = hashchat_rust::format_signed_contact_link(
+            &alice,
+            "aeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaea37ead",
+        )
+        .unwrap();
         let hello = invite::invite_hello_frame(&inv, &alice_link).unwrap();
         // Opens and spends the invite; this unbound test link is then refused.
         assert!(app.try_invite_hello(&hello));

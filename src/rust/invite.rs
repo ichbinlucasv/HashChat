@@ -146,7 +146,7 @@ pub fn invite_payload(
 fn bare_onion(onion: &str) -> Result<(String, String), InviteError> {
     let o = onion.trim().to_lowercase();
     let bare = o.strip_suffix(".onion").unwrap_or(o.as_str());
-    if !is_v3_onion_label(bare) {
+    if !is_v3_onion_label(bare) || crate::onion_binding::onion_public_key(bare).is_none() {
         return Err(InviteError::BadFormat);
     }
     Ok((format!("{bare}.onion"), bare.to_string()))
@@ -609,8 +609,9 @@ mod tests {
     use crate::ratchet::encrypt_with_key;
 
     const NOW: u64 = 1_800_000_000;
-    const ONION_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const ONION_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    // Checksum-valid labels (not curve points). `aaaa…` is only the right length.
+    const ONION_A: &str = "aeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaea37ead";
+    const ONION_B: &str = "aibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibejsqd";
 
     fn pair() -> (LongTermIdentity, LongTermIdentity) {
         (

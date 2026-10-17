@@ -99,7 +99,9 @@ fn normalize_onion_parts(
     // One suffix only. trim_end_matches(".onion") would also eat a second
     // ".onion" and accept name.onion.onion as name.onion.
     let bare = o.strip_suffix(".onion").unwrap_or(o.as_str());
-    if !is_v3_onion_label(bare) {
+    // Shape first, then the Tor v3 checksum. A 56-character label is not
+    // an address Tor will open.
+    if !is_v3_onion_label(bare) || crate::onion_binding::onion_public_key(bare).is_none() {
         return Err(ContactLinkError::BadOnion);
     }
     Ok((format!("{bare}.onion"), bare.to_string()))
@@ -283,7 +285,23 @@ mod tests {
     use super::*;
 
     fn demo_onion() -> &'static str {
-        "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcd"
+        // Checksum matches. The old 56-letter alphabet string does not.
+        "aeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaea37ead"
+    }
+
+    #[test]
+    fn shape_only_onion_is_rejected() {
+        let id = LongTermIdentity::from_seed([1u8; 32]);
+        let fake = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcd";
+        assert_eq!(fake.len(), 56);
+        assert_eq!(
+            format_signed_contact_link(&id, fake).unwrap_err(),
+            ContactLinkError::BadOnion
+        );
+        assert_eq!(
+            format_signed_contact_link(&id, &"a".repeat(56)).unwrap_err(),
+            ContactLinkError::BadOnion
+        );
     }
 
     #[test]
@@ -325,9 +343,11 @@ mod tests {
             "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
             1,
         );
+        // The checksum fails before the signature is consulted. A swapped
+        // label is not an address Tor will open.
         assert_eq!(
             parse_signed_contact_link(&bad).unwrap_err(),
-            ContactLinkError::BadSignature
+            ContactLinkError::BadOnion
         );
     }
 
@@ -440,10 +460,10 @@ mod tests {
 
         let alice = LongTermIdentity::from_seed([0xA1; 32]);
         let bob = LongTermIdentity::from_seed([0xB2; 32]);
-        let onion_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        let onion_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        let link_a = format_signed_contact_link(&alice, onion_a).unwrap();
-        let link_b = format_signed_contact_link(&bob, onion_b).unwrap();
+        let onion_a = crate::onion_binding::test_support::onion_and_key(41).0;
+        let onion_b = crate::onion_binding::test_support::onion_and_key(42).0;
+        let link_a = format_signed_contact_link(&alice, &onion_a).unwrap();
+        let link_b = format_signed_contact_link(&bob, &onion_b).unwrap();
         let (mut r_a, _) = bootstrap_ratchet_from_signed_link(&alice, &link_b).unwrap();
         let (mut r_b, _) = bootstrap_ratchet_from_signed_link(&bob, &link_a).unwrap();
 
@@ -486,10 +506,10 @@ mod tests {
 
         let alice = LongTermIdentity::from_seed([0xA1; 32]);
         let bob = LongTermIdentity::from_seed([0xB2; 32]);
-        let onion_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        let onion_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        let link_a = format_signed_contact_link(&alice, onion_a).unwrap();
-        let link_b = format_signed_contact_link(&bob, onion_b).unwrap();
+        let onion_a = crate::onion_binding::test_support::onion_and_key(41).0;
+        let onion_b = crate::onion_binding::test_support::onion_and_key(42).0;
+        let link_a = format_signed_contact_link(&alice, &onion_a).unwrap();
+        let link_b = format_signed_contact_link(&bob, &onion_b).unwrap();
         let (mut r_a, _) = bootstrap_ratchet_from_signed_link(&alice, &link_b).unwrap();
         let (mut r_b, _) = bootstrap_ratchet_from_signed_link(&bob, &link_a).unwrap();
 
@@ -536,10 +556,10 @@ mod tests {
 
         let alice = LongTermIdentity::from_seed([0xA1; 32]);
         let bob = LongTermIdentity::from_seed([0xB2; 32]);
-        let onion_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        let onion_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        let link_a = format_signed_contact_link(&alice, onion_a).unwrap();
-        let link_b = format_signed_contact_link(&bob, onion_b).unwrap();
+        let onion_a = crate::onion_binding::test_support::onion_and_key(41).0;
+        let onion_b = crate::onion_binding::test_support::onion_and_key(42).0;
+        let link_a = format_signed_contact_link(&alice, &onion_a).unwrap();
+        let link_b = format_signed_contact_link(&bob, &onion_b).unwrap();
 
         let (mut r_a, _) = bootstrap_ratchet_from_signed_link(&alice, &link_b).unwrap();
         let (mut r_b, _) = bootstrap_ratchet_from_signed_link(&bob, &link_a).unwrap();

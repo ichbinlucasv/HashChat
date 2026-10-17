@@ -3144,8 +3144,14 @@ mod tests {
         plain.truncate(base);
 
         let mut book = crate::invite::PendingInvites::new();
-        book.issue(&id, &"a".repeat(56), None, 1_000, 3_600)
-            .unwrap();
+        book.issue(
+            &id,
+            "aeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaea37ead",
+            None,
+            1_000,
+            3_600,
+        )
+        .unwrap();
         let raw = book.to_bytes();
         plain.extend_from_slice(&(raw.len() as u32).to_be_bytes());
         plain.extend_from_slice(&raw);
@@ -3165,8 +3171,14 @@ mod tests {
             vec![],
         ));
         let mut book = crate::invite::PendingInvites::new();
-        book.issue(&id, &"b".repeat(56), None, 1_000, 3_600)
-            .unwrap();
+        book.issue(
+            &id,
+            "aibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibejsqd",
+            None,
+            1_000,
+            3_600,
+        )
+        .unwrap();
         session.pending_invites = book.to_bytes();
         let back = deserialize_blob(&serialize_blob_at(&session, 1_000)).unwrap();
         assert_eq!(back.pending_invites, session.pending_invites);
