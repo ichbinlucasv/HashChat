@@ -27,21 +27,21 @@ use hashchat_rust::{
     encrypt_with_key, extreme_default_lock_timeout, extreme_default_ttl, failwipe_config,
     format_bound_contact_link, format_jitter, format_lock_timeout, format_rollback, format_ttl,
     frame_v3, frame_v3_sealed, install_panic_scrub_hook, install_terminate_signal_flag,
-    is_onion_destination, is_sealed_hint,
-    is_terminal_safe, mlockall_current, pad_message, parse_bridge_line, parse_jitter_token,
-    parse_lock_timeout_token, parse_signed_contact_link, parse_ttl_token, push_char_no_realloc,
-    query_bridge_status, register_scrub_callback, running_binary_digest, sample_send_delay,
-    sanitize_for_terminal, sas_fingerprint, sas_for_signed, save_session_with_key, set_deadman,
-    set_duress_passphrase_with, set_failwipe, socks5_send, socks_isolation_for_contact,
-    socks_isolation_for_onion, start_hidden_service_with_key, state_exists, take_terminate_signal,
-    take_zeroizing_vec, tor_probe, torrc_snippet, touch_deadman, unframe_v3, unix_now,
-    unlock_backoff_delay_secs, unlock_session, unpad_message, wipe_if_deadman_due,
-    wipe_local_sensitive, wipe_on_duress, Attempt, BinaryStatus, BridgeVerdict, DnsPreference,
-    DoubleRatchet, DumpHardening, DuressAction, FrameV3, HiddenService, IdentityOnionState,
-    InboundDenyPolicy, LongTermIdentity, NetConfig, NetworkMode, PersistedContact, PostureProfile,
-    SaveMarkStatus, SessionState, SocksIsolationCreds, StoreKey, UnlockBackoffPolicy, WipeSettings,
-    DEFAULT_LOCK_TIMEOUT_SECS, ERR_QUEUE_FULL, MAX_DEADMAN_DAYS, MAX_FAIL_LIMIT,
-    MAX_PLAINTEXT_SEND_BYTES, MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME,
+    is_onion_destination, is_sealed_hint, is_terminal_safe, mlockall_current, pad_message,
+    parse_bridge_line, parse_jitter_token, parse_lock_timeout_token, parse_signed_contact_link,
+    parse_ttl_token, push_char_no_realloc, query_bridge_status, register_scrub_callback,
+    running_binary_digest, sample_send_delay, sanitize_for_terminal, sas_fingerprint,
+    sas_for_signed, save_session_with_key, set_deadman, set_duress_passphrase_with, set_failwipe,
+    socks5_send, socks_isolation_for_contact, socks_isolation_for_onion,
+    start_hidden_service_with_key, state_exists, take_terminate_signal, take_zeroizing_vec,
+    tor_probe, torrc_snippet, touch_deadman, unframe_v3, unix_now, unlock_backoff_delay_secs,
+    unlock_session, unpad_message, wipe_if_deadman_due, wipe_local_sensitive, wipe_on_duress,
+    Attempt, BinaryStatus, BridgeVerdict, DnsPreference, DoubleRatchet, DumpHardening,
+    DuressAction, FrameV3, HiddenService, IdentityOnionState, InboundDenyPolicy, LongTermIdentity,
+    NetConfig, NetworkMode, PersistedContact, PostureProfile, SaveMarkStatus, SessionState,
+    SocksIsolationCreds, StoreKey, UnlockBackoffPolicy, WipeSettings, DEFAULT_LOCK_TIMEOUT_SECS,
+    ERR_QUEUE_FULL, MAX_DEADMAN_DAYS, MAX_FAIL_LIMIT, MAX_PLAINTEXT_SEND_BYTES,
+    MIN_NEW_PASSPHRASE_CHARS, MIN_NEW_PASSPHRASE_CHARS_EXTREME,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -2152,12 +2152,7 @@ impl App {
         // Named hint: sender's static x25519. Sealed (empty) hint: trial-decrypt
         // active contact first, then verified, then the rest — AEAD failure does
         // not commit ratchet state, so wrong contacts stay untouched.
-        let order = inbound_contact_order(
-            &contacts,
-            &hint,
-            active_id.as_deref(),
-            &verified_ids,
-        );
+        let order = inbound_contact_order(&contacts, &hint, active_id.as_deref(), &verified_ids);
         for idx in order {
             let c = &contacts[idx];
             // Fail-closed block: do not decrypt or display for blocked contacts.
@@ -3580,9 +3575,7 @@ impl App {
                 self.push_msg(
                     "  :jitter [off|30s|2m]    random delay before each send (default off)",
                 );
-                self.push_msg(
-                    "  :sealed [on|off]        empty-hint sealed sender (default on)",
-                );
+                self.push_msg("  :sealed [on|off]        empty-hint sealed sender (default on)");
                 self.push_msg("  :block / :unblock [id]  refuse send + drop inbound (fail-closed)");
                 self.push_msg("  :mute / :unmute [id]    suppress inbound UI (decrypt for sync)");
                 self.push_msg("  :blocked                list blocked + muted ids");
