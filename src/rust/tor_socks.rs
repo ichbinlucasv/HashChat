@@ -45,8 +45,9 @@ pub fn is_loopback_host(host: &str) -> bool {
 /// H4: outbound destinations must be Tor v3 onions.
 ///
 /// Accepts `label.onion` or `label.onion:<port>`. `label` is exactly 56
-/// base32 characters (`a-z`, `2-7`). Extra labels, userinfo, a second
-/// `.onion`, or a port that is not 1–65535 are refused before any handshake.
+/// base32 characters (`a-z`, `2-7`) whose checksum matches the v3 address.
+/// Extra labels, userinfo, a second `.onion`, a bare label with no suffix,
+/// or a port that is not 1–65535 are refused before any handshake.
 pub fn is_onion_destination(dest: &str) -> bool {
     let d = dest.trim().to_ascii_lowercase();
     let (host, port) = match d.split_once(':') {
@@ -64,10 +65,12 @@ pub fn is_onion_destination(dest: &str) -> bool {
             return false;
         }
     }
-    let Some(label) = host.strip_suffix(".onion") else {
+    // The suffix is part of the destination. A bare 56-character label is
+    // not a hostname Tor will open, even when its checksum is valid.
+    if !host.ends_with(".onion") {
         return false;
-    };
-    crate::contact_link::is_v3_onion_label(label)
+    }
+    crate::onion_binding::onion_public_key(host).is_some()
 }
 
 #[derive(Clone, Debug)]
@@ -505,10 +508,16 @@ mod tests {
         assert!(loopback_socket_addr("example.org", 9050).is_none());
     }
 
+    fn routable_onion(seed: u8) -> String {
+        let (bare, _) = crate::onion_binding::test_support::onion_and_key(seed);
+        format!("{bare}.onion")
+    }
+
     #[test]
     fn onion_destination_checks() {
-        let v3 = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcd.onion";
-        assert!(is_onion_destination(v3));
+        let v3 = routable_onion(9);
+        assert!(is_onion_destination(&v3));
+        assert!(!is_onion_destination(v3.strip_suffix(".onion").unwrap()));
         assert!(is_onion_destination(&format!("{v3}:80")));
         assert!(!is_onion_destination("example.com"));
         assert!(!is_onion_destination("short.onion"));
@@ -517,15 +526,7 @@ mod tests {
 
     #[test]
     fn socks_send_refuses_non_loopback_without_connect() {
-        let err = socks5_send(
-            "8.8.8.8",
-            9050,
-            "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcd.onion",
-            80,
-            b"x",
-            None,
-        )
-        .unwrap_err();
+        let err = socks5_send("8.8.8.8", 9050, &routable_onion(9), 80, b"x", None).unwrap_err();
         assert!(err.contains("loopback"));
     }
 
@@ -550,8 +551,12 @@ mod tests {
         // Too short to be v3 even with .onion suffix.
         assert!(!is_onion_destination("abcd.onion"));
         assert!(!is_onion_destination("abcd.onion:80"));
-        let v3 = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcd.onion";
+        let v3 = routable_onion(9);
         assert!(is_onion_destination(&v3.to_ascii_uppercase()));
+        // Shape alone used to pass. The checksum does not.
+        assert!(!is_onion_destination(
+            "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcd.onion"
+        ));
         assert!(is_onion_destination(&format!("{v3}:443")));
         // Longer than a v3 name, so the old 62..=70 window used to allow these.
         assert!(!is_onion_destination(&format!("www.{v3}")));
@@ -639,16 +644,16 @@ mod tests {
 
     #[test]
     fn socks_isolation_credentials_deterministic_and_distinct() {
-        let a = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcd.onion";
-        let b = "bcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcde.onion";
-        let ca = socks_isolation_for_onion(a).unwrap();
-        let ca2 = socks_isolation_for_onion(a).unwrap();
-        let cb = socks_isolation_for_onion(b).unwrap();
+        let a = routable_onion(9);
+        let b = routable_onion(10);
+        let ca = socks_isolation_for_onion(&a).unwrap();
+        let ca2 = socks_isolation_for_onion(&a).unwrap();
+        let cb = socks_isolation_for_onion(&b).unwrap();
         assert_eq!(ca, ca2);
         assert_ne!(ca, cb);
         let ca_p = socks_isolation_for_onion(&format!("{a}:80")).unwrap();
         assert_eq!(ca_p, ca);
-        let (ua, pa) = socks_isolation_credentials(a).unwrap();
+        let (ua, pa) = socks_isolation_credentials(&a).unwrap();
         assert_eq!(ua, ca.username());
         assert_eq!(pa, ca.password());
     }
@@ -661,8 +666,8 @@ mod tests {
 
     #[test]
     fn socks5_connect_with_auth_refuses_empty_credentials_without_connect() {
-        let onion = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcd.onion";
-        let err = socks5_connect_with_auth("127.0.0.1", 9050, onion, 80, b"", b"x").unwrap_err();
+        let onion = routable_onion(9);
+        let err = socks5_connect_with_auth("127.0.0.1", 9050, &onion, 80, b"", b"x").unwrap_err();
         assert!(err.contains("credentials"), "unexpected: {err}");
     }
 
@@ -670,8 +675,8 @@ mod tests {
     fn socks5_isolated_handshake_against_local_mock() {
         use std::net::TcpListener;
         use std::thread;
-        let onion = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcd.onion";
-        let creds = socks_isolation_for_onion(onion).unwrap();
+        let onion = routable_onion(9);
+        let creds = socks_isolation_for_onion(&onion).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let expect_user = creds.username().to_string();
@@ -710,7 +715,7 @@ mod tests {
                 .unwrap();
             "ok".to_string()
         });
-        let stream = socks5_connect("127.0.0.1", addr.port(), onion, 80, Some(&creds)).unwrap();
+        let stream = socks5_connect("127.0.0.1", addr.port(), &onion, 80, Some(&creds)).unwrap();
         drop(stream);
         assert_eq!(handle.join().unwrap(), "ok");
     }
@@ -719,7 +724,7 @@ mod tests {
     fn socks5_no_auth_handshake_against_local_mock() {
         use std::net::TcpListener;
         use std::thread;
-        let onion = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcd.onion";
+        let onion = routable_onion(9);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = thread::spawn(move || {
@@ -740,7 +745,7 @@ mod tests {
                 .unwrap();
             "ok".to_string()
         });
-        let stream = socks5_connect("127.0.0.1", addr.port(), onion, 80, None).unwrap();
+        let stream = socks5_connect("127.0.0.1", addr.port(), &onion, 80, None).unwrap();
         drop(stream);
         assert_eq!(handle.join().unwrap(), "ok");
     }

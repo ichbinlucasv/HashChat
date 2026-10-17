@@ -19,8 +19,9 @@ const LABEL: &[u8] = b"HashChat-onion-binding-v1";
 const KEY_PREFIX: &str = "ED25519-V3:";
 
 /// The 32-byte service public key inside a v3 onion hostname (with or without
-/// the `.onion` suffix). The two checksum bytes are not checked: the signature
-/// check against the key itself is what matters here.
+/// the `.onion` suffix). The two checksum bytes must match SHA3-256 of
+/// `".onion checksum" || pubkey || 0x03`, or this is not an address Tor will
+/// route. A signature over the embedded key is checked separately.
 pub fn onion_public_key(onion: &str) -> Option<[u8; 32]> {
     let host = onion.trim().to_ascii_lowercase();
     let host = host.strip_suffix(".onion").unwrap_or(&host);
@@ -33,7 +34,22 @@ pub fn onion_public_key(onion: &str) -> Option<[u8; 32]> {
     }
     let mut key = [0u8; 32];
     key.copy_from_slice(&raw[..32]);
+    let sum = v3_checksum(&key);
+    if raw[32] != sum[0] || raw[33] != sum[1] {
+        return None;
+    }
     Some(key)
+}
+
+/// First two bytes of SHA3-256(`.onion checksum` || pubkey || version).
+fn v3_checksum(pubkey: &[u8; 32]) -> [u8; 2] {
+    use sha3::{Digest, Sha3_256};
+    let mut hasher = Sha3_256::new();
+    hasher.update(b".onion checksum");
+    hasher.update(pubkey);
+    hasher.update([3u8]);
+    let dig = hasher.finalize();
+    [dig[0], dig[1]]
 }
 
 fn binding_message(onion_key: &[u8; 32], ed25519: &[u8; 32], x25519: &[u8; 32]) -> Vec<u8> {
@@ -177,8 +193,9 @@ pub(crate) mod test_support {
         arr.copy_from_slice(&h);
         let esk = ExpandedSecretKey::from_bytes(&arr);
         let pk = VerifyingKey::from(&esk).to_bytes();
+        let sum = super::v3_checksum(&pk);
         let mut raw = pk.to_vec();
-        raw.extend_from_slice(&[0, 0, 3]);
+        raw.extend_from_slice(&[sum[0], sum[1], 3]);
         (
             base32_encode(&raw),
             format!("{KEY_PREFIX}{}", base64_encode(&arr)),
@@ -199,6 +216,33 @@ mod tests {
         assert!(onion_public_key(&format!("{onion}.onion")).is_some());
         assert!(onion_public_key("short").is_none());
         assert!(onion_public_key(&"1".repeat(56)).is_none());
+    }
+
+    #[test]
+    fn checksum_rejects_an_altered_address() {
+        let (onion, _) = onion_and_key(4);
+        assert!(onion_public_key(&onion).is_some());
+        let mut chars: Vec<char> = onion.chars().collect();
+        chars[0] = if chars[0] == 'a' { 'b' } else { 'a' };
+        let bad: String = chars.into_iter().collect();
+        assert_ne!(bad, onion);
+        assert!(onion_public_key(&bad).is_none());
+        // The old generator stored checksum bytes 0x00 0x00. That is not a v3 address.
+        assert!(onion_public_key(&"a".repeat(56)).is_none());
+    }
+
+    #[test]
+    fn checksum_matches_a_published_v3_address() {
+        // DuckDuckGo's public onion. Checked against SHA3-256 of the spec
+        // string, not against a value this crate made up.
+        let onion = "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad";
+        assert_eq!(onion.len(), 56);
+        assert!(onion_public_key(onion).is_some());
+        assert!(onion_public_key(&format!("{onion}.onion")).is_some());
+        let mut chars: Vec<char> = onion.chars().collect();
+        chars[10] = if chars[10] == 'a' { 'b' } else { 'a' };
+        let bad: String = chars.into_iter().collect();
+        assert!(onion_public_key(&bad).is_none());
     }
 
     #[test]
