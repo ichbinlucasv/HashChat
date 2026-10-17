@@ -32,9 +32,22 @@
 //! who intercepted the invite itself; comparing the SAS out of band still
 //! decides trust.
 //!
-//! Status: the TUI issues invites (`:invite`), redeems them and accepts
-//! replies through `:add-contact`. Carrying the reply inside the first
-//! frame instead of out of band is open.
+//! # In-band reply (hello frame)
+//! The redeemer can also carry the reply to the inviter's onion inside a
+//! frame that has the shape of a sealed v3 frame
+//! ([`crate::wire::frame_v3_sealed`]: empty hint, step 0, epoch 0):
+//! `sender_dh` is a fresh ephemeral X25519 key, and the padded reply is sealed
+//! with AES-256-GCM under
+//! `HKDF-SHA256(ikm = DH(ephemeral, inviter static), salt = invite salt,
+//! info = "hc-invite-hello-v1" || invite id)`, AAD = the v3 wire AAD.
+//! Opening needs both the inviter's static key and an open invite's salt.
+//! The inviter trial-opens against its open invites ([`PendingInvites::open_hello`]);
+//! a frame that opens none of them spends nothing, so junk cannot burn invites.
+//!
+//! Status: the TUI issues invites (`:invite`), redeems them with
+//! `:add-contact` (which queues the hello frame to the inviter's onion and
+//! still prints the out-of-band reply as a fallback), accepts out-of-band
+//! replies through `:add-contact` and accepts hello frames on receive.
 
 use crate::contact_link::{
     hex_decode, hex_encode, parse_signed_contact_link, sas_fingerprint, ContactLinkError,
@@ -51,6 +64,7 @@ const CONTACT_PREFIX: &str = "hashchat://contact/v1/";
 const REPLY_TAG_LABEL: &[u8] = b"hc-invite-reply-v1";
 const REPLY_TAG_LEN: usize = 16;
 const PAYLOAD_TAG: &[u8] = b"hc-invite-v1";
+const HELLO_INFO: &[u8] = b"hc-invite-hello-v1";
 /// Most open invites one profile keeps; older ones must be redeemed or expire.
 pub const MAX_PENDING_INVITES: usize = 64;
 /// Longest lifetime an invite may be issued with (7 days).
@@ -314,6 +328,53 @@ fn split_invite_reply(raw: &str) -> Result<([u8; 16], [u8; REPLY_TAG_LEN], Strin
     Ok((id, tag, format!("{CONTACT_PREFIX}{body}")))
 }
 
+/// Hello frame key: HKDF-SHA256 over the ephemeral-static DH, salted with
+/// the invite salt and bound to the invite id.
+fn hello_key(dh: &[u8; 32], salt: &[u8; 32], invite_id: &[u8; 16]) -> [u8; 32] {
+    let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(salt), dh);
+    let mut info = Vec::with_capacity(HELLO_INFO.len() + 16);
+    info.extend_from_slice(HELLO_INFO);
+    info.extend_from_slice(invite_id);
+    let mut okm = [0u8; 32];
+    // 32 bytes is always a valid HKDF-SHA256 output length.
+    hk.expand(&info, &mut okm)
+        .expect("32-byte HKDF output is valid");
+    okm
+}
+
+/// Redeemer side: seal the invite reply into a hello frame for the
+/// inviter's onion. The frame has the sealed v3 shape (empty hint, step 0,
+/// epoch 0) and a padded size class, so it looks like any other first frame.
+pub fn invite_hello_frame(inv: &Invite, my_contact_link: &str) -> Result<Vec<u8>, InviteError> {
+    let mut reply = format_invite_reply(inv, my_contact_link)?;
+    let eph = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+    let eph_pub = X25519Public::from(&eph).to_bytes();
+    let shared = eph.diffie_hellman(&X25519Public::from(inv.x25519));
+    if !shared.was_contributory() {
+        reply.zeroize();
+        return Err(InviteError::DhFailed);
+    }
+    let mut dh = shared.to_bytes();
+    let mut key = hello_key(&dh, &inv.salt, &inv.invite_id);
+    dh.zeroize();
+    let padded = crate::padding::pad(reply.as_bytes());
+    reply.zeroize();
+    let mut padded = padded.map_err(|_| InviteError::BadFormat)?;
+    let aad = crate::ratchet::build_wire_aad_v3(&[], 0, 0, &eph_pub);
+    let ct = crate::ratchet::encrypt_with_key(&key, &padded, &aad);
+    key.zeroize();
+    padded.zeroize();
+    let ct = ct.map_err(|_| InviteError::BadFormat)?;
+    Ok(crate::wire::frame_v3_sealed(0, 0, &eph_pub, &ct))
+}
+
+/// True when a parsed v3 frame has the shape of a hello frame (sealed hint,
+/// step 0, epoch 0). Ordinary first messages share this shape, so this is
+/// only a cheap filter before [`PendingInvites::open_hello`].
+pub fn looks_like_hello(frame: &crate::wire::FrameV3) -> bool {
+    frame.hint.is_empty() && frame.step == 0 && frame.epoch_start == 0
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingEntry {
     salt: [u8; 32],
@@ -439,6 +500,63 @@ impl PendingInvites {
         };
         salt.zeroize();
         result
+    }
+
+    /// Inviter side: try to open a hello frame against every open,
+    /// unexpired invite. A frame that opens none of them returns
+    /// [`InviteError::UnknownOrUsed`] and spends nothing. A frame that opens
+    /// one spends that invite (through [`Self::accept_reply`]) whether or not
+    /// the carried reply then verifies.
+    pub fn open_hello(
+        &mut self,
+        local: &LongTermIdentity,
+        frame: &crate::wire::FrameV3,
+        now: u64,
+    ) -> Result<(DoubleRatchet, String, crate::contact_link::SignedContact), InviteError> {
+        if !looks_like_hello(frame) {
+            return Err(InviteError::BadFormat);
+        }
+        self.purge_expired(now);
+        if self.open.is_empty() {
+            return Err(InviteError::UnknownOrUsed);
+        }
+        let mut dh = local
+            .x25519_dh_checked(&X25519Public::from(frame.sender_dh))
+            .ok_or(InviteError::DhFailed)?;
+        let aad = crate::ratchet::build_wire_aad_v3(&[], 0, 0, &frame.sender_dh);
+        let mut opened: Option<([u8; 16], Vec<u8>)> = None;
+        for (id, e) in &self.open {
+            let mut key = hello_key(&dh, &e.salt, id);
+            let r = crate::ratchet::decrypt_with_key(&key, &frame.ciphertext, &aad);
+            key.zeroize();
+            if let Ok(pt) = r {
+                opened = Some((*id, pt));
+                break;
+            }
+        }
+        dh.zeroize();
+        let Some((id, mut padded)) = opened else {
+            return Err(InviteError::UnknownOrUsed);
+        };
+        let unpadded = crate::padding::unpad(&padded);
+        padded.zeroize();
+        let reply = match unpadded.ok().and_then(|b| String::from_utf8(b).ok()) {
+            Some(r) => zeroize::Zeroizing::new(r),
+            None => {
+                // Opened under this invite's key, so the invite is spent.
+                self.revoke(&id);
+                return Err(InviteError::BadFormat);
+            }
+        };
+        // The reply must name the invite whose key opened the frame.
+        match split_invite_reply(&reply) {
+            Ok((rid, _, _)) if rid == id => {}
+            _ => {
+                self.revoke(&id);
+                return Err(InviteError::BadReplyTag);
+            }
+        }
+        self.accept_reply(local, &reply, now)
     }
 
     /// Serialize for the encrypted profile state: per entry 16 B id, 32 B
@@ -736,5 +854,105 @@ mod tests {
         let id = parse_invite(&link, NOW + 10).unwrap().invite_id;
         assert!(pending.revoke(&id));
         assert!(!pending.revoke(&id));
+    }
+
+    fn hello_setup() -> (
+        LongTermIdentity,
+        LongTermIdentity,
+        PendingInvites,
+        Invite,
+        String,
+    ) {
+        let (bob, alice) = pair();
+        let mut pending = PendingInvites::new();
+        // A second open invite so trial-open has to pick the right one.
+        pending.issue(&bob, ONION_B, None, NOW, 3600).unwrap();
+        let link = pending.issue(&bob, ONION_B, None, NOW, 3600).unwrap();
+        let (_r, _sas, inv) = bootstrap_from_invite(&alice, &link, NOW + 5).unwrap();
+        let alice_link = format_signed_contact_link(&alice, ONION_A).unwrap();
+        (bob, alice, pending, inv, alice_link)
+    }
+
+    #[test]
+    fn hello_frame_carries_reply_in_band_once() {
+        let (bob, alice, mut pending, inv, alice_link) = hello_setup();
+        let (mut r_alice, _, _) = bootstrap_from_invite(
+            &alice,
+            &format_invite(&bob, ONION_B, None, &inv.invite_id, &inv.salt, inv.expires).unwrap(),
+            NOW + 5,
+        )
+        .unwrap();
+        let raw = invite_hello_frame(&inv, &alice_link).unwrap();
+        let frame = crate::wire::unframe_v3(&raw).unwrap();
+        assert!(looks_like_hello(&frame));
+        // Padded to a size class: ciphertext = class + nonce + tag.
+        assert!(crate::padding::SIZE_CLASSES
+            .iter()
+            .any(|c| frame.ciphertext.len() == c + 12 + 16));
+        let (mut r_bob, sas, peer) = pending.open_hello(&bob, &frame, NOW + 10).unwrap();
+        assert_eq!(peer.x25519, alice.x25519_public_bytes());
+        assert_eq!(
+            sas,
+            sas_fingerprint(
+                &alice.ed25519_public_bytes(),
+                &alice.x25519_public_bytes(),
+                &format!("{ONION_A}.onion")
+            )
+        );
+        assert!(talk(&mut r_alice, &mut r_bob));
+        assert!(talk(&mut r_bob, &mut r_alice));
+        assert_eq!(pending.len(), 1, "only the opened invite is spent");
+        assert_eq!(
+            pending.open_hello(&bob, &frame, NOW + 11).err().unwrap(),
+            InviteError::UnknownOrUsed
+        );
+    }
+
+    #[test]
+    fn hello_junk_or_wrong_inviter_spends_nothing() {
+        let (bob, alice, mut pending, inv, alice_link) = hello_setup();
+        let raw = invite_hello_frame(&inv, &alice_link).unwrap();
+        let frame = crate::wire::unframe_v3(&raw).unwrap();
+        // Someone else's static key cannot open it.
+        let carol = LongTermIdentity::from_seed([0xC3; 32]);
+        let mut carol_book = pending.clone();
+        assert_eq!(
+            carol_book
+                .open_hello(&carol, &frame, NOW + 10)
+                .err()
+                .unwrap(),
+            InviteError::UnknownOrUsed
+        );
+        // Flipped ciphertext byte: nothing opens, nothing spent.
+        let mut bad = frame.clone();
+        let last = bad.ciphertext.len() - 1;
+        bad.ciphertext[last] ^= 1;
+        assert_eq!(
+            pending.open_hello(&bob, &bad, NOW + 10).err().unwrap(),
+            InviteError::UnknownOrUsed
+        );
+        // Not hello-shaped (named hint) is refused before any crypto.
+        let mut named = frame.clone();
+        named.hint = alice.x25519_public_bytes().to_vec();
+        assert_eq!(
+            pending.open_hello(&bob, &named, NOW + 10).err().unwrap(),
+            InviteError::BadFormat
+        );
+        assert_eq!(pending.len(), 2);
+        // After expiry the genuine frame no longer opens.
+        assert_eq!(
+            pending.open_hello(&bob, &frame, inv.expires).err().unwrap(),
+            InviteError::UnknownOrUsed
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn hello_frames_use_fresh_ephemeral_keys() {
+        let (_bob, _alice, _pending, inv, alice_link) = hello_setup();
+        let a = crate::wire::unframe_v3(&invite_hello_frame(&inv, &alice_link).unwrap()).unwrap();
+        let b = crate::wire::unframe_v3(&invite_hello_frame(&inv, &alice_link).unwrap()).unwrap();
+        assert_ne!(a.sender_dh, b.sender_dh);
+        assert_ne!(a.ciphertext, b.ciphertext);
     }
 }

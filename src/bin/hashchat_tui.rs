@@ -2116,6 +2116,9 @@ impl App {
                     self.push_msg("Incoming frame dropped (blocked contact)");
                     self.status_msg = format!("Dropped inbound (blocked, {n} B)");
                 }
+                Err(e) if e == "no matching ratchet" && self.try_invite_hello(&frame) => {
+                    self.status_msg = format!("Invite reply received in band ({n} B)");
+                }
                 Err(_e) => {
                     // OPSEC: no frame bytes / decrypt detail in status.
                     self.push_msg("Incoming frame dropped (decrypt/verify failed)");
@@ -2345,7 +2348,7 @@ impl App {
                             format_ttl(ttl.min(u32::MAX as u64) as u32)
                         ));
                         self.push_msg(
-                            "Share it privately. The peer runs :add-contact <invite> and sends back a reply; you run :add-contact <reply>.",
+                            "Share it privately. The peer runs :add-contact <invite>; its reply arrives in band over Tor (or, as a fallback, you run :add-contact <reply>).",
                         );
                         self.status_msg = format!("Invite issued · {} open", book.len());
                     }
@@ -2390,8 +2393,74 @@ impl App {
                 return;
             }
         };
-        if self.install_contact(&inv.onion, inv.x25519, inv.ed25519, &sas, &ratchet) {
+        if !self.install_contact(&inv.onion, inv.x25519, inv.ed25519, &sas, &ratchet) {
+            return;
+        }
+        // In band: queue the reply as a hello frame to the inviter's onion so
+        // no out-of-band step is needed; the printed reply stays as fallback.
+        let queued = match invite::invite_hello_frame(&inv, &self.my_contact_link) {
+            Ok(frame) => self
+                .session
+                .as_mut()
+                .is_some_and(|s| s.queue_pending(&inv.onion, frame)),
+            Err(_) => false,
+        };
+        if queued && self.persist_session().is_ok() {
+            self.push_msg(
+                "Invite reply queued in band to the inviter's onion (goes out with the next Tor flush).",
+            );
+            self.push_msg(format!(
+                "Fallback only if the inviter never sees you: send this reply privately (once): {reply}"
+            ));
+            if self.tor_status == TorStatus::Available
+                && self.net.require_messenger_transport().is_ok()
+                && self.bridges_hold_reason().is_none()
+            {
+                self.retry_pending(false);
+            }
+        } else {
             self.push_msg(format!("Send this reply back privately (once): {reply}"));
+        }
+    }
+
+    /// Inviter: a frame that matched no contact may be an in-band invite
+    /// reply (hello frame). Returns true when it opened one of our invites.
+    fn try_invite_hello(&mut self, transport_frame: &[u8]) -> bool {
+        let Ok(frame) = unframe_v3(transport_frame) else {
+            return false;
+        };
+        if !invite::looks_like_hello(&frame) || self.session.is_none() {
+            return false;
+        }
+        let mut book = self.pending_invites();
+        if book.is_empty() {
+            return false;
+        }
+        let before = book.len();
+        let local = self.session.as_ref().unwrap().identity.identity();
+        let result = book.open_hello(&local, &frame, unix_now());
+        if book.len() != before {
+            // Spent (or expired entries purged): save before anything else.
+            self.store_pending_invites(&book);
+            let _ = self.persist_session();
+        }
+        match result {
+            Ok((ratchet, sas, peer)) => {
+                if !is_onion_destination(&peer.onion) || !peer.onion_bound {
+                    self.push_msg(
+                        "In-band invite reply refused: its contact link does not prove control of a v3 onion.",
+                    );
+                    return true;
+                }
+                self.push_msg("Invite redeemed in band (one-time invite spent).");
+                self.install_contact(&peer.onion, peer.x25519, peer.ed25519, &sas, &ratchet);
+                true
+            }
+            Err(invite::InviteError::UnknownOrUsed) | Err(invite::InviteError::DhFailed) => false,
+            Err(e) => {
+                self.push_msg(format!("In-band invite reply refused: {e}"));
+                true
+            }
         }
     }
 
@@ -5199,6 +5268,51 @@ mod tests {
         app.listen();
         assert!(app.hs.is_none());
         assert!(app.status_msg.starts_with(":listen held: bridges required"));
+    }
+
+    fn unlocked_app_with(id: &LongTermIdentity, onion: &str) -> App {
+        let mut app = locked_app();
+        let identity = IdentityOnionState {
+            seed: id.seed_bytes(),
+            onion: onion.into(),
+            onion_key: Vec::new(),
+        };
+        app.session = Some(SessionState::from_identity_with_net(
+            identity,
+            NetConfig::default(),
+        ));
+        app
+    }
+
+    #[test]
+    fn inviter_opens_in_band_hello_once_and_ignores_junk() {
+        let bob = LongTermIdentity::generate().unwrap();
+        let alice = LongTermIdentity::generate().unwrap();
+        let bob_onion = format!("{}.onion", "b".repeat(56));
+        let mut app = unlocked_app_with(&bob, &bob_onion);
+        let now = unix_now();
+        let mut book = invite::PendingInvites::new();
+        let link = book.issue(&bob, &bob_onion, None, now, 3600).unwrap();
+        app.store_pending_invites(&book);
+
+        // Junk with the hello shape: nothing opens, nothing is spent.
+        let junk = frame_v3_sealed(0, 0, &[7u8; 32], &[0u8; 540]);
+        assert!(!app.try_invite_hello(&junk));
+        assert_eq!(app.pending_invites().len(), 1);
+
+        let (_r, _sas, inv) = invite::bootstrap_from_invite(&alice, &link, now).unwrap();
+        let alice_link =
+            hashchat_rust::format_signed_contact_link(&alice, &"a".repeat(56)).unwrap();
+        let hello = invite::invite_hello_frame(&inv, &alice_link).unwrap();
+        // Opens and spends the invite; this unbound test link is then refused.
+        assert!(app.try_invite_hello(&hello));
+        assert!(app.pending_invites().is_empty());
+        assert!(app
+            .messages
+            .iter()
+            .any(|m| m.text.contains("does not prove control")));
+        // Replay: the invite is gone, so the frame no longer opens.
+        assert!(!app.try_invite_hello(&hello));
     }
 
     #[test]
