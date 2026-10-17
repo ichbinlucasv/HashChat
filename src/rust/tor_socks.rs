@@ -42,16 +42,32 @@ pub fn is_loopback_host(host: &str) -> bool {
     loopback_ip(host).is_some()
 }
 
-/// H4: outbound destinations must be Tor v3 onions (host part before optional `:port`).
+/// H4: outbound destinations must be Tor v3 onions.
+///
+/// Accepts `label.onion` or `label.onion:<port>`. `label` is exactly 56
+/// base32 characters (`a-z`, `2-7`). Extra labels, userinfo, a second
+/// `.onion`, or a port that is not 1–65535 are refused before any handshake.
 pub fn is_onion_destination(dest: &str) -> bool {
-    let host = dest
-        .split_once(':')
-        .map(|(h, _)| h)
-        .unwrap_or(dest)
-        .trim()
-        .to_ascii_lowercase();
-    // v3 onion: 56 base32 chars + ".onion" => 62
-    host.ends_with(".onion") && host.len() >= 62 && host.len() <= 70
+    let d = dest.trim().to_ascii_lowercase();
+    let (host, port) = match d.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (d.as_str(), None),
+    };
+    if let Some(port) = port {
+        if port.is_empty() || !port.bytes().all(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        let Ok(n) = port.parse::<u16>() else {
+            return false;
+        };
+        if n == 0 {
+            return false;
+        }
+    }
+    let Some(label) = host.strip_suffix(".onion") else {
+        return false;
+    };
+    crate::contact_link::is_v3_onion_label(label)
 }
 
 #[derive(Clone, Debug)]
@@ -534,6 +550,17 @@ mod tests {
         // Too short to be v3 even with .onion suffix.
         assert!(!is_onion_destination("abcd.onion"));
         assert!(!is_onion_destination("abcd.onion:80"));
+        let v3 = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcd.onion";
+        assert!(is_onion_destination(&v3.to_ascii_uppercase()));
+        assert!(is_onion_destination(&format!("{v3}:443")));
+        // Longer than a v3 name, so the old 62..=70 window used to allow these.
+        assert!(!is_onion_destination(&format!("www.{v3}")));
+        assert!(!is_onion_destination(&format!("user@{v3}")));
+        assert!(!is_onion_destination(&format!("{v3}.onion")));
+        assert!(!is_onion_destination(&format!("{v3}:0")));
+        assert!(!is_onion_destination(&format!("{v3}:99999")));
+        assert!(!is_onion_destination(&format!("{v3}/foo")));
+        assert!(!is_onion_destination(&format!("{}.onion", "1".repeat(56))));
     }
 
     #[test]

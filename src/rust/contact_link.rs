@@ -84,21 +84,25 @@ pub fn canonical_payload(onion_no_suffix: &str, x25519: &[u8; 32]) -> Vec<u8> {
     out
 }
 
+/// Tor v3 hostname label: exactly 56 base32 characters, `a-z` and `2-7`.
+pub(crate) fn is_v3_onion_label(label: &str) -> bool {
+    label.len() == 56
+        && label
+            .bytes()
+            .all(|c| matches!(c, b'a'..=b'z' | b'2'..=b'7'))
+}
+
 fn normalize_onion_parts(
     onion: &str,
 ) -> Result<(String /*full*/, String /*no suffix*/), ContactLinkError> {
     let o = onion.trim().to_lowercase();
-    let (full, bare) = if o.ends_with(".onion") {
-        let bare = o.trim_end_matches(".onion").to_string();
-        (o, bare)
-    } else {
-        (format!("{o}.onion"), o.clone())
-    };
-    // Tor v3 onion hostnames are 56 base32 chars + ".onion"
-    if bare.len() < 16 || bare.chars().any(|c| !c.is_ascii_alphanumeric()) {
+    // One suffix only. trim_end_matches(".onion") would also eat a second
+    // ".onion" and accept name.onion.onion as name.onion.
+    let bare = o.strip_suffix(".onion").unwrap_or(o.as_str());
+    if !is_v3_onion_label(bare) {
         return Err(ContactLinkError::BadOnion);
     }
-    Ok((full, bare))
+    Ok((format!("{bare}.onion"), bare.to_string()))
 }
 
 pub fn hex_encode(bytes: &[u8]) -> String {

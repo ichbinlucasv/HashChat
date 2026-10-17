@@ -50,7 +50,8 @@
 //! replies through `:add-contact` and accepts hello frames on receive.
 
 use crate::contact_link::{
-    hex_decode, hex_encode, parse_signed_contact_link, sas_fingerprint, ContactLinkError,
+    hex_decode, hex_encode, is_v3_onion_label, parse_signed_contact_link, sas_fingerprint,
+    ContactLinkError,
 };
 use crate::longterm_identity::LongTermIdentity;
 use crate::ratchet::DoubleRatchet;
@@ -144,11 +145,11 @@ pub fn invite_payload(
 
 fn bare_onion(onion: &str) -> Result<(String, String), InviteError> {
     let o = onion.trim().to_lowercase();
-    let bare = o.trim_end_matches(".onion").to_string();
-    if bare.len() < 16 || !bare.chars().all(|c| c.is_ascii_alphanumeric()) {
+    let bare = o.strip_suffix(".onion").unwrap_or(o.as_str());
+    if !is_v3_onion_label(bare) {
         return Err(InviteError::BadFormat);
     }
-    Ok((format!("{bare}.onion"), bare))
+    Ok((format!("{bare}.onion"), bare.to_string()))
 }
 
 fn fixed<const N: usize>(s: &str) -> Result<[u8; N], InviteError> {
