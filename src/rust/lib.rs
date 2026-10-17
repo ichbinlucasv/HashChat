@@ -20,6 +20,8 @@ mod hidden_service;
 /// One-time invitation links carrying the bootstrap salt (M-1).
 pub mod invite;
 mod longterm_identity;
+/// Chat transcript owned by Rust (Android maximum-Rust step 2).
+pub mod message_book;
 mod net_mode;
 mod onion_binding;
 mod padding;
