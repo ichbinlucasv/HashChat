@@ -28,6 +28,7 @@ use zeroize::Zeroize; // Required for explicit zeroize() on local chunk keys in 
 
 use hashchat_rust::device_posture::{self, DeviceSignals, Posture};
 use hashchat_rust::group_store::{GroupBook, GroupBookError};
+use hashchat_rust::message_book::{Delivery, MessageBook};
 
 /// Helper: wrap a raw jbyteArray (from Java native) into a high-level JByteArray for jni 0.21+.
 #[inline]
@@ -353,6 +354,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_wipeAll(_env: JNIEnv, _class
     lock(&ANDROID_GROUP_SENDER_KEY_STORE).clear();
     lock(&VOICE_STREAMS).clear();
     with_group_book(|b| b.clear());
+    with_message_book(|b| b.clear());
 }
 
 // ============================================================================
@@ -495,6 +497,177 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_groupBookMembers(
         return std::ptr::null_mut();
     };
     if env.set_int_array_region(&arr, 0, &ids).is_err() {
+        return std::ptr::null_mut();
+    }
+    arr.into_raw()
+}
+
+// ============================================================================
+// Chat transcript owned by Rust (Android maximum-Rust step 2).
+// Kotlin renders `messageBookTexts` / `messageBookMine` and wraps
+// `messageBookExport` with the Keystore before writing `messages.enc`.
+// Sanitising, limits, disappearing purge and the Extreme/strict
+// "memory only" rule live in `hashchat_rust::message_book`.
+// ============================================================================
+
+static MESSAGE_BOOK: Mutex<Option<MessageBook>> = Mutex::new(None);
+
+fn with_message_book<R>(f: impl FnOnce(&mut MessageBook) -> R) -> R {
+    let mut guard = MESSAGE_BOOK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    f(guard.get_or_insert_with(MessageBook::new))
+}
+
+fn now_secs() -> u64 {
+    hashchat_rust::unix_now()
+}
+
+/// Replace the transcript with Keystore-unwrapped bytes from `messages.enc`.
+/// Returns "" on success or a short error label (the book is then unchanged).
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_messageBookLoad(
+    mut env: JNIEnv,
+    _class: JClass,
+    plain: jbyteArray,
+) -> jni::sys::jstring {
+    let arr = unsafe { wrap_byte_array(plain) };
+    let label = match env.convert_byte_array(arr) {
+        Ok(mut bytes) => {
+            let r = with_message_book(|b| b.load(&bytes, now_secs()));
+            bytes.zeroize();
+            r.err().map_or("", |e| e.label())
+        }
+        Err(_) => "message list is malformed",
+    };
+    string_to_jstring(&mut env, label)
+}
+
+/// Encoded transcript for Keystore wrapping (an empty book when ephemeral).
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_messageBookExport(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jbyteArray {
+    let mut out = with_message_book(|b| b.export());
+    let arr = vec_to_java_byte_array(&mut env, &out);
+    out.zeroize();
+    arr
+}
+
+/// Extreme / strict: keep the transcript in memory only.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_messageBookSetEphemeral(
+    _env: JNIEnv,
+    _class: JClass,
+    on: jboolean,
+) {
+    with_message_book(|b| b.set_ephemeral(on != 0));
+}
+
+/// Append a message; `ttl_secs` 0 = no disappearing timer. Returns its id.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_messageBookAdd(
+    mut env: JNIEnv,
+    _class: JClass,
+    mine: jboolean,
+    text: jni::sys::jstring,
+    ttl_secs: jint,
+) -> jni::sys::jlong {
+    let mut text = jstring_to_string(&mut env, text);
+    let ttl = u64::try_from(ttl_secs).unwrap_or(0);
+    let id = with_message_book(|b| b.add(mine != 0, &text, now_secs(), ttl));
+    text.zeroize();
+    i64::try_from(id).unwrap_or(0)
+}
+
+/// Delivery state: 0 none, 1 queued, 2 sent, 3 failed. False if unknown.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_messageBookSetDelivery(
+    _env: JNIEnv,
+    _class: JClass,
+    id: jni::sys::jlong,
+    state: jint,
+) -> jboolean {
+    let (Ok(id), Some(d)) = (
+        u64::try_from(id),
+        u8::try_from(state).ok().and_then(Delivery::from_u8),
+    ) else {
+        return 0;
+    };
+    u8::from(with_message_book(|b| b.set_delivery(id, d)))
+}
+
+/// Delete one message by position in the rendered list.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_messageBookDeleteAt(
+    _env: JNIEnv,
+    _class: JClass,
+    position: jint,
+) -> jboolean {
+    let Ok(pos) = usize::try_from(position) else {
+        return 0;
+    };
+    u8::from(with_message_book(|b| {
+        let id = b.entries().nth(pos).map(|e| e.id);
+        id.is_some_and(|id| b.delete(id))
+    }))
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_messageBookClear(_env: JNIEnv, _class: JClass) {
+    with_message_book(|b| b.clear());
+}
+
+/// Drop messages whose disappearing timer ran out. Returns how many.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_messageBookPurgeExpired(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    let n = with_message_book(|b| b.purge_expired(now_secs()));
+    jint::try_from(n).unwrap_or(jint::MAX)
+}
+
+/// Sanitised message texts, oldest first.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_messageBookTexts(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jobjectArray {
+    let texts: Vec<String> = with_message_book(|b| b.entries().map(|e| e.text.clone()).collect());
+    let out = (|| -> jni::errors::Result<jni::sys::jobjectArray> {
+        let arr = env.new_object_array(
+            texts.len() as jni::sys::jsize,
+            "java/lang/String",
+            jni::objects::JObject::null(),
+        )?;
+        for (i, t) in texts.iter().enumerate() {
+            let js = env.new_string(t)?;
+            env.set_object_array_element(&arr, i as jni::sys::jsize, &js)?;
+            env.delete_local_ref(js)?;
+        }
+        Ok(arr.into_raw())
+    })()
+    .unwrap_or(std::ptr::null_mut());
+    for mut t in texts {
+        t.zeroize();
+    }
+    out
+}
+
+/// Direction flags matching `messageBookTexts` (true = sent by me).
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_messageBookMine(
+    env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jbooleanArray {
+    let flags: Vec<jboolean> =
+        with_message_book(|b| b.entries().map(|e| u8::from(e.mine)).collect());
+    let Ok(arr) = env.new_boolean_array(flags.len() as jni::sys::jsize) else {
+        return std::ptr::null_mut();
+    };
+    if env.set_boolean_array_region(&arr, 0, &flags).is_err() {
         return std::ptr::null_mut();
     }
     arr.into_raw()
@@ -1163,7 +1336,6 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_importGroupSenderKey(
         Err(_) => -1,
     }
 }
-
 
 // === Group sender-key book (Android maximum-Rust: Keystore-wrapped at rest) ===
 // Binary format (no passphrase; Kotlin wraps with HashChatKeystore):

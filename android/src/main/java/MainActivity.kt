@@ -85,6 +85,21 @@ object HashChatNative {
     external fun groupSenderKeyBookLoad(plain: ByteArray): String
     external fun groupSenderKeyBookClear()
 
+    // Chat transcript owned by Rust (shared message_book::MessageBook).
+    // Rust sanitises, bounds and expires messages; Kotlin renders the texts
+    // and direction flags and Keystore-wraps messageBookExport() for
+    // messages.enc. An ephemeral book (EXTREME / strict) exports nothing.
+    external fun messageBookLoad(plain: ByteArray): String
+    external fun messageBookExport(): ByteArray
+    external fun messageBookSetEphemeral(on: Boolean)
+    external fun messageBookAdd(mine: Boolean, text: String, ttlSecs: Int): Long
+    external fun messageBookSetDelivery(id: Long, state: Int): Boolean
+    external fun messageBookDeleteAt(position: Int): Boolean
+    external fun messageBookClear()
+    external fun messageBookPurgeExpired(): Int
+    external fun messageBookTexts(): Array<String>
+    external fun messageBookMine(): BooleanArray
+
     // Combined Kotlin + JNI strict mode (authoritative for refusal decisions).
     // Expands the old stub with real root detection, dangerous props via reflection + files,
     // Build.TAGS test-keys, userdebug, ro.debuggable, etc. + delegates to Rust for /proc/fs signals.
@@ -215,7 +230,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var input: EditText
     private lateinit var sendBtn: Button
     private lateinit var topBar: TextView
-    private val messages = mutableListOf<String>()   // (sender|text|isEncrypted) in real version use data class + ratchet state
+    // Render mirror of the Rust-owned transcript (refreshMessagesFromRust).
+    private val messages = mutableListOf<String>()
+    private val messagesMine = mutableListOf<Boolean>()
+    // Disappearing timer for new messages, seconds (0 = off); enforced in Rust.
+    private var disappearTtlSecs = 0
 
     // med-8: Multi-screen state
     private var currentScreen: Screen = Screen.CHAT
@@ -337,6 +356,7 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Exception) {}
         }.apply { isDaemon = true }.start()
 
+        loadPersistedMessages()
         // Initial demo messages + posture (matches TUI startup)
         addMessage("=== HashChat (Double Ratchet + Tor v3 only) ===", false)
         addMessage("Long-press any message for Simplex-style actions (Block / Report / Delete / Disappear / Security)", false)
@@ -344,9 +364,63 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun addMessage(text: String, isMine: Boolean) {
-        messages.add(text)
-        messageList.adapter?.notifyItemInserted(messages.size - 1)
-        messageList.scrollToPosition(messages.size - 1)
+        HashChatNative.messageBookAdd(isMine, text, disappearTtlSecs)
+        refreshMessagesFromRust()
+        if (messages.isNotEmpty()) messageList.scrollToPosition(messages.size - 1)
+    }
+
+    // Pull the transcript from Rust (after purging expired messages).
+    private fun refreshMessagesFromRust() {
+        HashChatNative.messageBookPurgeExpired()
+        messages.clear()
+        messages.addAll(HashChatNative.messageBookTexts())
+        messagesMine.clear()
+        messagesMine.addAll(HashChatNative.messageBookMine().toList())
+        messageList.adapter?.notifyDataSetChanged()
+    }
+
+    private fun clearMessages() {
+        HashChatNative.messageBookClear()
+        File(filesDir, "messages.enc").delete()
+        refreshMessagesFromRust()
+    }
+
+    // messages.enc: Keystore unwrap in Kotlin, parse/validate/expire in Rust.
+    private fun loadPersistedMessages() {
+        HashChatNative.messageBookSetEphemeral(EXTREME_MODE || HashChatNative.isStrictModeEnabled())
+        val f = File(filesDir, "messages.enc")
+        if (f.exists()) {
+            try {
+                val plain = HashChatKeystore.decryptFromStorage(f.readBytes())
+                val err = HashChatNative.messageBookLoad(plain)
+                plain.fill(0)
+                if (err.isNotEmpty()) {
+                    Toast.makeText(this, "Messages not loaded: $err", Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(this, "Messages could not be unwrapped", Toast.LENGTH_LONG).show()
+            }
+        }
+        refreshMessagesFromRust()
+    }
+
+    // Save the transcript: encoded by Rust, wrapped by Keystore. In
+    // EXTREME/strict the Rust book is ephemeral, so nothing is kept on disk.
+    private fun persistMessages() {
+        val f = File(filesDir, "messages.enc")
+        if (EXTREME_MODE || HashChatNative.isStrictModeEnabled()) {
+            HashChatNative.messageBookSetEphemeral(true)
+            f.delete()
+            return
+        }
+        val plain = HashChatNative.messageBookExport()
+        try {
+            f.writeBytes(HashChatKeystore.encryptForStorage(plain))
+        } catch (e: Exception) {
+            Toast.makeText(this, "Messages not saved", Toast.LENGTH_SHORT).show()
+        } finally {
+            plain.fill(0)
+        }
     }
 
     /**
@@ -372,13 +446,17 @@ class MainActivity : AppCompatActivity() {
                     0 -> { Toast.makeText(this, "BLOCKED. Future messages ignored.", Toast.LENGTH_SHORT).show() }
                     1 -> Toast.makeText(this, "Muted (local only).", Toast.LENGTH_SHORT).show()
                     2 -> {
-                        messages.clear()
-                        messageList.adapter?.notifyDataSetChanged()
+                        clearMessages()
                         Toast.makeText(this, "Chat deleted + history wiped.", Toast.LENGTH_SHORT).show()
                     }
                     3 -> Toast.makeText(this, "REPORTED as suspicious (local log).", Toast.LENGTH_SHORT).show()
                     4 -> Toast.makeText(this, "E2EE: Double Ratchet + AES-256-GCM over Tor v3. Posture: MAX.", Toast.LENGTH_LONG).show()
-                    5 -> Toast.makeText(this, "Disappearing enabled (ties to ratchet key wipe on expiry).", Toast.LENGTH_SHORT).show()
+                    5 -> {
+                        // Toggle a 1 h timer for new messages; Rust purges on expiry.
+                        disappearTtlSecs = if (disappearTtlSecs == 0) 3600 else 0
+                        val state = if (disappearTtlSecs == 0) "off" else "1 h for new messages"
+                        Toast.makeText(this, "Disappearing: $state", Toast.LENGTH_SHORT).show()
+                    }
                     6 -> {
                         // Deep Wave: Extreme mode refuses export
                         if (EXTREME_MODE) {
@@ -429,8 +507,7 @@ class MainActivity : AppCompatActivity() {
     fun onBlockContact(v: View) { Toast.makeText(this, "BLOCKED (Simplex parity)", Toast.LENGTH_SHORT).show() }
     fun onReportContact(v: View) { Toast.makeText(this, "REPORTED suspicious", Toast.LENGTH_SHORT).show() }
     fun onDeleteChat(v: View) {
-        messages.clear()
-        messageList.adapter?.notifyDataSetChanged()
+        clearMessages()
     }
     fun onPanicWipe(v: View) {
         AlertDialog.Builder(this)
@@ -472,7 +549,9 @@ class MainActivity : AppCompatActivity() {
         try {
             HashChatNative.wipeAll()
             HashChatNative.groupSenderKeyBookClear()
+            HashChatNative.messageBookClear()
         } catch (_: Exception) { }
+        File(filesDir, "messages.enc").delete()
         File(filesDir, "groups.enc").delete()
         File(filesDir, "group_sender_keys.enc").delete()
         Toast.makeText(this, "PANIC WIPE executed (all material destroyed)", Toast.LENGTH_LONG).show()
@@ -663,8 +742,9 @@ class MainActivity : AppCompatActivity() {
             holder.text.text = txt
             holder.text.setTextColor(Color.parseColor("#FFFFFF"))
 
-            // Custom bubble styling for Simplex parity (gold sent messages, dark received)
-            if (txt.startsWith("You:")) {
+            // Custom bubble styling for Simplex parity (gold sent messages, dark received).
+            // Direction comes from the Rust message book, not from the text.
+            if (messagesMine.getOrElse(position) { false }) {
                 holder.text.setTextColor(Color.parseColor("#000000"))
                 holder.text.setBackgroundColor(Color.parseColor("#FFD700"))   // gold bubble for sent
             } else {
@@ -982,6 +1062,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        persistMessages()
         clearSensitiveScreenState()
     }
 
