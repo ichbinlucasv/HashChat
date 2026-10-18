@@ -1,5 +1,6 @@
 use zeroize::Zeroize;
 
+pub mod backup;
 mod binary_check;
 mod bridges;
 mod clock_check;

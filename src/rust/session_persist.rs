@@ -899,7 +899,7 @@ fn read_string_list(buf: &[u8], pos: &mut usize) -> Result<Vec<String>, &'static
     Ok(out)
 }
 
-fn serialize_blob(state: &SessionState) -> Vec<u8> {
+pub(crate) fn serialize_blob(state: &SessionState) -> Vec<u8> {
     serialize_blob_at(state, crate::deadman::unix_now())
 }
 
@@ -991,7 +991,7 @@ fn serialize_blob_at(state: &SessionState, now_unix: u64) -> Vec<u8> {
     plain
 }
 
-fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
+pub(crate) fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static str> {
     if plain.is_empty() {
         return Err("empty state blob");
     }
