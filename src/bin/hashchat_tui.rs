@@ -8,6 +8,7 @@
 //!
 //! Panic / SIGINT / SIGTERM: best-effort in-RAM secret scrub (not a substitute for `:wipe`).
 
+use std::fs;
 use std::io::{self, stdout};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -17,6 +18,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use hashchat_rust::backup::export_backup;
 use hashchat_rust::invite;
 use hashchat_rust::{
     attempt_failed, attempt_succeeded, begin_attempt, binary_status,
@@ -110,6 +112,8 @@ enum Screen {
     ConfirmDeleteContact,
     /// Masked two-step entry for the duress passphrase (`:duress set`).
     SetDuress,
+    /// Masked two-step entry for a backup passphrase (`:backup export PATH`).
+    SetBackup,
     /// Read-only SAS comparison grid (`:sas-grid`). Esc/Enter returns.
     SasGrid,
     /// Read-only own contact-link card (`:contact-card`). Esc/Enter returns.
@@ -285,6 +289,8 @@ struct App {
     save_mark: SaveMarkStatus,
     /// Action chosen by `:duress set` / `:duress set decoy` while the entry screen is open.
     duress_setup_action: DuressAction,
+    /// Target file for `:backup export PATH` while the passphrase entry is open.
+    backup_target: Option<std::path::PathBuf>,
     /// Last user input Instant (Main / confirm screens). Used for idle auto-lock.
     last_input_at: Instant,
     /// Pending contact id for `:delete-contact-confirm` (cleared on Esc / success).
@@ -424,6 +430,7 @@ impl App {
             wipe_settings_changed: Vec::new(),
             save_mark: SaveMarkStatus::Unrecorded,
             duress_setup_action: DuressAction::Wipe,
+            backup_target: None,
             last_input_at: Instant::now(),
             pending_delete_contact: None,
             unlock_fail_count: 0,
@@ -864,6 +871,98 @@ impl App {
         self.push_msg(self.status_msg.clone());
     }
 
+    /// `:backup export PATH` opens a masked passphrase entry; `:backup` prints help.
+    fn handle_backup(&mut self, args: &str) {
+        let mut parts = args.splitn(2, ' ');
+        match (parts.next().unwrap_or(""), parts.next().map(str::trim)) {
+            ("export", Some(path)) if !path.is_empty() => {
+                let Some(session) = self.session.as_ref() else {
+                    self.status_msg = "Unlock first.".into();
+                    return;
+                };
+                if session.net.is_extreme() {
+                    self.status_msg =
+                        "extreme posture refuses backups (no durable contact copy)".into();
+                    self.push_msg(self.status_msg.clone());
+                    return;
+                }
+                let target = std::path::PathBuf::from(path);
+                if fs::symlink_metadata(&target).is_ok() {
+                    self.status_msg = "Backup refused: that file already exists.".into();
+                    self.push_msg(self.status_msg.clone());
+                    return;
+                }
+                self.backup_target = Some(target);
+                self.clear_input_secure();
+                self.passphrase.zeroize();
+                self.passphrase.clear();
+                self.passphrase_confirm.zeroize();
+                self.passphrase_confirm.clear();
+                self.unlock_step = UnlockStep::EnterPass;
+                self.screen = Screen::SetBackup;
+                self.status_msg = "Enter a passphrase for the backup file.".into();
+            }
+            _ => {
+                self.status_msg = "Usage: :backup export <path>".into();
+                self.push_msg(self.status_msg.clone());
+                self.push_msg(
+                    "  A backup holds your identity, onion key, contacts and settings, sealed \
+                     with its own passphrase. It leaves out ratchets, held frames and open \
+                     invites, so after a restore each contact needs a fresh :invite.",
+                );
+            }
+        }
+    }
+
+    fn cancel_backup_entry(&mut self) {
+        self.backup_target = None;
+        self.passphrase.zeroize();
+        self.passphrase.clear();
+        self.passphrase_confirm.zeroize();
+        self.passphrase_confirm.clear();
+        self.unlock_step = UnlockStep::EnterPass;
+        self.screen = Screen::Main;
+        self.focus = Focus::Input;
+    }
+
+    fn submit_backup_entry(&mut self) {
+        if self.passphrase.is_empty() {
+            self.status_msg = "Passphrase required.".into();
+            return;
+        }
+        if self.unlock_step == UnlockStep::EnterPass {
+            if let Err(reason) = check_new_passphrase(&self.passphrase, false) {
+                self.status_msg = format!("Backup passphrase refused: {reason}.");
+                self.passphrase.zeroize();
+                self.passphrase.clear();
+                return;
+            }
+            self.unlock_step = UnlockStep::ConfirmPass;
+            self.status_msg = "Confirm the backup passphrase.".into();
+            return;
+        }
+        let result = match (self.session.as_ref(), self.backup_target.as_ref()) {
+            _ if self.passphrase != self.passphrase_confirm => Err("passphrases do not match"),
+            (Some(session), Some(target)) => export_backup(session, &self.passphrase, unix_now())
+                .and_then(|bytes| write_backup_file(target, &bytes)),
+            _ => Err("no unlocked session"),
+        };
+        let shown = self
+            .backup_target
+            .as_ref()
+            .map(|p| sanitize_for_terminal(&p.display().to_string()).into_owned())
+            .unwrap_or_default();
+        self.cancel_backup_entry();
+        self.status_msg = match result {
+            Ok(()) => format!(
+                "Backup written to {shown}. Keep it and its passphrase apart; \
+                 contacts need a fresh :invite after a restore."
+            ),
+            Err(reason) => format!("Backup refused: {reason}."),
+        };
+        self.push_msg(self.status_msg.clone());
+    }
+
     fn handle_delete_contact_confirm(&mut self) {
         let Some(id) = self.pending_delete_contact.take() else {
             self.screen = Screen::Main;
@@ -944,6 +1043,7 @@ impl App {
                 | Screen::ConfirmWipe
                 | Screen::ConfirmDeleteContact
                 | Screen::SetDuress
+                | Screen::SetBackup
                 | Screen::SasGrid
                 | Screen::ContactCard
                 | Screen::Support
@@ -3670,6 +3770,9 @@ impl App {
                 self.push_msg(
                     "  :duress set decoy       same, then opens an empty profile instead",
                 );
+                self.push_msg(
+                    "  :backup export <path>   encrypted backup (own passphrase, no ratchets)",
+                );
                 self.push_msg("  :deadman [set N|off]    wipe at start if not unlocked for N days");
                 self.push_msg("  :wipe-after [set N|off] wipe after N failed unlocks");
                 self.push_msg(
@@ -3806,6 +3909,10 @@ impl App {
                 let args = other.strip_prefix(":deadman").unwrap_or("").trim();
                 self.handle_deadman(args);
             }
+            other if other == ":backup" || other.starts_with(":backup ") => {
+                let args = other.strip_prefix(":backup").unwrap_or("").trim();
+                self.handle_backup(args);
+            }
             other if other == ":duress" || other.starts_with(":duress ") => {
                 let args = other.strip_prefix(":duress").unwrap_or("").trim();
                 self.handle_duress(args);
@@ -3931,6 +4038,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
         Screen::ConfirmWipe => draw_wipe_modal(f, app, area),
         Screen::ConfirmDeleteContact => draw_delete_contact_modal(f, app, area),
         Screen::SetDuress => draw_duress_entry(f, app, area),
+        Screen::SetBackup => draw_backup_entry(f, app, area),
         Screen::SasGrid => draw_sas_grid(f, app, area),
         Screen::ContactCard => draw_contact_card(f, app, area),
         Screen::Support => draw_support(f, area),
@@ -4587,6 +4695,60 @@ fn draw_duress_entry(f: &mut ratatui::Frame, app: &App, area: Rect) {
     );
 }
 
+fn draw_backup_entry(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    blank_backdrop(f, area);
+    let rect = centered_rect(area, area.width.clamp(48, 76), 14);
+    let (prompt, len) = if app.unlock_step == UnlockStep::ConfirmPass {
+        ("Confirm:", app.passphrase_confirm.chars().count())
+    } else {
+        ("Backup passphrase:", app.passphrase.chars().count())
+    };
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "The backup file is sealed with this passphrase.",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(Span::styled(
+            "Anyone with the file and this passphrase holds your identity.",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(""),
+        confirm_field(prompt, "•".repeat(len), true),
+        Line::from(""),
+        Line::from(Span::styled(
+            sanitize_for_terminal(&app.status_msg).into_owned(),
+            Style::default().fg(DIM),
+        )),
+        Line::from(Span::styled(
+            "Enter accept · Esc cancel",
+            Style::default().fg(DIM),
+        )),
+    ];
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(card_block("encrypted backup", true))
+            .wrap(Wrap { trim: false }),
+        rect,
+    );
+}
+
+/// Write a backup with a new 0600 file; never overwrites or follows a symlink.
+fn write_backup_file(path: &Path, bytes: &[u8]) -> Result<(), &'static str> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|_| "could not create the file (exists, or no permission)")?;
+    f.write_all(bytes).map_err(|_| "write failed")?;
+    f.sync_all().map_err(|_| "sync failed")?;
+    Ok(())
+}
+
 /// `:sas-grid` — SAS of the selected contact as 8 mono blocks (compare out of band).
 fn draw_sas_grid(f: &mut ratatui::Frame, app: &App, area: Rect) {
     blank_backdrop(f, area);
@@ -4877,6 +5039,7 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
                 | Screen::ConfirmWipe
                 | Screen::ConfirmDeleteContact
                 | Screen::SetDuress
+                | Screen::SetBackup
                 | Screen::SasGrid
                 | Screen::ContactCard
                 | Screen::Support
@@ -4894,6 +5057,31 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
                     app.unlock_step = UnlockStep::EnterPass;
                 }
                 KeyCode::Enter => app.try_unlock(),
+                KeyCode::Backspace => {
+                    if app.unlock_step == UnlockStep::ConfirmPass {
+                        app.passphrase_confirm.pop();
+                    } else {
+                        app.passphrase.pop();
+                    }
+                }
+                KeyCode::Char(ch) => {
+                    let buf = if app.unlock_step == UnlockStep::ConfirmPass {
+                        &mut app.passphrase_confirm
+                    } else {
+                        &mut app.passphrase
+                    };
+                    if !push_secret_char(buf, ch) {
+                        app.status_msg = "Passphrase too long.".into();
+                    }
+                }
+                _ => {}
+            },
+            Screen::SetBackup => match key.code {
+                KeyCode::Esc => {
+                    app.cancel_backup_entry();
+                    app.status_msg = "Backup cancelled.".into();
+                }
+                KeyCode::Enter => app.submit_backup_entry(),
                 KeyCode::Backspace => {
                     if app.unlock_step == UnlockStep::ConfirmPass {
                         app.passphrase_confirm.pop();
@@ -5203,6 +5391,59 @@ mod tests {
         let app = App::new();
         assert!(app.session.is_none());
         app
+    }
+
+    #[test]
+    fn backup_export_writes_a_file_that_opens() {
+        let dir = std::env::temp_dir().join(format!("hc-backup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("profile.hcbk");
+        let mut app = demo_app(true, TorStatus::Available);
+        app.handle_backup(&format!("export {}", target.display()));
+        assert!(app.screen == Screen::SetBackup);
+        let pass = "a long backup passphrase";
+        app.passphrase = "short".into();
+        app.submit_backup_entry();
+        assert!(app.status_msg.contains("refused"), "{}", app.status_msg);
+        assert!(app.screen == Screen::SetBackup && app.passphrase.is_empty());
+        app.passphrase = pass.into();
+        app.submit_backup_entry();
+        app.passphrase_confirm = pass.into();
+        app.submit_backup_entry();
+        assert!(app.screen == Screen::Main, "{}", app.status_msg);
+        assert!(
+            app.status_msg.contains("Backup written"),
+            "{}",
+            app.status_msg
+        );
+        assert!(app.passphrase.is_empty() && app.passphrase_confirm.is_empty());
+        let bytes = fs::read(&target).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let (restored, info) = hashchat_rust::backup::open_backup(&bytes, pass).unwrap();
+        assert_eq!(info.contacts, 3);
+        assert_eq!(restored.contacts[0].display_name, "Alice");
+        // An existing file is never overwritten.
+        app.handle_backup(&format!("export {}", target.display()));
+        assert!(app.screen == Screen::Main && app.status_msg.contains("already exists"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backup_refused_when_locked_or_extreme() {
+        let mut app = locked_app();
+        app.handle_backup("export /tmp/never-written.hcbk");
+        assert!(app.screen != Screen::SetBackup);
+        let mut app = demo_app(true, TorStatus::Available);
+        app.session.as_mut().unwrap().net.posture = PostureProfile::Extreme;
+        app.handle_backup("export /tmp/never-written.hcbk");
+        assert!(app.screen == Screen::Main && app.status_msg.contains("extreme"));
+        app.handle_backup("");
+        assert!(app.status_msg.starts_with("Usage: :backup"));
     }
 
     #[test]
