@@ -18,7 +18,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use hashchat_rust::backup::export_backup;
+use hashchat_rust::backup::{export_backup, install_fresh_profile, open_backup, read_backup_file};
 use hashchat_rust::invite;
 use hashchat_rust::{
     attempt_failed, attempt_succeeded, begin_attempt, binary_status,
@@ -112,7 +112,7 @@ enum Screen {
     ConfirmDeleteContact,
     /// Masked two-step entry for the duress passphrase (`:duress set`).
     SetDuress,
-    /// Masked two-step entry for a backup passphrase (`:backup export PATH`).
+    /// Passphrase entry for `:backup export`, or Ctrl+R restore on a fresh profile.
     SetBackup,
     /// Read-only SAS comparison grid (`:sas-grid`). Esc/Enter returns.
     SasGrid,
@@ -178,6 +178,18 @@ struct ChatLine {
 /// Passphrase buffers are pre-allocated to this many bytes and never grow, so
 /// typing does not leave freed copies of passphrase prefixes on the heap.
 const PASSPHRASE_BUF_CAP: usize = 1024;
+/// Upper bound on a restore path typed at the create screen.
+const BACKUP_PATH_CAP: usize = 4096;
+
+/// Which backup screen is open. Export confirms one passphrase; restore asks
+/// for a path, the file passphrase, then a new profile passphrase.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BackupPhase {
+    ExportPass,
+    RestorePath,
+    RestoreFilePass,
+    RestoreProfilePass,
+}
 
 fn push_secret_char(buf: &mut String, ch: char) -> bool {
     push_char_no_realloc(buf, ch, PASSPHRASE_BUF_CAP)
@@ -289,8 +301,15 @@ struct App {
     save_mark: SaveMarkStatus,
     /// Action chosen by `:duress set` / `:duress set decoy` while the entry screen is open.
     duress_setup_action: DuressAction,
-    /// Target file for `:backup export PATH` while the passphrase entry is open.
+    /// Target file for `:backup export PATH`, or the restore path, while that
+    /// screen is open.
     backup_target: Option<std::path::PathBuf>,
+    /// Export versus the Ctrl+R restore steps.
+    backup_phase: BackupPhase,
+    /// Ciphertext of the backup file, held only until it opens or the user cancels.
+    backup_bytes: Vec<u8>,
+    /// Opened backup waiting for the new profile passphrase. Zeroized on drop.
+    pending_restore: Option<SessionState>,
     /// Last user input Instant (Main / confirm screens). Used for idle auto-lock.
     last_input_at: Instant,
     /// Pending contact id for `:delete-contact-confirm` (cleared on Esc / success).
@@ -431,6 +450,9 @@ impl App {
             save_mark: SaveMarkStatus::Unrecorded,
             duress_setup_action: DuressAction::Wipe,
             backup_target: None,
+            backup_phase: BackupPhase::ExportPass,
+            backup_bytes: Vec::new(),
+            pending_restore: None,
             last_input_at: Instant::now(),
             pending_delete_contact: None,
             unlock_fail_count: 0,
@@ -892,7 +914,9 @@ impl App {
                     self.push_msg(self.status_msg.clone());
                     return;
                 }
+                self.clear_restore_scratch();
                 self.backup_target = Some(target);
+                self.backup_phase = BackupPhase::ExportPass;
                 self.clear_input_secure();
                 self.passphrase.zeroize();
                 self.passphrase.clear();
@@ -910,22 +934,72 @@ impl App {
                      with its own passphrase. It leaves out ratchets, held frames and open \
                      invites, so after a restore each contact needs a fresh :invite.",
                 );
+                self.push_msg(
+                    "  Restore: on the create screen, before a profile exists, Ctrl+R. \
+                     It will not overwrite a profile.",
+                );
             }
         }
     }
 
-    fn cancel_backup_entry(&mut self) {
+    /// Drop backup ciphertext and any opened restore state.
+    fn clear_restore_scratch(&mut self) {
+        self.backup_phase = BackupPhase::ExportPass;
         self.backup_target = None;
+        self.backup_bytes.zeroize();
+        self.backup_bytes.clear();
+        if let Some(mut state) = self.pending_restore.take() {
+            state.wipe_memory_secure();
+        }
+    }
+
+    fn cancel_backup_entry(&mut self) {
+        let back_to_create = self.backup_phase != BackupPhase::ExportPass && self.session.is_none();
+        self.clear_restore_scratch();
         self.passphrase.zeroize();
         self.passphrase.clear();
         self.passphrase_confirm.zeroize();
         self.passphrase_confirm.clear();
+        self.clear_input_secure();
         self.unlock_step = UnlockStep::EnterPass;
-        self.screen = Screen::Main;
-        self.focus = Focus::Input;
+        if back_to_create {
+            self.screen = Screen::Unlock;
+        } else {
+            self.screen = Screen::Main;
+            self.focus = Focus::Input;
+        }
+    }
+
+    /// Ctrl+R on the create screen. A directory that already has a profile
+    /// cannot restore: that would replace its identity.
+    fn begin_restore(&mut self) {
+        if !self.unlock_mode_create || state_exists(Path::new(DATA_DIR)) {
+            self.status_msg =
+                "a profile already exists here; restore only into a fresh directory".into();
+            return;
+        }
+        self.clear_restore_scratch();
+        self.passphrase.zeroize();
+        self.passphrase.clear();
+        self.passphrase_confirm.zeroize();
+        self.passphrase_confirm.clear();
+        self.clear_input_secure();
+        self.backup_phase = BackupPhase::RestorePath;
+        self.unlock_step = UnlockStep::EnterPass;
+        self.screen = Screen::SetBackup;
+        self.status_msg = "Path of the backup file.".into();
     }
 
     fn submit_backup_entry(&mut self) {
+        match self.backup_phase {
+            BackupPhase::ExportPass => self.submit_backup_export(),
+            BackupPhase::RestorePath => self.submit_restore_path(),
+            BackupPhase::RestoreFilePass => self.submit_restore_file_pass(),
+            BackupPhase::RestoreProfilePass => self.submit_restore_profile_pass(),
+        }
+    }
+
+    fn submit_backup_export(&mut self) {
         if self.passphrase.is_empty() {
             self.status_msg = "Passphrase required.".into();
             return;
@@ -961,6 +1035,205 @@ impl App {
             Err(reason) => format!("Backup refused: {reason}."),
         };
         self.push_msg(self.status_msg.clone());
+    }
+
+    fn submit_restore_path(&mut self) {
+        let mut path = self.input.trim().to_string();
+        if path.is_empty() {
+            self.status_msg = "Enter the backup file path.".into();
+            return;
+        }
+        let target = std::path::PathBuf::from(&path);
+        match read_backup_file(&target) {
+            Ok(bytes) => {
+                self.backup_bytes.zeroize();
+                self.backup_bytes = bytes;
+                self.backup_target = Some(target);
+                self.clear_input_secure();
+                path.zeroize();
+                self.backup_phase = BackupPhase::RestoreFilePass;
+                self.status_msg = "Passphrase of the backup file.".into();
+            }
+            Err(reason) => {
+                path.zeroize();
+                self.status_msg = format!("Backup refused: {reason}.");
+            }
+        }
+    }
+
+    fn submit_restore_file_pass(&mut self) {
+        if self.passphrase.is_empty() {
+            self.status_msg = "Passphrase required.".into();
+            return;
+        }
+        if self.backup_bytes.is_empty() {
+            self.passphrase.zeroize();
+            self.passphrase.clear();
+            self.backup_phase = BackupPhase::RestorePath;
+            self.status_msg = "Enter the backup file path.".into();
+            return;
+        }
+        let mut bytes = std::mem::take(&mut self.backup_bytes);
+        let opened = open_backup(&bytes, &self.passphrase);
+        self.passphrase.zeroize();
+        self.passphrase.clear();
+        match opened {
+            Ok((state, _info)) => {
+                bytes.zeroize();
+                if state.net.is_extreme() {
+                    let mut state = state;
+                    state.wipe_memory_secure();
+                    self.status_msg =
+                        "extreme posture refuses backups (no durable contact copy)".into();
+                    return;
+                }
+                self.pending_restore = Some(state);
+                self.backup_phase = BackupPhase::RestoreProfilePass;
+                self.unlock_step = UnlockStep::EnterPass;
+                self.status_msg = "New passphrase for this profile.".into();
+            }
+            Err(reason) => {
+                self.backup_bytes = bytes;
+                self.status_msg = format!("Backup refused: {reason}.");
+            }
+        }
+    }
+
+    fn submit_restore_profile_pass(&mut self) {
+        if self.passphrase.is_empty() {
+            self.status_msg = "Passphrase required.".into();
+            return;
+        }
+        if self.unlock_step == UnlockStep::EnterPass {
+            if let Err(reason) = check_new_passphrase(&self.passphrase, false) {
+                self.status_msg = format!("Profile passphrase refused: {reason}.");
+                self.passphrase.zeroize();
+                self.passphrase.clear();
+                return;
+            }
+            self.unlock_step = UnlockStep::ConfirmPass;
+            self.status_msg = "Confirm the profile passphrase.".into();
+            return;
+        }
+        if self.passphrase != self.passphrase_confirm {
+            self.status_msg = "Passphrases do not match.".into();
+            self.passphrase.zeroize();
+            self.passphrase.clear();
+            self.passphrase_confirm.zeroize();
+            self.passphrase_confirm.clear();
+            self.unlock_step = UnlockStep::EnterPass;
+            return;
+        }
+        if state_exists(Path::new(DATA_DIR)) {
+            if let Some(mut state) = self.pending_restore.take() {
+                state.wipe_memory_secure();
+            }
+            self.cancel_backup_entry();
+            self.status_msg =
+                "a profile already exists here; restore only into a fresh directory".into();
+            return;
+        }
+        let Some(mut state) = self.pending_restore.take() else {
+            self.cancel_backup_entry();
+            self.status_msg = "Restore cancelled.".into();
+            return;
+        };
+        let contacts = state.contacts.len();
+        let result = install_fresh_profile(Path::new(DATA_DIR), &state, &self.passphrase);
+        self.passphrase.zeroize();
+        self.passphrase.clear();
+        self.passphrase_confirm.zeroize();
+        self.passphrase_confirm.clear();
+        match result {
+            Ok(key) => {
+                self.backup_target = None;
+                self.backup_phase = BackupPhase::ExportPass;
+                self.unlock_step = UnlockStep::EnterPass;
+                self.open_restored_session(state, key, contacts);
+            }
+            Err(reason) => {
+                state.wipe_memory_secure();
+                self.backup_phase = BackupPhase::ExportPass;
+                self.backup_target = None;
+                self.unlock_step = UnlockStep::EnterPass;
+                self.screen = Screen::Unlock;
+                self.status_msg = format!("Restore refused: {reason}.");
+            }
+        }
+    }
+
+    /// Enter the main screen with a profile just written by `install_fresh_profile`.
+    ///
+    /// Prefs come from the backup. The binary digest and wipe-settings record
+    /// are stamped for this machine the same way a first unlock does. The
+    /// save-mark warning is not raised: this process just wrote the file.
+    fn open_restored_session(&mut self, mut state: SessionState, key: StoreKey, contacts: usize) {
+        self.net = state.net.clone();
+        self.disappear_ttl_secs = state.disappear_ttl_secs;
+        self.lock_timeout_secs = state.lock_timeout_secs;
+        self.send_jitter_secs = state.send_jitter_secs;
+        self.sealed_send = true;
+        self.clock_behind_secs = clock_rollback_secs(state.clock_mark_unix, unix_now());
+        let running = running_binary_digest();
+        self.binary_changed = match binary_status(&state.binary_digest, running.as_ref()) {
+            BinaryStatus::Changed => true,
+            BinaryStatus::Unrecorded => {
+                if let Some(cur) = running {
+                    state.binary_digest = cur;
+                }
+                false
+            }
+            BinaryStatus::Same | BinaryStatus::Unavailable => false,
+        };
+        let on_disk = WipeSettings::from_disk(Path::new(DATA_DIR));
+        self.wipe_settings_changed = match &state.wipe_settings {
+            Some(recorded) => on_disk.changes_since(recorded),
+            None => {
+                state.wipe_settings = Some(on_disk);
+                Vec::new()
+            }
+        };
+        self.save_mark = SaveMarkStatus::Match;
+        self.store_key = Some(Box::new(key));
+        self.unlock_fail_count = 0;
+        self.unlock_cooldown_until = None;
+        self.session = Some(state);
+        self.apply_extreme_ttl_default();
+        self.apply_extreme_lock_default();
+        let _ = self.persist_session();
+        self.refresh_identity_display();
+        self.unlock_mode_create = false;
+        self.screen = Screen::Main;
+        self.focus = Focus::Input;
+        self.touch_input();
+        if contacts > 0 {
+            self.select_contact(0);
+        }
+        let line = if contacts == 0 {
+            "Restored a profile with no contacts. :listen then :add-contact to begin.".to_string()
+        } else {
+            format!(
+                "Restored {contacts} contact(s). Ratchets were not restored; \
+                 each contact needs a fresh :invite before chat."
+            )
+        };
+        self.push_msg(line.clone());
+        self.status_msg = line;
+        self.apply_mlock_best_effort();
+        if let Some(behind) = self.clock_behind_secs {
+            let line = clock_warning_line(behind);
+            self.push_msg(line.clone());
+            self.status_msg = line;
+        }
+        if self.binary_changed {
+            self.push_msg(BINARY_WARNING.to_string());
+            self.status_msg = BINARY_WARNING.into();
+        }
+        if !self.wipe_settings_changed.is_empty() {
+            let line = wipe_settings_warning(&self.wipe_settings_changed);
+            self.push_msg(line.clone());
+            self.status_msg = line;
+        }
     }
 
     fn handle_delete_contact_confirm(&mut self) {
@@ -1086,6 +1359,7 @@ impl App {
         self.my_contact_link.clear();
         self.clear_transcript_secure();
         self.pending_delete_contact = None;
+        self.clear_restore_scratch();
         self.contacts_state = ListState::default();
         self.selected_contact = None;
         // Prefs kept in App for status until re-unlock overwrites from blob.
@@ -1113,6 +1387,7 @@ impl App {
         self.passphrase.clear();
         self.passphrase_confirm.zeroize();
         self.passphrase_confirm.clear();
+        self.clear_restore_scratch();
         self.clear_input_secure();
         self.my_sas.zeroize();
         self.my_sas.clear();
@@ -3587,6 +3862,7 @@ impl App {
                 self.my_contact_link.clear();
                 self.clear_transcript_secure();
                 self.pending_delete_contact = None;
+                self.clear_restore_scratch();
                 self.disappear_ttl_secs = 0;
                 self.lock_timeout_secs = DEFAULT_LOCK_TIMEOUT_SECS;
                 self.send_jitter_secs = 0;
@@ -3772,6 +4048,9 @@ impl App {
                 );
                 self.push_msg(
                     "  :backup export <path>   encrypted backup (own passphrase, no ratchets)",
+                );
+                self.push_msg(
+                    "  Ctrl+R on the create screen restores a backup into a fresh profile",
                 );
                 self.push_msg("  :deadman [set N|off]    wipe at start if not unlocked for N days");
                 self.push_msg("  :wipe-after [set N|off] wipe after N failed unlocks");
@@ -4109,7 +4388,11 @@ fn draw_unlock(f: &mut ratatui::Frame, app: &App, area: Rect) {
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "Enter unlock · Esc clear · Tor required for network use",
+            if app.unlock_mode_create {
+                "Enter unlock · Esc clear · Ctrl+R restore a backup"
+            } else {
+                "Enter unlock · Esc clear · Tor required for network use"
+            },
             Style::default().fg(DIM),
         )),
         Line::from(Span::styled(
@@ -4697,24 +4980,64 @@ fn draw_duress_entry(f: &mut ratatui::Frame, app: &App, area: Rect) {
 
 fn draw_backup_entry(f: &mut ratatui::Frame, app: &App, area: Rect) {
     blank_backdrop(f, area);
-    let rect = centered_rect(area, area.width.clamp(48, 76), 14);
-    let (prompt, len) = if app.unlock_step == UnlockStep::ConfirmPass {
-        ("Confirm:", app.passphrase_confirm.chars().count())
-    } else {
-        ("Backup passphrase:", app.passphrase.chars().count())
+    let rect = centered_rect(area, area.width.clamp(48, 76), 16);
+    let (title, line_a, line_b, prompt, shown) = match app.backup_phase {
+        BackupPhase::RestorePath => {
+            let shown = if app.input.is_empty() {
+                String::new()
+            } else {
+                sanitize_for_terminal(&app.input).into_owned()
+            };
+            (
+                "restore backup",
+                "Fresh profile only. This does not overwrite an existing one.",
+                "Ratchets stay out, so each contact needs a new :invite.",
+                "Backup file:",
+                shown,
+            )
+        }
+        BackupPhase::RestoreFilePass => (
+            "restore backup",
+            "Passphrase of the backup file, not the new profile.",
+            "Anyone with the file and this passphrase holds your identity.",
+            "Backup passphrase:",
+            "•".repeat(app.passphrase.chars().count()),
+        ),
+        BackupPhase::RestoreProfilePass => {
+            let (prompt, len) = if app.unlock_step == UnlockStep::ConfirmPass {
+                ("Confirm:", app.passphrase_confirm.chars().count())
+            } else {
+                ("New profile passphrase:", app.passphrase.chars().count())
+            };
+            (
+                "restore backup",
+                "This passphrase seals the new profile on this machine.",
+                "The backup passphrase is not reused.",
+                prompt,
+                "•".repeat(len),
+            )
+        }
+        BackupPhase::ExportPass => {
+            let (prompt, len) = if app.unlock_step == UnlockStep::ConfirmPass {
+                ("Confirm:", app.passphrase_confirm.chars().count())
+            } else {
+                ("Backup passphrase:", app.passphrase.chars().count())
+            };
+            (
+                "encrypted backup",
+                "The backup file is sealed with this passphrase.",
+                "Anyone with the file and this passphrase holds your identity.",
+                prompt,
+                "•".repeat(len),
+            )
+        }
     };
     let lines = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            "The backup file is sealed with this passphrase.",
-            Style::default().fg(TEXT),
-        )),
-        Line::from(Span::styled(
-            "Anyone with the file and this passphrase holds your identity.",
-            Style::default().fg(TEXT),
-        )),
+        Line::from(Span::styled(line_a, Style::default().fg(TEXT))),
+        Line::from(Span::styled(line_b, Style::default().fg(TEXT))),
         Line::from(""),
-        confirm_field(prompt, "•".repeat(len), true),
+        confirm_field(prompt, shown, true),
         Line::from(""),
         Line::from(Span::styled(
             sanitize_for_terminal(&app.status_msg).into_owned(),
@@ -4727,7 +5050,7 @@ fn draw_backup_entry(f: &mut ratatui::Frame, app: &App, area: Rect) {
     ];
     f.render_widget(
         Paragraph::new(lines)
-            .block(card_block("encrypted backup", true))
+            .block(card_block(title, true))
             .wrap(Wrap { trim: false }),
         rect,
     );
@@ -5049,6 +5372,11 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
 
         match app.screen {
             Screen::Unlock => match key.code {
+                KeyCode::Char('r') | KeyCode::Char('R')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    app.begin_restore();
+                }
                 KeyCode::Esc => {
                     app.passphrase.zeroize();
                     app.passphrase.clear();
@@ -5078,25 +5406,41 @@ fn run(dumps: DumpHardening) -> io::Result<()> {
             },
             Screen::SetBackup => match key.code {
                 KeyCode::Esc => {
+                    let restoring = app.backup_phase != BackupPhase::ExportPass;
                     app.cancel_backup_entry();
-                    app.status_msg = "Backup cancelled.".into();
+                    app.status_msg = if restoring {
+                        "Restore cancelled.".into()
+                    } else {
+                        "Backup cancelled.".into()
+                    };
                 }
                 KeyCode::Enter => app.submit_backup_entry(),
                 KeyCode::Backspace => {
-                    if app.unlock_step == UnlockStep::ConfirmPass {
+                    if app.backup_phase == BackupPhase::RestorePath {
+                        app.input.pop();
+                    } else if app.unlock_step == UnlockStep::ConfirmPass {
                         app.passphrase_confirm.pop();
                     } else {
                         app.passphrase.pop();
                     }
                 }
+                KeyCode::Char(_) if key.modifiers.contains(KeyModifiers::CONTROL) => {}
                 KeyCode::Char(ch) => {
-                    let buf = if app.unlock_step == UnlockStep::ConfirmPass {
-                        &mut app.passphrase_confirm
+                    if app.backup_phase == BackupPhase::RestorePath {
+                        if app.input.chars().count() >= BACKUP_PATH_CAP {
+                            app.status_msg = "Path too long.".into();
+                        } else {
+                            app.input.push(ch);
+                        }
                     } else {
-                        &mut app.passphrase
-                    };
-                    if !push_secret_char(buf, ch) {
-                        app.status_msg = "Passphrase too long.".into();
+                        let buf = if app.unlock_step == UnlockStep::ConfirmPass {
+                            &mut app.passphrase_confirm
+                        } else {
+                            &mut app.passphrase
+                        };
+                        if !push_secret_char(buf, ch) {
+                            app.status_msg = "Passphrase too long.".into();
+                        }
                     }
                 }
                 _ => {}
@@ -5444,6 +5788,188 @@ mod tests {
         assert!(app.screen == Screen::Main && app.status_msg.contains("extreme"));
         app.handle_backup("");
         assert!(app.status_msg.starts_with("Usage: :backup"));
+        assert!(app.messages.iter().any(|m| m.text.contains("Ctrl+R")));
+    }
+
+    #[test]
+    fn restore_refused_when_a_profile_would_be_overwritten() {
+        let mut app = locked_app();
+        app.unlock_mode_create = false;
+        app.begin_restore();
+        assert!(app.screen == Screen::Unlock);
+        assert!(app.status_msg.contains("fresh"), "{}", app.status_msg);
+        assert!(app.pending_restore.is_none());
+    }
+
+    #[test]
+    fn restore_cancel_drops_the_opened_backup() {
+        let mut app = locked_app();
+        app.session = None;
+        app.backup_phase = BackupPhase::RestoreFilePass;
+        app.screen = Screen::SetBackup;
+        app.passphrase = "secret-passphrase".into();
+        app.backup_bytes = vec![9, 9, 9];
+        app.pending_restore = Some(SessionState::from_identity(IdentityOnionState {
+            seed: [4u8; 32],
+            onion: "n".repeat(56) + ".onion",
+            onion_key: vec![7, 7],
+        }));
+        app.cancel_backup_entry();
+        assert!(app.screen == Screen::Unlock);
+        assert!(app.passphrase.is_empty());
+        assert!(app.backup_bytes.is_empty());
+        assert!(app.pending_restore.is_none());
+        assert!(app.backup_phase == BackupPhase::ExportPass);
+    }
+
+    #[test]
+    fn restore_ui_installs_a_fresh_profile() {
+        if state_exists(Path::new(DATA_DIR)) {
+            return;
+        }
+        struct Clean;
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = hashchat_rust::wipe_disk(Path::new(DATA_DIR));
+                let _ = fs::remove_dir_all(DATA_DIR);
+            }
+        }
+        let _clean = Clean;
+
+        let dir = std::env::temp_dir().join(format!("hc-restore-ui-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("profile.hcbk");
+        let mut s = SessionState::from_identity(IdentityOnionState {
+            seed: [9u8; 32],
+            onion: "c".repeat(56) + ".onion",
+            onion_key: vec![4, 5, 6],
+        });
+        s.disappear_ttl_secs = 3600;
+        s.set_ratchet_bytes("c1", vec![1u8; 8]);
+        s.contacts.push(PersistedContact {
+            id: "c1".into(),
+            display_name: "Ada".into(),
+            onion: "d".repeat(56) + ".onion",
+            x25519: [2u8; 32],
+            ed25519: [3u8; 32],
+        });
+        let file_pass = "a long backup passphrase";
+        let profile_pass = "a long profile passphrase";
+        let bytes = hashchat_rust::backup::export_backup(&s, file_pass, 50).unwrap();
+        fs::write(&target, &bytes).unwrap();
+
+        let mut app = locked_app();
+        assert!(app.unlock_mode_create);
+        app.begin_restore();
+        assert!(app.screen == Screen::SetBackup);
+        app.input = dir.join("missing.hcbk").display().to_string();
+        app.submit_backup_entry();
+        assert!(app.status_msg.contains("refused"), "{}", app.status_msg);
+        assert!(app.backup_phase == BackupPhase::RestorePath);
+
+        let link = dir.join("link.hcbk");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        app.input = link.display().to_string();
+        app.submit_backup_entry();
+        assert!(app.status_msg.contains("symlink"), "{}", app.status_msg);
+
+        app.input = target.display().to_string();
+        app.submit_backup_entry();
+        assert!(app.backup_phase == BackupPhase::RestoreFilePass);
+        app.passphrase = "not the backup passphrase".into();
+        app.submit_backup_entry();
+        assert!(
+            app.backup_phase == BackupPhase::RestoreFilePass,
+            "{}",
+            app.status_msg
+        );
+        assert!(app.passphrase.is_empty());
+        assert!(app.pending_restore.is_none());
+        assert!(!app.backup_bytes.is_empty());
+
+        app.passphrase = file_pass.into();
+        app.submit_backup_entry();
+        assert!(
+            app.backup_phase == BackupPhase::RestoreProfilePass,
+            "{}",
+            app.status_msg
+        );
+        assert!(app.backup_bytes.is_empty());
+        assert!(app.pending_restore.is_some());
+
+        app.passphrase = "short".into();
+        app.submit_backup_entry();
+        assert!(app.status_msg.contains("refused"), "{}", app.status_msg);
+        assert!(app.backup_phase == BackupPhase::RestoreProfilePass);
+        assert!(app.pending_restore.is_some());
+
+        app.passphrase = profile_pass.into();
+        app.submit_backup_entry();
+        assert!(app.unlock_step == UnlockStep::ConfirmPass);
+        app.passphrase_confirm = "a long profile passphrasX".into();
+        app.submit_backup_entry();
+        assert!(
+            app.status_msg.contains("do not match"),
+            "{}",
+            app.status_msg
+        );
+        assert!(app.pending_restore.is_some());
+        assert!(app.passphrase.is_empty());
+
+        app.passphrase = profile_pass.into();
+        app.submit_backup_entry();
+        app.passphrase_confirm = profile_pass.into();
+        app.submit_backup_entry();
+        assert!(app.screen == Screen::Main, "{}", app.status_msg);
+        assert!(
+            app.status_msg.contains("Restored 1 contact"),
+            "{}",
+            app.status_msg
+        );
+        assert!(app.status_msg.contains(":invite"), "{}", app.status_msg);
+        assert!(app.passphrase.is_empty() && app.passphrase_confirm.is_empty());
+        assert!(app.pending_restore.is_none());
+        assert!(app.backup_bytes.is_empty());
+        let session = app.session.as_ref().unwrap();
+        assert_eq!(session.identity.seed, [9u8; 32]);
+        assert!(session.ratchets.is_empty());
+        assert_eq!(session.contacts[0].display_name, "Ada");
+        assert_eq!(app.disappear_ttl_secs, 3600);
+        assert_eq!(session.disappear_ttl_secs, 3600);
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(Path::new(DATA_DIR).join("state.enc"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        let loaded = hashchat_rust::load_session(
+            Path::new(DATA_DIR),
+            hashchat_rust::PersistMode::Passphrase,
+            profile_pass.as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(loaded.identity.seed, [9u8; 32]);
+        assert_eq!(loaded.identity.onion_key, vec![4, 5, 6]);
+        assert!(loaded.ratchets.is_empty());
+        assert!(loaded.pending_invites.is_empty());
+        assert_eq!(loaded.disappear_ttl_secs, 3600);
+        assert!(hashchat_rust::load_session(
+            Path::new(DATA_DIR),
+            hashchat_rust::PersistMode::Passphrase,
+            file_pass.as_bytes(),
+        )
+        .is_err());
+
+        app.lock_ui();
+        app.begin_restore();
+        assert!(app.screen == Screen::Unlock);
+        assert!(app.status_msg.contains("fresh"), "{}", app.status_msg);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
