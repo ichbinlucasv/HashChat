@@ -28,8 +28,12 @@
 //! identity at the same time confuses delivery; a backup is for recovery or
 //! moving machines, not for a second live device.
 
-use crate::envelope::{self, check_new_passphrase};
-use crate::session_persist::{deserialize_blob, serialize_blob, SessionState};
+use std::path::Path;
+
+use crate::envelope::{self, check_new_passphrase, StoreKey};
+use crate::session_persist::{
+    deserialize_blob, save_session_with_key, serialize_blob, state_exists, SessionState,
+};
 use zeroize::Zeroize;
 
 /// File magic for a HashChat backup.
@@ -124,6 +128,47 @@ pub fn open_backup(
     let result = parse_inner(&plain);
     plain.zeroize();
     result
+}
+
+/// Open a backup that is allowed to become a profile.
+///
+/// Same failures as [`open_backup`]. Extreme posture is refused here too:
+/// a backup file would be the durable contact copy Extreme does not keep.
+pub fn open_backup_for_restore(
+    bytes: &[u8],
+    passphrase: &str,
+) -> Result<(SessionState, BackupInfo), &'static str> {
+    let (state, info) = open_backup(bytes, passphrase)?;
+    if state.net.is_extreme() {
+        return Err("extreme posture refuses backups (no durable contact copy)");
+    }
+    Ok((state, info))
+}
+
+/// Seal an opened backup as a new profile. Refuses when `state.enc` is
+/// already there, including a symlink: restore never overwrites a profile.
+///
+/// The returned key matches the file just written. Ratchets, held frames
+/// and open invites are already gone; each contact needs a fresh session.
+pub fn seal_restored_profile(
+    data_dir: &Path,
+    state: &mut SessionState,
+    profile_passphrase: &str,
+) -> Result<StoreKey, &'static str> {
+    if state_exists(data_dir) {
+        return Err("restore only into a fresh profile (state.enc already exists)");
+    }
+    if state.net.is_extreme() {
+        return Err("extreme posture refuses backups (no durable contact copy)");
+    }
+    check_new_passphrase(profile_passphrase, false)?;
+    if let Some(cur) = crate::binary_check::running_binary_digest() {
+        state.binary_digest = cur;
+    }
+    state.wipe_settings = Some(crate::wipe_settings::WipeSettings::from_disk(data_dir));
+    let key = StoreKey::derive_new(profile_passphrase.as_bytes())?;
+    save_session_with_key(data_dir, &key, state)?;
+    Ok(key)
 }
 
 fn parse_inner(plain: &[u8]) -> Result<(SessionState, BackupInfo), &'static str> {
@@ -228,5 +273,34 @@ mod tests {
         let mut s = sample();
         s.net.posture = PostureProfile::Extreme;
         assert!(export_backup(&s, PASS, 1).is_err());
+    }
+
+    #[test]
+    fn restore_seals_a_fresh_profile_without_ratchets() {
+        use crate::session_persist::{load_session, PersistMode};
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let file = export_backup(&sample(), PASS, 1_700_000_000).unwrap();
+        let (mut restored, info) = open_backup_for_restore(&file, PASS).unwrap();
+        assert!(restored.ratchets.is_empty());
+        assert_eq!(info.created_unix, 1_700_000_000);
+        let n = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hashchat-restore-{n}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let profile = "another long profile passphrase";
+        seal_restored_profile(&dir, &mut restored, profile).unwrap();
+        assert!(seal_restored_profile(&dir, &mut restored, profile).is_err());
+        let loaded = load_session(&dir, PersistMode::Passphrase, profile.as_bytes()).unwrap();
+        assert_eq!(loaded.identity.seed, [7u8; 32]);
+        assert!(loaded.ratchets.is_empty());
+        assert!(loaded.pending.is_empty());
+        assert!(loaded.pending_invites.is_empty());
+        assert_eq!(loaded.disappear_ttl_secs, 3600);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
