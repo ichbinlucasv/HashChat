@@ -99,6 +99,22 @@ object HashChatNative {
     external fun messageBookPurgeExpired(): Int
     external fun messageBookTexts(): Array<String>
     external fun messageBookMine(): BooleanArray
+    // Park the primary transcript while the decoy screen is up. Export keeps
+    // writing the parked copy, so messages.enc is not replaced by that screen.
+    external fun messageBookPark()
+    external fun messageBookUnpark(): Boolean
+
+    // Profile screen owned by Rust (primary / decoy, Extreme flag). Memory
+    // only: not a second identity. profileToggleDecoy returns 1 (decoy),
+    // 0 (primary), -1 (Extreme), -2 (strict).
+    external fun profileConfigure(extreme: Boolean): Boolean
+    external fun profileIsExtreme(): Boolean
+    external fun profileBlocks(feature: String): Boolean
+    external fun profileToggleDecoy(strictRefuses: Boolean): Int
+    external fun profileLabel(): String
+    external fun profilePosture(): String
+    external fun profileNotice(): String
+    external fun profileRefusalLabel(code: Int): String
 
     // Combined Kotlin + JNI strict mode (authoritative for refusal decisions).
     // Expands the old stub with real root detection, dangerous props via reflection + files,
@@ -251,7 +267,7 @@ class MainActivity : AppCompatActivity() {
             else -> {}
         }
         securityPosture = reEvaluateSecurityPosture()
-        updateTopBar(currentProfile, securityPosture)
+        updateTopBar(profileLabel(), barPosture(securityPosture))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -298,8 +314,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Initialize the Rust side once (mlock, seccomp stubs, ratchet store)
+        // Initialize the Rust side once (mlock, seccomp stubs, ratchet store).
+        // The Extreme flag is a build choice; Rust owns what it turns off.
         HashChatNative.init()
+        if (HashChatNative.profileConfigure(EXTREME_MODE)) {
+            HashChatNative.messageBookUnpark()
+        }
 
         // === FULL BACKGROUND TOR RECEIVER THREAD with real voice chunk pipeline ===
         // The thread now starts the real Rust Tor receiver and feeds it data.
@@ -360,7 +380,7 @@ class MainActivity : AppCompatActivity() {
         // Initial demo messages + posture (matches TUI startup)
         addMessage("=== HashChat (Double Ratchet + Tor v3 only) ===", false)
         addMessage("Long-press any message for Simplex-style actions (Block / Report / Delete / Disappear / Security)", false)
-        updateTopBar(currentProfile, "MAX PARANOID (Tails/Qubes + Tor recommended)")
+        updateTopBar(profileLabel(), barPosture("MAX PARANOID (Tails/Qubes + Tor recommended)"))
     }
 
     private fun addMessage(text: String, isMine: Boolean) {
@@ -387,7 +407,7 @@ class MainActivity : AppCompatActivity() {
 
     // messages.enc: Keystore unwrap in Kotlin, parse/validate/expire in Rust.
     private fun loadPersistedMessages() {
-        HashChatNative.messageBookSetEphemeral(EXTREME_MODE || HashChatNative.isStrictModeEnabled())
+        HashChatNative.messageBookSetEphemeral(extremeOn() || HashChatNative.isStrictModeEnabled())
         val f = File(filesDir, "messages.enc")
         if (f.exists()) {
             try {
@@ -406,9 +426,11 @@ class MainActivity : AppCompatActivity() {
 
     // Save the transcript: encoded by Rust, wrapped by Keystore. In
     // EXTREME/strict the Rust book is ephemeral, so nothing is kept on disk.
+    // While the decoy screen is up, export is the parked primary transcript,
+    // so this write does not store lines typed on that screen.
     private fun persistMessages() {
         val f = File(filesDir, "messages.enc")
-        if (EXTREME_MODE || HashChatNative.isStrictModeEnabled()) {
+        if (extremeOn() || HashChatNative.isStrictModeEnabled()) {
             HashChatNative.messageBookSetEphemeral(true)
             f.delete()
             return
@@ -459,7 +481,7 @@ class MainActivity : AppCompatActivity() {
                     }
                     6 -> {
                         // Deep Wave: Extreme mode refuses export
-                        if (EXTREME_MODE) {
+                        if (extremeOn()) {
                             Toast.makeText(this, "EXTREME MODE: Cross-device export disabled.", Toast.LENGTH_LONG).show()
                             return@setItems
                         }
@@ -571,7 +593,7 @@ class MainActivity : AppCompatActivity() {
 
     fun onVoiceMessage(v: View) {
         // Wave 6 Finish: Extreme mode completely disables voice (no recording, no playback path)
-        if (EXTREME_MODE) {
+        if (extremeOn()) {
             Toast.makeText(this, "EXTREME MODE: Voice completely disabled for minimal attack surface.", Toast.LENGTH_LONG).show()
             // Extra OPSEC: clear any pending state even on refusal
             clearSensitiveScreenState()
@@ -594,7 +616,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             stopRealVoiceRecordingAndSendChunks()
             securityPosture = reEvaluateSecurityPosture()  // re-eval after voice (richer posture + wipe feedback)
-            updateTopBar(currentProfile, securityPosture)
+            updateTopBar(profileLabel(), barPosture(securityPosture))
             switchToScreen(Screen.CHAT)
         }
     }
@@ -773,7 +795,7 @@ class MainActivity : AppCompatActivity() {
     // === Full group QR scanning (Simplex-style, matches TUI 'g' + QR) ===
     fun onScanGroupQR(v: View) {
         // Deep Wave: Extreme mode refuses all groups
-        if (EXTREME_MODE) {
+        if (extremeOn()) {
             Toast.makeText(this, "EXTREME MODE: Groups completely disabled for minimal attack surface.", Toast.LENGTH_LONG).show()
             return
         }
@@ -872,7 +894,7 @@ class MainActivity : AppCompatActivity() {
     // Save the group list and sender-key book: encoded by Rust, wrapped by Keystore.
     // Refused in EXTREME/STRICT mode (groups are disabled there).
     private fun persistGroups() {
-        if (EXTREME_MODE || HashChatNative.isStrictModeEnabled()) {
+        if (extremeOn() || HashChatNative.isStrictModeEnabled()) {
             Toast.makeText(this, "EXTREME/STRICT: group persistence disabled", Toast.LENGTH_LONG).show()
             return
         }
@@ -935,7 +957,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showGroupMemberActions(position: Int) {
         // Wave 7 ALL: Extreme mode completely disables group member management
-        if (EXTREME_MODE) {
+        if (extremeOn()) {
             Toast.makeText(this, "EXTREME MODE: Group operations disabled for minimal attack surface.", Toast.LENGTH_LONG).show()
             return
         }
@@ -961,7 +983,7 @@ class MainActivity : AppCompatActivity() {
                     2 -> onScanGroupQR(findViewById(android.R.id.content))
                     3 -> {
                         // Wave 7 deep: Extreme mode refuses all group member management
-                        if (EXTREME_MODE) {
+                        if (extremeOn()) {
                             Toast.makeText(this, "EXTREME MODE: Group member operations disabled for minimal surface.", Toast.LENGTH_LONG).show()
                             return@setItems
                         }
@@ -1054,7 +1076,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         // Safe posture refresh using existing helpers (the full reEvaluate path is used in onVoiceMessage)
         securityPosture = reEvaluateSecurityPosture()
-        updateTopBar(currentProfile, securityPosture)
+        updateTopBar(profileLabel(), barPosture(securityPosture))
         if (!isActionAllowedInPosture("any")) {
             Toast.makeText(this, "Security posture changed: $securityPosture", Toast.LENGTH_LONG).show()
         }
@@ -1079,13 +1101,13 @@ class MainActivity : AppCompatActivity() {
             val previous = screenBackStack.removeAt(screenBackStack.lastIndex)
             currentScreen = previous
             securityPosture = reEvaluateSecurityPosture()
-            updateTopBar(currentProfile, securityPosture)
+            updateTopBar(profileLabel(), barPosture(securityPosture))
             // In real UI this would restore the previous view/fragment
             return
         }
 
         securityPosture = reEvaluateSecurityPosture()
-        updateTopBar(currentProfile, securityPosture)
+        updateTopBar(profileLabel(), barPosture(securityPosture))
         super.onBackPressed()
     }
 
@@ -1164,50 +1186,57 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // === Minimal decoy profile (Tier 1 + Tier 2 plausible deniability) ===
-    // Real compartmentalization (separate ratchets, hidden volume, different passphrase) is longer-term.
-    // For v0.2 this at least gives a visual + state toggle that is STRICT MODE GATED.
+    // Extreme build flag. Rust (`profile_slot`) decides what it turns off.
+    // Set to true only for the most paranoid builds, then the shell passes it
+    // to profileConfigure at startup.
+    private val EXTREME_MODE = false
 
-    // Wave 3: Minimal Extreme profile stub (Tier 3 stripped profile)
-    // When true, many high-surface features (groups, voice, export, decoy) are hard-disabled.
-    // This is the beginning of the ultra-stripped mode for extreme threat models.
-    private val EXTREME_MODE = false   // Set to true only for the most paranoid builds
+    private fun extremeOn(): Boolean =
+        try {
+            HashChatNative.profileIsExtreme()
+        } catch (_: Exception) {
+            EXTREME_MODE
+        }
 
-    private var currentProfile: String = "Default"
-    private var isDecoyActive: Boolean = false
+    private fun profileLabel(): String =
+        try {
+            HashChatNative.profileLabel()
+        } catch (_: Exception) {
+            "Default"
+        }
 
+    // Decoy screen replaces the device-posture line. Primary keeps `primary`.
+    private fun barPosture(primary: String): String {
+        val note = try {
+            HashChatNative.profilePosture()
+        } catch (_: Exception) {
+            ""
+        }
+        return if (note.isNotEmpty()) note else primary
+    }
+
+    // Memory-only screen switch. Rust refuses Extreme and a strict entry.
+    // The transcript is parked in Rust so messages.enc keeps the primary chat.
     fun onToggleDecoyProfile(v: View? = null) {
-        // Extreme profile gate (Wave 3)
-        if (EXTREME_MODE) {
-            Toast.makeText(this, "EXTREME MODE: Decoy profiles are disabled for minimal attack surface.", Toast.LENGTH_LONG).show()
-            return
+        val strict = HashChatNative.shouldRefuseInStrictMode("decoy")
+        when (val code = HashChatNative.profileToggleDecoy(strict)) {
+            1 -> HashChatNative.messageBookPark()
+            0 -> HashChatNative.messageBookUnpark()
+            else -> {
+                val msg = HashChatNative.profileRefusalLabel(code)
+                Toast.makeText(
+                    this,
+                    if (msg.isNotEmpty()) msg else "Decoy toggle refused",
+                    Toast.LENGTH_LONG
+                ).show()
+                return
+            }
         }
-        // Tier 1 Very High: strict mode gate for decoy activation (plausible deniability must not be triggerable in bad env)
-        if (HashChatNative.shouldRefuseInStrictMode("decoy")) {
-            Toast.makeText(this, "STRICT MODE: Decoy profile toggle REFUSED (bad environment - plausible deniability requires clean device)", Toast.LENGTH_LONG).show()
-            return
-        }
-        isDecoyActive = !isDecoyActive
-        currentProfile = if (isDecoyActive) "Decoy" else "Default"
-
-        // Strengthened compartmentalization (Wave 2 on all recs):
-        // - Clear all transient sensitive UI state
-        // - Force posture re-evaluation with explicit "DECOY" marker
-        // - Wipe any pending voice/group transient data
         clearSensitiveScreenState()
-        // Future: switch to separate Keystore alias + separate Rust ratchet store for true isolation
-        securityPosture = if (isDecoyActive) {
-            "DECOY - Plausible deniability profile active (reduced trust assumptions)"
-        } else {
-            reEvaluateSecurityPosture()
-        }
-        updateTopBar(currentProfile, securityPosture)
-
-        val msg = if (isDecoyActive) 
-            "DECOY PROFILE ACTIVE — separate identity, cleared state, different posture. Assume this profile is monitored."
-        else 
-            "Returned to primary profile. All transient state wiped on switch."
-        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-        addMessage("[PROFILE] Switched to $currentProfile (compartmentalized)", true)
+        val note = HashChatNative.profilePosture()
+        securityPosture = if (note.isNotEmpty()) note else reEvaluateSecurityPosture()
+        updateTopBar(profileLabel(), securityPosture)
+        Toast.makeText(this, HashChatNative.profileNotice(), Toast.LENGTH_LONG).show()
+        addMessage("[PROFILE] ${profileLabel()}", false)
     }
 }

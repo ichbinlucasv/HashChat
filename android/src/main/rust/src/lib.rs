@@ -29,6 +29,7 @@ use zeroize::Zeroize; // Required for explicit zeroize() on local chunk keys in 
 use hashchat_rust::device_posture::{self, DeviceSignals, Posture};
 use hashchat_rust::group_store::{GroupBook, GroupBookError};
 use hashchat_rust::message_book::{Delivery, MessageBook};
+use hashchat_rust::profile_slot::{DecoyRefusal, ProfileSlot};
 
 /// Helper: wrap a raw jbyteArray (from Java native) into a high-level JByteArray for jni 0.21+.
 #[inline]
@@ -355,6 +356,13 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_wipeAll(_env: JNIEnv, _class
     lock(&VOICE_STREAMS).clear();
     with_group_book(|b| b.clear());
     with_message_book(|b| b.clear());
+    // Keep the Extreme build flag. Drop the decoy screen; the transcript
+    // clear above already dropped a parked copy.
+    with_profile(|p| {
+        let extreme = p.extreme();
+        *p = ProfileSlot::primary();
+        let _ = p.set_extreme(extreme);
+    });
 }
 
 // ============================================================================
@@ -671,6 +679,123 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_messageBookMine(
         return std::ptr::null_mut();
     }
     arr.into_raw()
+}
+
+/// Hide the primary transcript behind the decoy screen.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_messageBookPark(_env: JNIEnv, _class: JClass) {
+    with_message_book(|b| b.park());
+}
+
+/// Restore the primary transcript. Decoy-screen lines are dropped.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_messageBookUnpark(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    u8::from(with_message_book(|b| b.unpark()))
+}
+
+// ============================================================================
+// Profile screen owned by Rust (Android maximum-Rust: decoy / Extreme).
+// The shell draws the label and collects the strict-mode answer. Extreme
+// refusal, the primary/decoy flag and the honest notice live here.
+// Memory only: nothing in this slot is written to disk.
+// ============================================================================
+
+static PROFILE_SLOT: Mutex<ProfileSlot> = Mutex::new(ProfileSlot::primary());
+
+fn with_profile<R>(f: impl FnOnce(&mut ProfileSlot) -> R) -> R {
+    let mut guard = PROFILE_SLOT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    f(&mut guard)
+}
+
+/// Record the Extreme build flag. Returns true when a decoy screen was
+/// showing and has been returned to primary (the shell should unpark).
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_profileConfigure(
+    _env: JNIEnv,
+    _class: JClass,
+    extreme: jboolean,
+) -> jboolean {
+    u8::from(with_profile(|p| p.set_extreme(extreme != 0)))
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_profileIsExtreme(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    u8::from(with_profile(|p| p.extreme()))
+}
+
+/// True when Extreme turns this surface off. Unknown names are false.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_profileBlocks(
+    mut env: JNIEnv,
+    _class: JClass,
+    feature: jni::sys::jstring,
+) -> jboolean {
+    let feature = jstring_to_string(&mut env, feature);
+    u8::from(with_profile(|p| p.blocks(&feature)))
+}
+
+/// Switch screens. `strict_refuses` blocks entry only.
+/// Returns 1 (decoy), 0 (primary), -1 (Extreme), -2 (strict).
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_profileToggleDecoy(
+    _env: JNIEnv,
+    _class: JClass,
+    strict_refuses: jboolean,
+) -> jint {
+    match with_profile(|p| p.toggle_decoy(strict_refuses != 0)) {
+        Ok(true) => 1,
+        Ok(false) => 0,
+        Err(refusal) => refusal.code(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_profileLabel(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jstring {
+    let label = with_profile(|p| p.label());
+    string_to_jstring(&mut env, label)
+}
+
+/// Decoy posture line, or "" on the primary screen.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_profilePosture(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jstring {
+    let line = with_profile(|p| p.posture_line());
+    string_to_jstring(&mut env, line)
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_profileNotice(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jstring {
+    let notice = with_profile(|p| p.notice());
+    string_to_jstring(&mut env, notice)
+}
+
+/// Refusal toast for a toggle status code. "" when `code` is not a refusal.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_profileRefusalLabel(
+    mut env: JNIEnv,
+    _class: JClass,
+    code: jint,
+) -> jni::sys::jstring {
+    let label = DecoyRefusal::from_code(code)
+        .map(DecoyRefusal::label)
+        .unwrap_or("");
+    string_to_jstring(&mut env, label)
 }
 
 #[no_mangle]
