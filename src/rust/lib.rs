@@ -27,6 +27,8 @@ mod net_mode;
 mod onion_binding;
 mod padding;
 mod private_fs;
+/// Android profile screen (primary / decoy) and the Extreme build flag.
+pub mod profile_slot;
 mod ratchet;
 mod save_mark;
 mod send_jitter;

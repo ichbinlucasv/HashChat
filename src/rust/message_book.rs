@@ -9,7 +9,9 @@
 //!
 //! [`MessageBook::export`] gives a plaintext encoding for the platform to
 //! wrap (Android Keystore); it is never written to disk by this crate. An
-//! ephemeral book (Extreme / strict) exports nothing.
+//! ephemeral book (Extreme / strict) exports nothing. [`MessageBook::park`]
+//! hides the primary transcript behind a decoy screen: export keeps writing
+//! the parked copy, so the decoy screen cannot replace `messages.enc`.
 //!
 //! # Encoding (v1)
 //! ```text
@@ -114,6 +116,9 @@ fn clean_text(raw: &str) -> String {
 #[derive(Debug, Default)]
 pub struct MessageBook {
     entries: VecDeque<MessageEntry>,
+    /// Primary transcript parked while a decoy screen is showing.
+    /// `None` means the visible entries are the primary transcript.
+    held: Option<VecDeque<MessageEntry>>,
     next_id: u64,
     ephemeral: bool,
 }
@@ -194,20 +199,62 @@ impl MessageBook {
         }
     }
 
-    /// Remove every message (text zeroized on drop).
+    /// Remove every message, including a parked primary transcript
+    /// (text zeroized on drop). Wipe and "delete chat" use this.
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.held.take();
     }
 
-    /// Drop messages whose disappearing deadline has passed. Returns how many.
+    /// Hide the primary transcript and show an empty screen.
+    ///
+    /// A second call drops whatever is on screen and keeps the transcript
+    /// already parked, so decoy lines cannot replace the primary copy.
+    pub fn park(&mut self) {
+        if self.held.is_none() {
+            self.held = Some(std::mem::take(&mut self.entries));
+        } else {
+            self.entries.clear();
+        }
+    }
+
+    /// Drop the screen and put the parked transcript back.
+    /// Returns false when nothing was parked; the screen stays as it is.
+    pub fn unpark(&mut self) -> bool {
+        match self.held.take() {
+            Some(parked) => {
+                self.entries.clear();
+                self.entries = parked;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn is_parked(&self) -> bool {
+        self.held.is_some()
+    }
+
+    /// Drop messages whose disappearing deadline has passed, on screen and
+    /// in a parked transcript. Returns how many.
     pub fn purge_expired(&mut self, now: u64) -> usize {
-        let before = self.entries.len();
-        self.entries
-            .retain(|e| e.expires_at.is_none_or(|t| now < t));
-        before - self.entries.len()
+        let n = drop_expired(&mut self.entries, now);
+        let held = self
+            .held
+            .as_mut()
+            .map(|entries| drop_expired(entries, now))
+            .unwrap_or(0);
+        n + held
+    }
+
+    /// Entries a durable save must keep: the parked primary transcript while
+    /// a decoy screen is up, otherwise the visible ones.
+    fn persisted_entries(&self) -> &VecDeque<MessageEntry> {
+        self.held.as_ref().unwrap_or(&self.entries)
     }
 
     /// Plaintext encoding for platform wrapping. Empty book when ephemeral.
+    /// While parked, the bytes are the primary transcript, not the decoy screen.
     pub fn export(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(MAGIC);
@@ -215,8 +262,9 @@ impl MessageBook {
             out.extend_from_slice(&0u32.to_be_bytes());
             return out;
         }
-        out.extend_from_slice(&(self.entries.len() as u32).to_be_bytes());
-        for e in &self.entries {
+        let entries = self.persisted_entries();
+        out.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+        for e in entries {
             out.extend_from_slice(&e.id.to_be_bytes());
             out.push(u8::from(e.mine));
             out.push(e.delivery.to_u8());
@@ -230,7 +278,9 @@ impl MessageBook {
 
     /// Replace the book with an encoding from [`Self::export`]. Entries that
     /// expired by `now` are dropped; text is sanitised again. On error the
-    /// book is left unchanged. The ephemeral flag is kept.
+    /// book is left unchanged, including a parked transcript. On success the
+    /// parked transcript is dropped: the loaded bytes are the new primary.
+    /// The ephemeral flag is kept.
     pub fn load(&mut self, raw: &[u8], now: u64) -> Result<(), MessageBookError> {
         if raw.len() > MAX_ENCODED_BYTES {
             return Err(MessageBookError::TooLarge);
@@ -280,10 +330,18 @@ impl MessageBook {
         if r.pos != raw.len() {
             return Err(MessageBookError::Malformed);
         }
+        // A successful load is the new primary transcript.
+        self.held.take();
         self.entries = entries;
         self.next_id = max_id.wrapping_add(1).max(1);
         Ok(())
     }
+}
+
+fn drop_expired(entries: &mut VecDeque<MessageEntry>, now: u64) -> usize {
+    let before = entries.len();
+    entries.retain(|e| e.expires_at.is_none_or(|t| now < t));
+    before - entries.len()
 }
 
 struct Reader<'a> {
@@ -424,5 +482,62 @@ mod tests {
         huge.extend_from_slice(&(MAX_MESSAGES as u32 + 1).to_be_bytes());
         assert_eq!(b.load(&huge, NOW), Err(MessageBookError::TooLarge));
         assert_eq!(b.entries().next().unwrap().text, "stay");
+    }
+
+    #[test]
+    fn parked_screen_does_not_replace_the_primary_transcript() {
+        let mut b = MessageBook::new();
+        b.add(true, "primary line", NOW, 0);
+        b.park();
+        assert!(b.is_parked());
+        assert!(b.is_empty());
+        b.add(false, "decoy line", NOW, 0);
+        let raw = b.export();
+        assert!(raw.windows(12).any(|w| w == b"primary line"));
+        assert!(!raw.windows(10).any(|w| w == b"decoy line"));
+        // Parking again must not store the decoy line as the primary copy.
+        b.park();
+        assert!(b.is_empty());
+        assert!(b.unpark());
+        assert!(!b.is_parked());
+        assert_eq!(b.len(), 1);
+        assert_eq!(b.entries().next().unwrap().text, "primary line");
+        assert!(!b.unpark());
+        let raw = b.export();
+        assert!(!raw.windows(10).any(|w| w == b"decoy line"));
+    }
+
+    #[test]
+    fn clear_and_load_drop_a_parked_transcript() {
+        let mut b = MessageBook::new();
+        b.add(false, "parked secret", NOW, 30);
+        b.park();
+        b.add(false, "visible", NOW, 0);
+        assert_eq!(b.purge_expired(NOW + 30), 1);
+        let mut other = MessageBook::new();
+        other.add(true, "loaded", NOW, 0);
+        let raw = other.export();
+        b.load(&raw, NOW).unwrap();
+        assert!(!b.is_parked());
+        assert_eq!(b.entries().next().unwrap().text, "loaded");
+        b.park();
+        b.clear();
+        assert!(!b.is_parked());
+        assert!(b.is_empty());
+        let raw = b.export();
+        assert!(!raw.windows(6).any(|w| w == b"loaded"));
+    }
+
+    #[test]
+    fn ephemeral_export_stays_empty_while_parked() {
+        let mut b = MessageBook::new();
+        b.set_ephemeral(true);
+        b.add(true, "secret", NOW, 0);
+        b.park();
+        let raw = b.export();
+        assert!(!raw.windows(6).any(|w| w == b"secret"));
+        let mut r = MessageBook::new();
+        r.load(&raw, NOW).unwrap();
+        assert!(r.is_empty());
     }
 }
