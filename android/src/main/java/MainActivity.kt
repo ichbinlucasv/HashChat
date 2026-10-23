@@ -1,6 +1,7 @@
 package chat.hashchat
 
 import android.os.Bundle
+import android.text.InputType
 import androidx.appcompat.app.AppCompatActivity
 import android.widget.*
 import android.view.View
@@ -28,7 +29,13 @@ object HashChatNative {
     external fun startTorReceiver()
     external fun ratchetExportEncrypted(stateId: Int, passphrase: ByteArray): ByteArray
     external fun ratchetImportEncrypted(stateId: Int, passphrase: ByteArray, data: ByteArray): Boolean
-    external fun exportRatchetForDevice(stateId: Int, passphrase: ByteArray): ByteArray
+    // Cross-device export. Rust decides. prepare returns a slot index (>= 0)
+    // or a negative refusal code. export seals that slot only; a fresh
+    // ratchet and the old hardcoded passphrase are refused.
+    external fun deviceExportPrepare(strictRefuses: Boolean): Int
+    external fun deviceExportRefusalLabel(code: Int): String
+    external fun deviceExportLastStatus(): Int
+    external fun exportRatchetForDevice(stateId: Int, passphrase: ByteArray, strictRefuses: Boolean): ByteArray
     external fun pushReceivedVoiceChunk(data: ByteArray)
     external fun getSecurityPosture(): String   // richer posture from Rust side (high-5)
 
@@ -479,50 +486,74 @@ class MainActivity : AppCompatActivity() {
                         val state = if (disappearTtlSecs == 0) "off" else "1 h for new messages"
                         Toast.makeText(this, "Disappearing: $state", Toast.LENGTH_SHORT).show()
                     }
-                    6 -> {
-                        // Deep Wave: Extreme mode refuses export
-                        if (extremeOn()) {
-                            Toast.makeText(this, "EXTREME MODE: Cross-device export disabled.", Toast.LENGTH_LONG).show()
-                            return@setItems
-                        }
-                        // Tier 1 Very High: strict mode gate for cross-device ratchet export (very high risk)
-                        if (HashChatNative.shouldRefuseInStrictMode("export")) {
-                            Toast.makeText(this, "STRICT MODE: Cross-device export REFUSED (bad environment - keys could leak)", Toast.LENGTH_LONG).show()
-                            return@setItems
-                        }
-                        performCrossDeviceExport()
-                    }
+                    6 -> performCrossDeviceExport()
                     7 -> onToggleDecoyProfile()
                 }
             }
             .show()
     }
 
-    // Real (gated) cross-device export using the JNI exportRatchetForDevice + Keystore wrap.
-    // In production this would be a QR or file share of the encrypted blob only after user passphrase.
+    // Cross-device export. Rust (`device_export`) refuses Extreme, a strict
+    // posture, a weak passphrase, and a ratchet that was never bound to a
+    // contact. The shell only asks for a passphrase once one session is loaded.
     private fun performCrossDeviceExport() {
-        try {
-            val rid = HashChatNative.ratchetNew()  // demo: export a fresh one; real would pick active contact ratchet
-            // Strong envelope via JNI (Argon2id + AES-256-GCM inside Rust)
-            val exported = HashChatNative.exportRatchetForDevice(rid, "device-export-pass-demo".toByteArray())
-            if (exported.isNotEmpty()) {
-                val preview = exported.take(32).joinToString("") { b -> "%02x".format(b.toInt() and 0xff) } + "...(${exported.size} bytes)"
-                AlertDialog.Builder(this)
-                    .setTitle("Cross-Device Ratchet Export (STRICT MODE PASSED)")
-                    .setMessage("Encrypted blob ready for secure transfer (QR / NFC / manual). Never send plaintext.\n\nPreview: $preview\n\nThis is the real export path (v2 envelope). Import on other device with matching passphrase.")
-                    .setPositiveButton("Copy to cache (demo)") { _, _ ->
-                        val f = java.io.File(cacheDir, "ratchet_export_${System.currentTimeMillis()}.enc")
-                        f.writeBytes(exported)
-                        Toast.makeText(this, "Exported to ${f.absolutePath} (delete after transfer!)", Toast.LENGTH_LONG).show()
-                    }
-                    .setNegativeButton("Done", null)
-                    .show()
-            } else {
-                Toast.makeText(this, "Export failed (no ratchet state?)", Toast.LENGTH_SHORT).show()
-            }
-        } catch (e: Exception) {
-            Toast.makeText(this, "Export error: ${e.message}", Toast.LENGTH_SHORT).show()
+        val strict = HashChatNative.shouldRefuseInStrictMode("export")
+        val slot = HashChatNative.deviceExportPrepare(strict)
+        if (slot < 0) {
+            val msg = HashChatNative.deviceExportRefusalLabel(slot)
+            Toast.makeText(
+                this,
+                if (msg.isNotEmpty()) msg else "Cross-device export refused",
+                Toast.LENGTH_LONG
+            ).show()
+            return
         }
+        val input = EditText(this)
+        input.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        input.hint = "Passphrase"
+        AlertDialog.Builder(this)
+            .setTitle("Cross-device export")
+            .setMessage("Passphrase for this transfer only. It is not saved. One contact session is sealed; a fresh ratchet is not.")
+            .setView(input)
+            .setPositiveButton("Export") { _, _ ->
+                val pass = input.text.toString().toByteArray(Charsets.UTF_8)
+                input.text.clear()
+                val strictNow = HashChatNative.shouldRefuseInStrictMode("export")
+                try {
+                    val exported = HashChatNative.exportRatchetForDevice(slot, pass, strictNow)
+                    val status = HashChatNative.deviceExportLastStatus()
+                    if (status != 0 || exported.isEmpty()) {
+                        val msg = HashChatNative.deviceExportRefusalLabel(status)
+                        Toast.makeText(
+                            this,
+                            if (msg.isNotEmpty()) msg else "Cross-device export refused",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        showSealedExport(exported)
+                    }
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Export error: ${e.message}", Toast.LENGTH_SHORT).show()
+                } finally {
+                    pass.fill(0)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // The blob is ciphertext. The shell does not unwrap it.
+    private fun showSealedExport(exported: ByteArray) {
+        AlertDialog.Builder(this)
+            .setTitle("Cross-device export")
+            .setMessage("Sealed blob, ${exported.size} bytes. Save it only to move this one session, then delete the file. Never send the passphrase with the file.")
+            .setPositiveButton("Save to app cache") { _, _ ->
+                val f = java.io.File(cacheDir, "ratchet_export_${System.currentTimeMillis()}.enc")
+                f.writeBytes(exported)
+                Toast.makeText(this, "Saved to ${f.absolutePath} (delete after transfer)", Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton("Done", null)
+            .show()
     }
 
     // Quick action buttons (will be driven by long-press / overflow in production)

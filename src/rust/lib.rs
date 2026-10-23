@@ -6,6 +6,8 @@ mod bridges;
 mod clock_check;
 mod contact_link;
 mod deadman;
+/// Cross-device ratchet export gate shared with the Android shell.
+pub mod device_export;
 /// Device posture policy shared with the Android shell.
 pub mod device_posture;
 mod disappearing;

@@ -24,8 +24,9 @@ use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 // These are already in Cargo.toml for parity with the core ratchet work.
 use hkdf::Hkdf;
 use sha2::Sha256;
-use zeroize::Zeroize; // Required for explicit zeroize() on local chunk keys in VoiceStream (Wave 3)
+use zeroize::{Zeroize, Zeroizing}; // Required for explicit zeroize() on local chunk keys in VoiceStream (Wave 3)
 
+use hashchat_rust::device_export::{self, DeviceExportRefusal};
 use hashchat_rust::device_posture::{self, DeviceSignals, Posture};
 use hashchat_rust::group_store::{GroupBook, GroupBookError};
 use hashchat_rust::message_book::{Delivery, MessageBook};
@@ -1593,19 +1594,148 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_importGroupRatchet(
     )
 }
 
-// === Cross-device ratchet export (for new device / recovery) ===
-// Delegates to the real ratchetExportEncrypted path now that high-4 DoubleRatchet is present.
+// === Cross-device ratchet export ===
+// The shared `device_export` gate decides. This function only reads the
+// profile flag, the strict answer, the passphrase and the ratchet store,
+// then seals with the existing Argon2id envelope when the gate allows it.
+// A fresh `DoubleRatchet::new()` is not a contact session and is refused.
+// Status of the most recent call (0 or a negative refusal code). The shell
+// reads it on the same thread immediately after export.
+
+static DEVICE_EXPORT_STATUS: Mutex<i32> = Mutex::new(0);
+
+fn export_refused(env: &mut JNIEnv, refusal: DeviceExportRefusal) -> jbyteArray {
+    *lock(&DEVICE_EXPORT_STATUS) = refusal.code();
+    vec_to_java_byte_array(env, &[])
+}
+
+fn copy_passphrase(env: &mut JNIEnv, raw: jbyteArray) -> Zeroizing<Vec<u8>> {
+    if raw.is_null() {
+        return Zeroizing::new(Vec::new());
+    }
+    let arr = unsafe { wrap_byte_array(raw) };
+    let len = usize::try_from(env.get_array_length(&arr).unwrap_or(0)).unwrap_or(0);
+    if len > device_export::MAX_EXPORT_PASSPHRASE_BYTES {
+        // Do not copy an oversized buffer. The gate refuses anything longer.
+        return Zeroizing::new(vec![0u8; device_export::MAX_EXPORT_PASSPHRASE_BYTES + 1]);
+    }
+    let mut out = vec![0u8; len];
+    if len > 0 {
+        let mut tmp = vec![0i8; len];
+        if env.get_byte_array_region(&arr, 0, &mut tmp).is_ok() {
+            for (i, b) in tmp.iter().enumerate() {
+                out[i] = *b as u8;
+            }
+        }
+        tmp.fill(0);
+    }
+    Zeroizing::new(out)
+}
+
+fn established_flags(store: &[ratchet::DoubleRatchet]) -> Vec<bool> {
+    let mut flags = Vec::with_capacity(store.len());
+    for ratchet in store {
+        let (mut root, _, _) = ratchet.export_state();
+        flags.push(device_export::root_is_established(&root));
+        root.zeroize();
+    }
+    flags
+}
+
+/// Bytes of the single established ratchet at `state_id`.
+/// The store lock is not held across the KDF.
+fn exportable_ratchet_bytes(state_id: jint) -> Result<Zeroizing<Vec<u8>>, DeviceExportRefusal> {
+    let store = lock(&ANDROID_RATCHET_STORE);
+    let flags = established_flags(&store);
+    let idx = device_export::sole_established_index(&flags)?;
+    let wanted = usize::try_from(state_id).map_err(|_| DeviceExportRefusal::MissingRatchet)?;
+    if wanted != idx {
+        return Err(DeviceExportRefusal::MissingRatchet);
+    }
+    // The Android ratchet copy returns a plain Vec. Wrap it so the
+    // serialized state is zeroized on drop.
+    Ok(Zeroizing::new(store[idx].to_bytes()))
+}
+
+/// Slot index (`>= 0`) of the only established contact session, or a
+/// negative [`DeviceExportRefusal`] code. Does not ask for a passphrase.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceExportPrepare(
+    _env: JNIEnv,
+    _class: JClass,
+    strict_refuses: jboolean,
+) -> jint {
+    let extreme = with_profile(|p| p.extreme());
+    if let Err(refusal) = device_export::posture_blocks_export(extreme, strict_refuses != 0) {
+        return refusal.code();
+    }
+    let store = lock(&ANDROID_RATCHET_STORE);
+    let flags = established_flags(&store);
+    match device_export::sole_established_index(&flags) {
+        Ok(idx) => i32::try_from(idx).unwrap_or(DeviceExportRefusal::MissingRatchet.code()),
+        Err(refusal) => refusal.code(),
+    }
+}
+
+/// Toast for a refusal code. "" when `code` is not a refusal.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceExportRefusalLabel(
+    mut env: JNIEnv,
+    _class: JClass,
+    code: jint,
+) -> jni::sys::jstring {
+    let label = DeviceExportRefusal::from_code(code)
+        .map(DeviceExportRefusal::label)
+        .unwrap_or("");
+    string_to_jstring(&mut env, label)
+}
+
+/// Status of the most recent `exportRatchetForDevice` call. `0` means a blob
+/// was returned. A negative code matches [`DeviceExportRefusal::code`].
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceExportLastStatus(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    *lock(&DEVICE_EXPORT_STATUS)
+}
+
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_exportRatchetForDevice(
-    mut _env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     state_id: jint,
     passphrase: jbyteArray,
+    strict_refuses: jboolean,
 ) -> jbyteArray {
-    // Re-use the primary export (real to_bytes + demo envelope).
-    // The Kotlin side (HashChatKeystore + BiometricPrompt) is responsible for the
-    // strong outer key. This keeps the surface consistent.
-    Java_chat_hashchat_HashChatNative_ratchetExportEncrypted(_env, _class, state_id, passphrase)
+    let extreme = with_profile(|p| p.extreme());
+    if let Err(refusal) = device_export::posture_blocks_export(extreme, strict_refuses != 0) {
+        return export_refused(&mut env, refusal);
+    }
+    let mut pass = copy_passphrase(&mut env, passphrase);
+    if let Err(refusal) = device_export::passphrase_allows_export(&pass) {
+        pass.zeroize();
+        return export_refused(&mut env, refusal);
+    }
+    let mut serialized = match exportable_ratchet_bytes(state_id) {
+        Ok(bytes) => bytes,
+        Err(refusal) => {
+            pass.zeroize();
+            return export_refused(&mut env, refusal);
+        }
+    };
+    let wrapped = wrap_ratchet_blob(&serialized, &pass);
+    serialized.zeroize();
+    pass.zeroize();
+    match wrapped {
+        Ok(mut protected) => {
+            *lock(&DEVICE_EXPORT_STATUS) = 0;
+            let arr = vec_to_java_byte_array(&mut env, &protected);
+            protected.zeroize();
+            arr
+        }
+        Err(_) => export_refused(&mut env, DeviceExportRefusal::SealFailed),
+    }
 }
 
 // === med-10: Real tests exercising the new strong Argon2id envelope + ratchet roundtrips ===
