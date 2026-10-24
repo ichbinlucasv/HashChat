@@ -31,6 +31,7 @@ use hashchat_rust::device_posture::{self, DeviceSignals, Posture};
 use hashchat_rust::group_store::{GroupBook, GroupBookError};
 use hashchat_rust::message_book::{Delivery, MessageBook};
 use hashchat_rust::profile_slot::{DecoyRefusal, ProfileSlot};
+use hashchat_rust::voice_queue::{VoiceChunkQueue, MAX_VOICE_CHUNK_BYTES};
 
 /// Helper: wrap a raw jbyteArray (from Java native) into a high-level JByteArray for jni 0.21+.
 #[inline]
@@ -355,6 +356,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_wipeAll(_env: JNIEnv, _class
     lock(&ANDROID_RATCHET_STORE).clear();
     lock(&ANDROID_GROUP_SENDER_KEY_STORE).clear();
     lock(&VOICE_STREAMS).clear();
+    lock(&VOICE_QUEUE).clear();
     with_group_book(|b| b.clear());
     with_message_book(|b| b.clear());
     // Keep the Extreme build flag. Drop the decoy screen; the transcript
@@ -1114,7 +1116,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_startTorReceiver(_env: JNIEn
             // This is the "actual Tor receiver" in the Rust layer.
             // In a full implementation this thread would:
             // - Parse the framed blob (length prefix + type/hint like in Tor.hs)
-            // - If voice, call back into Kotlin (or push directly) so the voiceChunkQueue gets it
+            // - If voice, the shell pushes the frame with pushReceivedVoiceChunk
             // For now we at least print and could forward via a global if needed.
             println!(
                 "[Android Rust Receiver] Tor layer delivered {} bytes",
@@ -1227,6 +1229,74 @@ impl VoiceStream {
 }
 
 static VOICE_STREAMS: Mutex<Vec<VoiceStream>> = Mutex::new(Vec::new());
+
+/// Inbound voice frames waiting for the shell to take them. Bounded; wiped
+/// with the rest of the process state. See `hashchat_rust::voice_queue`.
+static VOICE_QUEUE: Mutex<VoiceChunkQueue> = Mutex::new(VoiceChunkQueue::new());
+
+/// Copy at most `max` bytes out of a Java array. `None` for null, empty,
+/// oversize, or a failed read, so a huge array is never allocated.
+fn copy_capped(env: &mut JNIEnv, raw: jbyteArray, max: usize) -> Option<Zeroizing<Vec<u8>>> {
+    if raw.is_null() {
+        return None;
+    }
+    let arr = unsafe { wrap_byte_array(raw) };
+    let len = usize::try_from(env.get_array_length(&arr).unwrap_or(0)).unwrap_or(usize::MAX);
+    if len == 0 || len > max {
+        return None;
+    }
+    let mut tmp = vec![0i8; len];
+    if env.get_byte_array_region(&arr, 0, &mut tmp).is_err() {
+        tmp.fill(0);
+        return None;
+    }
+    let mut out = vec![0u8; len];
+    for (i, b) in tmp.iter().enumerate() {
+        out[i] = *b as u8;
+    }
+    tmp.fill(0);
+    Some(Zeroizing::new(out))
+}
+
+/// Queue one inbound voice chunk. Extreme, empty, oversize, and a full
+/// queue are dropped here; the shell learns that by taking nothing.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_pushReceivedVoiceChunk(
+    mut env: JNIEnv,
+    _class: JClass,
+    data: jbyteArray,
+) {
+    // Do not copy the chunk into this process when voice is off.
+    let extreme = with_profile(|p| p.blocks("voice"));
+    if extreme {
+        return;
+    }
+    let Some(mut chunk) = copy_capped(&mut env, data, MAX_VOICE_CHUNK_BYTES) else {
+        return;
+    };
+    // Empty, oversize, and a full queue are refused. The local copy is wiped
+    // either way; the shell sees the refusal as an empty take.
+    match lock(&VOICE_QUEUE).push(extreme, &chunk) {
+        Ok(()) | Err(_) => chunk.zeroize(),
+    }
+}
+
+/// Oldest queued chunk, or an empty array when none is waiting.
+/// An empty chunk is never queued, so empty means "nothing waiting".
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_takeReceivedVoiceChunk(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jbyteArray {
+    match lock(&VOICE_QUEUE).pop() {
+        Some(mut chunk) => {
+            let arr = vec_to_java_byte_array(&mut env, &chunk);
+            chunk.zeroize();
+            arr
+        }
+        None => vec_to_java_byte_array(&mut env, &[]),
+    }
+}
 
 // Internal Rust function for voice chunk processing.
 // This is where real per-stream ratchet logic will eventually live.

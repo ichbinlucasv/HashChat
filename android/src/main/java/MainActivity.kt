@@ -36,7 +36,11 @@ object HashChatNative {
     external fun deviceExportRefusalLabel(code: Int): String
     external fun deviceExportLastStatus(): Int
     external fun exportRatchetForDevice(stateId: Int, passphrase: ByteArray, strictRefuses: Boolean): ByteArray
+    // Inbound voice chunks. Rust owns the bounded queue: Extreme, an empty
+    // chunk, and anything larger than a Tor frame are refused. take returns
+    // an empty array when nothing is waiting. Panic wipe clears the queue.
     external fun pushReceivedVoiceChunk(data: ByteArray)
+    external fun takeReceivedVoiceChunk(): ByteArray
     external fun getSecurityPosture(): String   // richer posture from Rust side (high-5)
 
     // Fed from the background Tor receiver thread (real framing path). Must be declared to match Rust JNI.
@@ -329,10 +333,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         // === FULL BACKGROUND TOR RECEIVER THREAD with real voice chunk pipeline ===
-        // The thread now starts the real Rust Tor receiver and feeds it data.
-        // Voice chunks go through: Rust receiver → feedReceivedData → Kotlin queue → JNI decrypt + ratchet + SeekBar
-        private val voiceChunkQueue = java.util.concurrent.LinkedBlockingQueue<ByteArray>()
-
+        // The thread starts the Rust Tor receiver and feeds it data.
+        // Voice chunks go through the Rust queue (bounded, wiped with the profile),
+        // then processVoiceChunk for the per-stream chain.
         Thread {
             try {
                 // Start the actual Tor receiver on the Rust side (this is the deep integration point)
@@ -341,7 +344,17 @@ class MainActivity : AppCompatActivity() {
                 // Dedicated voice chunk processor (real streaming + ratchet + UI)
                 Thread {
                     while (true) {
-                        val chunk = voiceChunkQueue.take()
+                        val chunk = try {
+                            HashChatNative.takeReceivedVoiceChunk()
+                        } catch (_: Exception) {
+                            ByteArray(0)
+                        }
+                        if (chunk.isEmpty()) {
+                            try {
+                                Thread.sleep(200)
+                            } catch (_: Exception) {}
+                            continue
+                        }
                         try {
                             // Official voice path: processVoiceChunk in Rust (Wave 2 progress).
                             // The Rust side now owns real per-stream VoiceStream with HKDF chain advancement.
@@ -368,9 +381,8 @@ class MainActivity : AppCompatActivity() {
                             // Feed into the actual Rust Tor receiver (this is the "from the actual Tor receiver" path)
                             HashChatNative.feedReceivedData(frame)
 
-                            // Also push specifically for voice processing (the queue the processor listens to)
+                            // Rust queue. Extreme, oversize, and a full queue are dropped there.
                             HashChatNative.pushReceivedVoiceChunk(frame)
-                            voiceChunkQueue.put(frame)
                         } else {
                             val fakeKey = ByteArray(32) { (it + 7).toByte() }
                             val fakeCt = "background-received".toByteArray()
@@ -615,9 +627,9 @@ class MainActivity : AppCompatActivity() {
     // In production this would use the same per-message ratchet keys as text, chunk the audio,
     // encrypt each chunk via JNI, frame with sender hint, and send over the Tor hidden service path.
     //
-    // LONG-TERM (arch-1): Move more of the chunking / queue / processor logic into the Rust side
-    // (new JNI calls like voiceChunkEncryptAndFrame / processIncomingVoiceFrame). Keep this Kotlin
-    // layer as thin UI + MediaRecorder/Seeker glue only. JNI surface must stay stable and minimal.
+    // LONG-TERM (arch-1): Move chunking and playback glue into Rust
+    // (voiceChunkEncryptAndFrame / processIncomingVoiceFrame). The inbound
+    // queue is already Rust. Keep this layer as UI + MediaRecorder glue.
     private var mediaRecorder: android.media.MediaRecorder? = null
     private var isRecording = false
     private var currentVoiceRecordingFile: File? = null   // OPSEC: app-private cacheDir only; deleted after ratchet processing
@@ -1153,7 +1165,8 @@ class MainActivity : AppCompatActivity() {
             currentVoiceRecordingFile?.delete()
             currentVoiceRecordingFile = null
         } catch (_: Exception) {}
-        // voiceChunkQueue is intentionally left (it is the receive path), but we can drain it in a real wipe.
+        // Inbound voice chunks stay in the Rust queue across pause (it is the
+        // receive path). Panic wipe clears that queue.
     }
 
     // Improved posture helpers (still simple, but less completely stubby).
