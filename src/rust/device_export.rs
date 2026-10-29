@@ -9,8 +9,17 @@
 //! Extreme refuses. A ratchet whose root key is still all zeros was never
 //! initialized from a shared secret and is not exported. The Argon2id envelope
 //! stays in the Android crate; this module does not seal.
+//!
+//! Once a blob is sealed, [`pack_carry`] wraps it as a carry file the other
+//! device can recognize. [`open_carry`] checks the length and a SHA-256 of
+//! the ciphertext and hands the sealed envelope back. It does not run the
+//! KDF and it does not decrypt. The digest catches a partial or damaged
+//! copy. It is not a MAC: anyone who can rewrite the file can recompute it.
+//! The passphrase is never part of the file.
 
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
+use zeroize::Zeroizing;
 
 use crate::envelope::check_new_passphrase;
 
@@ -181,10 +190,162 @@ pub fn allow_device_export(req: &DeviceExportRequest<'_>) -> Result<(), DeviceEx
     Ok(())
 }
 
+/// Magic at the start of a carry file. ASCII, so a stray envelope is obvious.
+pub const CARRY_MAGIC: &[u8; 11] = b"HC-XDEV-v1\n";
+
+/// Prefix of the Android Argon2id envelope. Checked, not parsed.
+pub const SEALED_BLOB_MAGIC: &[u8] = b"REAL-EXP-v2";
+
+/// `REAL-EXP-v2` (11) + salt (16) + nonce (12) + length (4) + tag (16).
+pub const MIN_SEALED_BLOB_BYTES: usize = 11 + 16 + 12 + 4 + 16;
+
+/// One ratchet state plus skipped keys fits well under this. A larger buffer
+/// is refused before it is copied into the carry file.
+pub const MAX_SEALED_BLOB_BYTES: usize = 64 * 1024;
+
+const CARRY_DIGEST_LEN: usize = 32;
+const CARRY_LEN_OFF: usize = CARRY_MAGIC.len();
+const CARRY_DIGEST_OFF: usize = CARRY_MAGIC.len() + 4;
+
+/// Magic + big-endian length + SHA-256.
+pub const CARRY_HEADER_LEN: usize = CARRY_MAGIC.len() + 4 + CARRY_DIGEST_LEN;
+
+/// Largest file [`open_carry`] will accept.
+pub const MAX_CARRY_FILE_BYTES: usize = CARRY_HEADER_LEN + MAX_SEALED_BLOB_BYTES;
+
+/// Why a carry file was not written or not accepted. `0` is not a refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CarryRefusal {
+    /// Extreme builds have no cross-device carry.
+    Extreme,
+    /// No sealed bytes were passed.
+    Empty,
+    /// The bytes are not a `REAL-EXP-v2` envelope.
+    NotSealed,
+    /// Larger than [`MAX_SEALED_BLOB_BYTES`] or [`MAX_CARRY_FILE_BYTES`].
+    TooLarge,
+    /// The file does not start with [`CARRY_MAGIC`].
+    NotACarry,
+    /// The header or the declared payload is cut off, or extra bytes follow.
+    Truncated,
+    /// The stored SHA-256 does not match the payload.
+    DigestMismatch,
+}
+
+impl CarryRefusal {
+    /// JNI status code. Does not overlap [`DeviceExportRefusal::code`].
+    pub fn code(self) -> i32 {
+        match self {
+            Self::Extreme => -10,
+            Self::Empty => -11,
+            Self::NotSealed => -12,
+            Self::TooLarge => -13,
+            Self::NotACarry => -14,
+            Self::Truncated => -15,
+            Self::DigestMismatch => -16,
+        }
+    }
+
+    pub fn from_code(code: i32) -> Option<Self> {
+        match code {
+            -10 => Some(Self::Extreme),
+            -11 => Some(Self::Empty),
+            -12 => Some(Self::NotSealed),
+            -13 => Some(Self::TooLarge),
+            -14 => Some(Self::NotACarry),
+            -15 => Some(Self::Truncated),
+            -16 => Some(Self::DigestMismatch),
+            _ => None,
+        }
+    }
+
+    /// Toast text. Never echoes a passphrase.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Extreme => "EXTREME MODE: Cross-device carry disabled.",
+            Self::Empty => "Nothing to carry.",
+            Self::NotSealed => "That is not a sealed export.",
+            Self::TooLarge => "Carry file is too large.",
+            Self::NotACarry => "That is not a HashChat carry file.",
+            Self::Truncated => "Carry file length does not match.",
+            Self::DigestMismatch => "Carry file is damaged.",
+        }
+    }
+}
+
+fn sealed_digest(sealed: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(sealed);
+    hasher.finalize().into()
+}
+
+/// Wrap an already-sealed envelope. The passphrase is not an argument.
+pub fn pack_carry(extreme: bool, sealed: &[u8]) -> Result<Vec<u8>, CarryRefusal> {
+    if extreme {
+        return Err(CarryRefusal::Extreme);
+    }
+    if sealed.is_empty() {
+        return Err(CarryRefusal::Empty);
+    }
+    if sealed.len() > MAX_SEALED_BLOB_BYTES {
+        return Err(CarryRefusal::TooLarge);
+    }
+    if sealed.len() < MIN_SEALED_BLOB_BYTES || !sealed.starts_with(SEALED_BLOB_MAGIC) {
+        return Err(CarryRefusal::NotSealed);
+    }
+    let len = u32::try_from(sealed.len()).map_err(|_| CarryRefusal::TooLarge)?;
+    let digest = sealed_digest(sealed);
+    let mut out = Vec::with_capacity(CARRY_HEADER_LEN + sealed.len());
+    out.extend_from_slice(CARRY_MAGIC);
+    out.extend_from_slice(&len.to_be_bytes());
+    out.extend_from_slice(&digest);
+    out.extend_from_slice(sealed);
+    Ok(out)
+}
+
+/// Check a carry file and return the sealed envelope it holds.
+///
+/// The returned bytes are still ciphertext. Dropping the [`Zeroizing`]
+/// buffer clears that copy.
+pub fn open_carry(extreme: bool, file: &[u8]) -> Result<Zeroizing<Vec<u8>>, CarryRefusal> {
+    if extreme {
+        return Err(CarryRefusal::Extreme);
+    }
+    if file.len() < CARRY_MAGIC.len() || !file.starts_with(CARRY_MAGIC) {
+        return Err(CarryRefusal::NotACarry);
+    }
+    if file.len() < CARRY_HEADER_LEN {
+        return Err(CarryRefusal::Truncated);
+    }
+    let mut len_bytes = [0u8; 4];
+    len_bytes.copy_from_slice(&file[CARRY_LEN_OFF..CARRY_LEN_OFF + 4]);
+    let len = usize::try_from(u32::from_be_bytes(len_bytes)).unwrap_or(usize::MAX);
+    if len > MAX_SEALED_BLOB_BYTES {
+        return Err(CarryRefusal::TooLarge);
+    }
+    if len < MIN_SEALED_BLOB_BYTES {
+        return Err(CarryRefusal::NotSealed);
+    }
+    if file.len() != CARRY_HEADER_LEN + len {
+        return Err(CarryRefusal::Truncated);
+    }
+    let mut expected = [0u8; CARRY_DIGEST_LEN];
+    expected.copy_from_slice(&file[CARRY_DIGEST_OFF..CARRY_HEADER_LEN]);
+    let sealed = &file[CARRY_HEADER_LEN..];
+    if !bool::from(sealed_digest(sealed).ct_eq(&expected)) {
+        return Err(CarryRefusal::DigestMismatch);
+    }
+    if !sealed.starts_with(SEALED_BLOB_MAGIC) {
+        return Err(CarryRefusal::NotSealed);
+    }
+    Ok(Zeroizing::new(sealed.to_vec()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ratchet::DoubleRatchet;
+    use sha2::{Digest, Sha256};
 
     fn allowed<'a>(passphrase: &'a [u8], root: &'a [u8]) -> DeviceExportRequest<'a> {
         DeviceExportRequest {
@@ -323,5 +484,113 @@ mod tests {
         }
         assert_eq!(DeviceExportRefusal::from_code(0), None);
         assert_eq!(DeviceExportRefusal::from_code(1), None);
+    }
+
+    fn sample_sealed() -> Vec<u8> {
+        let mut sealed = vec![0x5a; MIN_SEALED_BLOB_BYTES];
+        sealed[..SEALED_BLOB_MAGIC.len()].copy_from_slice(SEALED_BLOB_MAGIC);
+        sealed
+    }
+
+    #[test]
+    fn carry_roundtrip_returns_the_sealed_bytes_and_not_the_passphrase() {
+        let sealed = sample_sealed();
+        let passphrase = b"correct horse battery";
+        let file = pack_carry(false, &sealed).unwrap();
+        assert!(file.starts_with(CARRY_MAGIC));
+        assert!(!file.windows(passphrase.len()).any(|w| w == passphrase));
+        let opened = open_carry(false, &file).unwrap();
+        assert_eq!(opened.as_slice(), sealed.as_slice());
+        assert!(opened.starts_with(SEALED_BLOB_MAGIC));
+    }
+
+    #[test]
+    fn extreme_refuses_a_valid_carry_file() {
+        let file = pack_carry(false, &sample_sealed()).unwrap();
+        assert_eq!(
+            pack_carry(true, &sample_sealed()),
+            Err(CarryRefusal::Extreme)
+        );
+        assert_eq!(open_carry(true, &file), Err(CarryRefusal::Extreme));
+        assert_eq!(open_carry(true, b""), Err(CarryRefusal::Extreme));
+    }
+
+    #[test]
+    fn a_raw_envelope_is_not_a_carry_file() {
+        let sealed = sample_sealed();
+        assert_eq!(open_carry(false, &sealed), Err(CarryRefusal::NotACarry));
+        assert_eq!(pack_carry(false, b""), Err(CarryRefusal::Empty));
+        assert_eq!(pack_carry(false, b"nope"), Err(CarryRefusal::NotSealed));
+        assert_eq!(
+            pack_carry(false, SEALED_BLOB_MAGIC),
+            Err(CarryRefusal::NotSealed)
+        );
+    }
+
+    #[test]
+    fn a_damaged_or_partial_carry_file_is_refused() {
+        let sealed = sample_sealed();
+        let file = pack_carry(false, &sealed).unwrap();
+
+        let mut flipped = file.clone();
+        let last = flipped.len() - 1;
+        flipped[last] ^= 0x01;
+        assert_eq!(
+            open_carry(false, &flipped),
+            Err(CarryRefusal::DigestMismatch)
+        );
+
+        assert_eq!(
+            open_carry(false, &file[..file.len() - 1]),
+            Err(CarryRefusal::Truncated)
+        );
+        let mut extra = file.clone();
+        extra.push(0);
+        assert_eq!(open_carry(false, &extra), Err(CarryRefusal::Truncated));
+        assert_eq!(open_carry(false, CARRY_MAGIC), Err(CarryRefusal::Truncated));
+        assert_eq!(open_carry(false, b"HC-XDEV"), Err(CarryRefusal::NotACarry));
+    }
+
+    #[test]
+    fn an_oversized_envelope_is_refused_before_it_is_wrapped() {
+        let mut big = vec![0u8; MAX_SEALED_BLOB_BYTES + 1];
+        big[..SEALED_BLOB_MAGIC.len()].copy_from_slice(SEALED_BLOB_MAGIC);
+        assert_eq!(pack_carry(false, &big), Err(CarryRefusal::TooLarge));
+    }
+
+    #[test]
+    fn a_rewritten_digest_is_not_authentication() {
+        // The SHA-256 detects accidental damage. Someone who can edit the
+        // file can replace the payload and store a new digest. The envelope
+        // AEAD, under the passphrase, is what rejects that later.
+        let mut file = pack_carry(false, &sample_sealed()).unwrap();
+        let at = CARRY_HEADER_LEN + SEALED_BLOB_MAGIC.len();
+        file[at] ^= 0x01;
+        let digest = Sha256::digest(&file[CARRY_HEADER_LEN..]);
+        let digest_at = CARRY_MAGIC.len() + 4;
+        file[digest_at..CARRY_HEADER_LEN].copy_from_slice(&digest);
+        let opened = open_carry(false, &file).unwrap();
+        assert_eq!(opened.as_slice(), &file[CARRY_HEADER_LEN..]);
+    }
+
+    #[test]
+    fn carry_codes_do_not_overlap_the_export_gate() {
+        for r in [
+            CarryRefusal::Extreme,
+            CarryRefusal::Empty,
+            CarryRefusal::NotSealed,
+            CarryRefusal::TooLarge,
+            CarryRefusal::NotACarry,
+            CarryRefusal::Truncated,
+            CarryRefusal::DigestMismatch,
+        ] {
+            assert_eq!(CarryRefusal::from_code(r.code()), Some(r));
+            assert!(DeviceExportRefusal::from_code(r.code()).is_none());
+            assert!(r.code() < 0);
+            assert!(!r.label().is_empty());
+            assert!(!r.label().contains("correct horse"));
+        }
+        assert_eq!(CarryRefusal::from_code(0), None);
+        assert_eq!(CarryRefusal::from_code(-1), None);
     }
 }
