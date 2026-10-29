@@ -36,6 +36,11 @@ object HashChatNative {
     external fun deviceExportRefusalLabel(code: Int): String
     external fun deviceExportLastStatus(): Int
     external fun exportRatchetForDevice(stateId: Int, passphrase: ByteArray, strictRefuses: Boolean): ByteArray
+    // Carry file around that sealed blob. pack does not take the passphrase.
+    // open returns the sealed envelope still encrypted. Both refuse Extreme.
+    external fun deviceExportPackCarry(sealed: ByteArray): ByteArray
+    external fun deviceExportOpenCarry(file: ByteArray): ByteArray
+    external fun deviceExportCarryStatus(): Int
     // Inbound voice chunks. Rust owns the bounded queue: Extreme, an empty
     // chunk, and anything larger than a Tor frame are refused. take returns
     // an empty array when nothing is waiting. Panic wipe clears the queue.
@@ -554,18 +559,39 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    // The blob is ciphertext. The shell does not unwrap it.
+    // The blob is ciphertext. Rust wraps it as a carry file. The shell does
+    // not unwrap it, and the passphrase is not written into the file.
     private fun showSealedExport(exported: ByteArray) {
-        AlertDialog.Builder(this)
+        val packed = HashChatNative.deviceExportPackCarry(exported)
+        val carry = HashChatNative.deviceExportCarryStatus()
+        exported.fill(0)
+        if (carry != 0 || packed.isEmpty()) {
+            val msg = HashChatNative.deviceExportRefusalLabel(carry)
+            Toast.makeText(
+                this,
+                if (msg.isNotEmpty()) msg else "Cross-device export refused",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        val dialog = AlertDialog.Builder(this)
             .setTitle("Cross-device export")
-            .setMessage("Sealed blob, ${exported.size} bytes. Save it only to move this one session, then delete the file. Never send the passphrase with the file.")
+            .setMessage("Carry file, ${packed.size} bytes. The sealed session is inside it. The passphrase is not. Save it only to move this one session, then delete the file.")
             .setPositiveButton("Save to app cache") { _, _ ->
-                val f = java.io.File(cacheDir, "ratchet_export_${System.currentTimeMillis()}.enc")
-                f.writeBytes(exported)
-                Toast.makeText(this, "Saved to ${f.absolutePath} (delete after transfer)", Toast.LENGTH_LONG).show()
+                try {
+                    val f = File(cacheDir, "ratchet_carry_${System.currentTimeMillis()}.hcx")
+                    f.writeBytes(packed)
+                    Toast.makeText(this, "Saved to ${f.absolutePath} (delete after transfer)", Toast.LENGTH_LONG).show()
+                } catch (_: Exception) {
+                    Toast.makeText(this, "Could not save the carry file.", Toast.LENGTH_LONG).show()
+                } finally {
+                    packed.fill(0)
+                }
             }
-            .setNegativeButton("Done", null)
-            .show()
+            .setNegativeButton("Done") { _, _ -> packed.fill(0) }
+            .create()
+        dialog.setOnDismissListener { packed.fill(0) }
+        dialog.show()
     }
 
     // Quick action buttons (will be driven by long-press / overflow in production)

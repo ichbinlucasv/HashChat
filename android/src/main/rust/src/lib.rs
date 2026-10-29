@@ -26,7 +26,7 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use zeroize::{Zeroize, Zeroizing}; // Required for explicit zeroize() on local chunk keys in VoiceStream (Wave 3)
 
-use hashchat_rust::device_export::{self, DeviceExportRefusal};
+use hashchat_rust::device_export::{self, CarryRefusal, DeviceExportRefusal};
 use hashchat_rust::device_posture::{self, DeviceSignals, Posture};
 use hashchat_rust::group_store::{GroupBook, GroupBookError};
 use hashchat_rust::message_book::{Delivery, MessageBook};
@@ -1756,6 +1756,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceExportRefusalLabel(
 ) -> jni::sys::jstring {
     let label = DeviceExportRefusal::from_code(code)
         .map(DeviceExportRefusal::label)
+        .or_else(|| CarryRefusal::from_code(code).map(CarryRefusal::label))
         .unwrap_or("");
     string_to_jstring(&mut env, label)
 }
@@ -1806,6 +1807,114 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_exportRatchetForDevice(
         }
         Err(_) => export_refused(&mut env, DeviceExportRefusal::SealFailed),
     }
+}
+
+/// Status of the most recent carry pack or open. `0` means bytes were
+/// returned. A negative code matches [`CarryRefusal::code`].
+static CARRY_STATUS: Mutex<i32> = Mutex::new(0);
+
+fn carry_refused(env: &mut JNIEnv, refusal: CarryRefusal) -> jbyteArray {
+    *lock(&CARRY_STATUS) = refusal.code();
+    vec_to_java_byte_array(env, &[])
+}
+
+/// Copy at most `max` bytes. Does not allocate when the array is missing,
+/// empty, or over the cap.
+fn copy_carry_input(
+    env: &mut JNIEnv,
+    raw: jbyteArray,
+    max: usize,
+) -> Result<Zeroizing<Vec<u8>>, CarryRefusal> {
+    if raw.is_null() {
+        return Err(CarryRefusal::Empty);
+    }
+    let arr = unsafe { wrap_byte_array(raw) };
+    let len = usize::try_from(env.get_array_length(&arr).unwrap_or(0)).unwrap_or(usize::MAX);
+    if len == 0 {
+        return Err(CarryRefusal::Empty);
+    }
+    if len > max {
+        return Err(CarryRefusal::TooLarge);
+    }
+    let mut tmp = vec![0i8; len];
+    if env.get_byte_array_region(&arr, 0, &mut tmp).is_err() {
+        tmp.fill(0);
+        return Err(CarryRefusal::Empty);
+    }
+    let mut out = vec![0u8; len];
+    for (i, b) in tmp.iter().enumerate() {
+        out[i] = *b as u8;
+    }
+    tmp.fill(0);
+    Ok(Zeroizing::new(out))
+}
+
+/// Wrap a sealed export as a carry file. Extreme, an empty buffer, and
+/// anything that is not a `REAL-EXP-v2` envelope come back empty. The shell
+/// reads `deviceExportCarryStatus` on the same thread.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceExportPackCarry(
+    mut env: JNIEnv,
+    _class: JClass,
+    sealed: jbyteArray,
+) -> jbyteArray {
+    let extreme = with_profile(|p| p.extreme());
+    if extreme {
+        return carry_refused(&mut env, CarryRefusal::Extreme);
+    }
+    let mut sealed = match copy_carry_input(&mut env, sealed, device_export::MAX_SEALED_BLOB_BYTES)
+    {
+        Ok(bytes) => bytes,
+        Err(refusal) => return carry_refused(&mut env, refusal),
+    };
+    let packed = device_export::pack_carry(false, &sealed);
+    sealed.zeroize();
+    match packed {
+        Ok(mut file) => {
+            *lock(&CARRY_STATUS) = 0;
+            let arr = vec_to_java_byte_array(&mut env, &file);
+            file.zeroize();
+            arr
+        }
+        Err(refusal) => carry_refused(&mut env, refusal),
+    }
+}
+
+/// Open a carry file and return the still-sealed envelope. Does not decrypt.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceExportOpenCarry(
+    mut env: JNIEnv,
+    _class: JClass,
+    file: jbyteArray,
+) -> jbyteArray {
+    let extreme = with_profile(|p| p.extreme());
+    if extreme {
+        return carry_refused(&mut env, CarryRefusal::Extreme);
+    }
+    let mut file = match copy_carry_input(&mut env, file, device_export::MAX_CARRY_FILE_BYTES) {
+        Ok(bytes) => bytes,
+        Err(refusal) => return carry_refused(&mut env, refusal),
+    };
+    let opened = device_export::open_carry(false, &file);
+    file.zeroize();
+    match opened {
+        Ok(mut sealed) => {
+            *lock(&CARRY_STATUS) = 0;
+            let arr = vec_to_java_byte_array(&mut env, &sealed);
+            sealed.zeroize();
+            arr
+        }
+        Err(refusal) => carry_refused(&mut env, refusal),
+    }
+}
+
+/// Status of the most recent `deviceExportPackCarry` or `deviceExportOpenCarry`.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceExportCarryStatus(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    *lock(&CARRY_STATUS)
 }
 
 // === med-10: Real tests exercising the new strong Argon2id envelope + ratchet roundtrips ===
