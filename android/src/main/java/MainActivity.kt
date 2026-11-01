@@ -7,6 +7,7 @@ import android.widget.*
 import android.view.View
 import android.app.AlertDialog
 import android.content.Intent
+import android.net.Uri
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.LinearLayoutManager
 import android.view.LayoutInflater
@@ -41,6 +42,20 @@ object HashChatNative {
     external fun deviceExportPackCarry(sealed: ByteArray): ByteArray
     external fun deviceExportOpenCarry(file: ByteArray): ByteArray
     external fun deviceExportCarryStatus(): Int
+    // Several established sessions: prepare returns a refusal and
+    // needsPicker is true. The shell lists established slots and exports
+    // the one the user chose. Labels come from Rust.
+    external fun deviceExportEstablishedSlots(): IntArray
+    external fun deviceExportSessionLabel(slot: Int): String
+    external fun deviceExportNeedsPicker(code: Int): Boolean
+    // Import. prepare is posture plus an empty slot (0 means choose a file).
+    // inspect checks the carry file and does not decrypt (0 means ask for
+    // the passphrase). install returns the empty slot it used, or a refusal.
+    // deviceCarryMaxBytes is the most the shell should read.
+    external fun deviceCarryMaxBytes(): Int
+    external fun deviceImportPrepare(strictRefuses: Boolean): Int
+    external fun deviceImportInspect(file: ByteArray, strictRefuses: Boolean): Int
+    external fun deviceImportInstall(file: ByteArray, passphrase: ByteArray, strictRefuses: Boolean): Int
     // Inbound voice chunks. Rust owns the bounded queue: Extreme, an empty
     // chunk, and anything larger than a Tor frame are refused. take returns
     // an empty array when nothing is waiting. Panic wipe clears the queue.
@@ -485,6 +500,7 @@ class MainActivity : AppCompatActivity() {
                 "View security info (ratchet step, E2EE, posture)",
                 "Set disappearing timer (key wipe on expiry)",
                 "Export ratchet for new device (cross-device, STRICT gated)",
+                "Import a carry file (cross-device, STRICT gated)",
                 "Toggle decoy profile (plausible deniability, STRICT gated)",
                 "Cancel"
             )) { _, which ->
@@ -504,7 +520,8 @@ class MainActivity : AppCompatActivity() {
                         Toast.makeText(this, "Disappearing: $state", Toast.LENGTH_SHORT).show()
                     }
                     6 -> performCrossDeviceExport()
-                    7 -> onToggleDecoyProfile()
+                    7 -> performCrossDeviceImport()
+                    8 -> onToggleDecoyProfile()
                 }
             }
             .show()
@@ -512,51 +529,205 @@ class MainActivity : AppCompatActivity() {
 
     // Cross-device export. Rust (`device_export`) refuses Extreme, a strict
     // posture, a weak passphrase, and a ratchet that was never bound to a
-    // contact. The shell only asks for a passphrase once one session is loaded.
+    // contact. One established session skips the picker. Several sessions
+    // list their Rust labels and the user chooses one. This device keeps
+    // its copy; the carry file is the only thing that moves.
     private fun performCrossDeviceExport() {
         val strict = HashChatNative.shouldRefuseInStrictMode("export")
         val slot = HashChatNative.deviceExportPrepare(strict)
-        if (slot < 0) {
-            val msg = HashChatNative.deviceExportRefusalLabel(slot)
-            Toast.makeText(
-                this,
-                if (msg.isNotEmpty()) msg else "Cross-device export refused",
-                Toast.LENGTH_LONG
-            ).show()
+        if (slot >= 0) {
+            confirmExport(slot)
             return
         }
+        if (HashChatNative.deviceExportNeedsPicker(slot)) {
+            showExportPicker()
+            return
+        }
+        toastRefusal(slot, "Cross-device export refused")
+    }
+
+    private fun showExportPicker() {
+        val ids = HashChatNative.deviceExportEstablishedSlots()
+        val labels = ArrayList<String>()
+        val slots = ArrayList<Int>()
+        for (id in ids) {
+            val label = HashChatNative.deviceExportSessionLabel(id)
+            if (label.isNotEmpty()) {
+                labels.add(label)
+                slots.add(id)
+            }
+        }
+        if (labels.isEmpty()) {
+            toastRefusal(
+                HashChatNative.deviceExportPrepare(HashChatNative.shouldRefuseInStrictMode("export")),
+                "Cross-device export refused"
+            )
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Export one contact session")
+            .setItems(labels.toTypedArray()) { _, which ->
+                confirmExport(slots[which])
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun confirmExport(slot: Int) {
+        askTransferPassphrase(
+            "Cross-device export",
+            "Passphrase for this transfer only. It is not saved. This one contact session is sealed. A fresh ratchet is not. This device keeps its copy.",
+            "Export"
+        ) { pass ->
+            val strictNow = HashChatNative.shouldRefuseInStrictMode("export")
+            try {
+                val exported = HashChatNative.exportRatchetForDevice(slot, pass, strictNow)
+                val status = HashChatNative.deviceExportLastStatus()
+                if (status != 0 || exported.isEmpty()) {
+                    toastRefusal(status, "Cross-device export refused")
+                } else {
+                    showSealedExport(exported)
+                }
+            } catch (e: Exception) {
+                Toast.makeText(this, "Export error: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun toastRefusal(code: Int, fallback: String) {
+        val msg = HashChatNative.deviceExportRefusalLabel(code)
+        Toast.makeText(
+            this,
+            if (msg.isNotEmpty()) msg else fallback,
+            Toast.LENGTH_LONG
+        ).show()
+    }
+
+    private fun askTransferPassphrase(
+        title: String,
+        message: String,
+        confirm: String,
+        onDismiss: (() -> Unit)? = null,
+        onPass: (ByteArray) -> Unit
+    ) {
         val input = EditText(this)
         input.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         input.hint = "Passphrase"
-        AlertDialog.Builder(this)
-            .setTitle("Cross-device export")
-            .setMessage("Passphrase for this transfer only. It is not saved. One contact session is sealed; a fresh ratchet is not.")
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(message)
             .setView(input)
-            .setPositiveButton("Export") { _, _ ->
+            .setPositiveButton(confirm) { _, _ ->
                 val pass = input.text.toString().toByteArray(Charsets.UTF_8)
                 input.text.clear()
-                val strictNow = HashChatNative.shouldRefuseInStrictMode("export")
                 try {
-                    val exported = HashChatNative.exportRatchetForDevice(slot, pass, strictNow)
-                    val status = HashChatNative.deviceExportLastStatus()
-                    if (status != 0 || exported.isEmpty()) {
-                        val msg = HashChatNative.deviceExportRefusalLabel(status)
-                        Toast.makeText(
-                            this,
-                            if (msg.isNotEmpty()) msg else "Cross-device export refused",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    } else {
-                        showSealedExport(exported)
-                    }
-                } catch (e: Exception) {
-                    Toast.makeText(this, "Export error: ${e.message}", Toast.LENGTH_SHORT).show()
+                    onPass(pass)
                 } finally {
                     pass.fill(0)
                 }
             }
             .setNegativeButton("Cancel", null)
-            .show()
+            .create()
+        dialog.setOnDismissListener { onDismiss?.invoke() }
+        dialog.show()
+    }
+
+    // Cross-device import. Rust refuses Extreme, a strict posture, a full
+    // store, a file that is not a carry file, a bad passphrase, a fresh
+    // ratchet, and a session that is already loaded. The shell only picks
+    // the file and types the passphrase.
+    private fun performCrossDeviceImport() {
+        val strict = HashChatNative.shouldRefuseInStrictMode("export")
+        val gate = HashChatNative.deviceImportPrepare(strict)
+        if (gate != 0) {
+            toastRefusal(gate, "Cross-device import refused")
+            return
+        }
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        try {
+            startActivityForResult(intent, 43)
+        } catch (_: Exception) {
+            Toast.makeText(this, "No file picker on this device.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun importCarryFromUri(uri: Uri) {
+        val strict = HashChatNative.shouldRefuseInStrictMode("export")
+        val cap = HashChatNative.deviceCarryMaxBytes()
+        if (cap <= 0) {
+            toastRefusal(HashChatNative.deviceImportPrepare(strict), "Cross-device import refused")
+            return
+        }
+        var tooLarge = false
+        val file = try {
+            contentResolver.openInputStream(uri)?.use { input ->
+                val buf = ByteArray(cap + 1)
+                var off = 0
+                while (off < buf.size) {
+                    val n = input.read(buf, off, buf.size - off)
+                    if (n <= 0) break
+                    off += n
+                }
+                if (off > cap) {
+                    buf.fill(0)
+                    tooLarge = true
+                    null
+                } else if (off == 0) {
+                    buf.fill(0)
+                    ByteArray(0)
+                } else {
+                    val out = buf.copyOf(off)
+                    buf.fill(0)
+                    out
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+        if (file == null) {
+            if (tooLarge) {
+                val status = HashChatNative.deviceImportInspect(ByteArray(cap + 1), strict)
+                toastRefusal(status, "Carry file is too large.")
+            } else {
+                Toast.makeText(this, "Could not read the carry file.", Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+        val status = HashChatNative.deviceImportInspect(file, strict)
+        if (status != 0) {
+            file.fill(0)
+            toastRefusal(status, "Cross-device import refused")
+            return
+        }
+        askTransferPassphrase(
+            "Cross-device import",
+            "Passphrase for this transfer. It is not saved. The session goes into an empty slot and does not replace one already here. The device that exported it still has its copy.",
+            "Import",
+            { file.fill(0) }
+        ) { pass ->
+            val strictNow = HashChatNative.shouldRefuseInStrictMode("export")
+            try {
+                val slot = HashChatNative.deviceImportInstall(file, pass, strictNow)
+                if (slot < 0) {
+                    toastRefusal(slot, "Cross-device import refused")
+                } else {
+                    val label = HashChatNative.deviceExportSessionLabel(slot)
+                    val where = if (label.isNotEmpty()) "Imported into $label. " else "Imported. "
+                    Toast.makeText(
+                        this,
+                        where + "Delete the carry file. The other device still has this session.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } catch (_: Exception) {
+                Toast.makeText(this, "Could not import the carry file.", Toast.LENGTH_LONG).show()
+            } finally {
+                file.fill(0)
+            }
+        }
     }
 
     // The blob is ciphertext. Rust wraps it as a carry file. The shell does
@@ -576,7 +747,7 @@ class MainActivity : AppCompatActivity() {
         }
         val dialog = AlertDialog.Builder(this)
             .setTitle("Cross-device export")
-            .setMessage("Carry file, ${packed.size} bytes. The sealed session is inside it. The passphrase is not. Save it only to move this one session, then delete the file.")
+            .setMessage("Carry file, ${packed.size} bytes. The sealed session is inside it. The passphrase is not. This device keeps its copy. Save the file only to move this one session, then delete the file.")
             .setPositiveButton("Save to app cache") { _, _ ->
                 try {
                     val f = File(cacheDir, "ratchet_carry_${System.currentTimeMillis()}.hcx")
@@ -903,6 +1074,12 @@ class MainActivity : AppCompatActivity() {
                 val rid = HashChatNative.ratchetNew()
                 addMessage("Scanned group QR: $contents (ratchet $rid)", false)
                 Toast.makeText(this, "Group joined via QR (full sender-key + persistence)", Toast.LENGTH_LONG).show()
+            }
+        }
+        if (requestCode == 43 && resultCode == RESULT_OK) {
+            val uri = data?.data
+            if (uri != null) {
+                importCarryFromUri(uri)
             }
         }
     }

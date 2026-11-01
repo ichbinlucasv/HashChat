@@ -26,8 +26,8 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use zeroize::{Zeroize, Zeroizing}; // Required for explicit zeroize() on local chunk keys in VoiceStream (Wave 3)
 
-use hashchat_rust::device_export::{self, CarryRefusal, DeviceExportRefusal};
-use hashchat_rust::device_posture::{self, DeviceSignals, Posture};
+use hashchat_rust::device_export::{self, CarryRefusal, DeviceExportRefusal, DeviceImportRefusal};
+use hashchat_rust::device_posture::{self, DeviceSignals};
 use hashchat_rust::group_store::{GroupBook, GroupBookError};
 use hashchat_rust::message_book::{Delivery, MessageBook};
 use hashchat_rust::profile_slot::{DecoyRefusal, ProfileSlot};
@@ -60,7 +60,9 @@ mod ratchet;
 static ANDROID_RATCHET_STORE: Mutex<Vec<ratchet::DoubleRatchet>> = Mutex::new(Vec::new());
 
 /// Slots reserved (and best-effort mlocked) for ratchets at init.
-const RATCHET_SLOTS_RESERVED: usize = 64;
+/// The same cap bounds a cross-device import: the store is not grown to
+/// this index or past it when a carry file is installed.
+const RATCHET_SLOTS_RESERVED: usize = device_export::MAX_RATCHET_SLOTS;
 
 fn lock<T>(m: &'static Mutex<T>) -> MutexGuard<'static, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -831,7 +833,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_encryptWithKey(
 
     let mut pt_i8 = vec![0i8; pt_len];
     let _ = _env.get_byte_array_region(&pt_jba, 0, &mut pt_i8);
-    let mut pt: Vec<u8> = pt_i8.into_iter().map(|b| b as u8).collect();
+    let pt: Vec<u8> = pt_i8.into_iter().map(|b| b as u8).collect();
 
     // Use the provided key (in real flow this would come from ratchet_send)
     let key_jba = unsafe { wrap_byte_array(key) };
@@ -1637,7 +1639,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_groupSenderKeyBookClear(
 // surface in Kotlin.
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_exportGroupRatchet(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     state_id: jint,
     passphrase: jbyteArray,
@@ -1652,7 +1654,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_exportGroupRatchet(
 // orchestration into Rust.
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_importGroupRatchet(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     state_id: jint,
     passphrase: jbyteArray,
@@ -1712,19 +1714,32 @@ fn established_flags(store: &[ratchet::DoubleRatchet]) -> Vec<bool> {
     flags
 }
 
-/// Bytes of the single established ratchet at `state_id`.
-/// The store lock is not held across the KDF.
-fn exportable_ratchet_bytes(state_id: jint) -> Result<Zeroizing<Vec<u8>>, DeviceExportRefusal> {
-    let store = lock(&ANDROID_RATCHET_STORE);
-    let flags = established_flags(&store);
-    let idx = device_export::sole_established_index(&flags)?;
+/// Serialized state of one established session.
+///
+/// The caller names the slot. Other established sessions do not block it.
+/// The store lock is not held across the KDF; this only copies the bytes.
+fn export_choice(
+    store: &[ratchet::DoubleRatchet],
+    state_id: jint,
+) -> Result<Zeroizing<Vec<u8>>, DeviceExportRefusal> {
+    let flags = established_flags(store);
     let wanted = usize::try_from(state_id).map_err(|_| DeviceExportRefusal::MissingRatchet)?;
-    if wanted != idx {
-        return Err(DeviceExportRefusal::MissingRatchet);
-    }
+    let idx = device_export::chosen_established_index(&flags, wanted)?;
     // The Android ratchet copy returns a plain Vec. Wrap it so the
     // serialized state is zeroized on drop.
     Ok(Zeroizing::new(store[idx].to_bytes()))
+}
+
+fn exportable_ratchet_bytes(state_id: jint) -> Result<Zeroizing<Vec<u8>>, DeviceExportRefusal> {
+    let store = lock(&ANDROID_RATCHET_STORE);
+    export_choice(&store, state_id)
+}
+
+fn established_slot_ids(store: &[ratchet::DoubleRatchet]) -> Vec<jint> {
+    device_export::established_indices(&established_flags(store))
+        .into_iter()
+        .filter_map(|idx| jint::try_from(idx).ok())
+        .collect()
 }
 
 /// Slot index (`>= 0`) of the only established contact session, or a
@@ -1747,6 +1762,60 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceExportPrepare(
     }
 }
 
+/// Established slot indices, in order. Empty when none are loaded.
+/// The shell shows these when prepare returns the ambiguous code.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceExportEstablishedSlots(
+    env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jintArray {
+    let store = lock(&ANDROID_RATCHET_STORE);
+    let ids = established_slot_ids(&store);
+    let Ok(arr) = env.new_int_array(ids.len() as jni::sys::jsize) else {
+        return std::ptr::null_mut();
+    };
+    if env.set_int_array_region(&arr, 0, &ids).is_err() {
+        return std::ptr::null_mut();
+    }
+    arr.into_raw()
+}
+
+/// Picker line for one established slot. "" when that slot is not established.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceExportSessionLabel(
+    mut env: JNIEnv,
+    _class: JClass,
+    slot: jint,
+) -> jni::sys::jstring {
+    let label = match usize::try_from(slot) {
+        Ok(idx) => {
+            let store = lock(&ANDROID_RATCHET_STORE);
+            let flags = established_flags(&store);
+            if flags.get(idx) == Some(&true) {
+                device_export::session_picker_label(idx)
+            } else {
+                String::new()
+            }
+        }
+        Err(_) => String::new(),
+    };
+    string_to_jstring(&mut env, &label)
+}
+
+/// True when prepare refused because more than one session is loaded.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceExportNeedsPicker(
+    _env: JNIEnv,
+    _class: JClass,
+    code: jint,
+) -> jboolean {
+    u8::from(
+        DeviceExportRefusal::from_code(code)
+            .map(DeviceExportRefusal::needs_picker)
+            .unwrap_or(false),
+    )
+}
+
 /// Toast for a refusal code. "" when `code` is not a refusal.
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceExportRefusalLabel(
@@ -1757,6 +1826,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceExportRefusalLabel(
     let label = DeviceExportRefusal::from_code(code)
         .map(DeviceExportRefusal::label)
         .or_else(|| CarryRefusal::from_code(code).map(CarryRefusal::label))
+        .or_else(|| DeviceImportRefusal::from_code(code).map(DeviceImportRefusal::label))
         .unwrap_or("");
     string_to_jstring(&mut env, label)
 }
@@ -1917,10 +1987,213 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceExportCarryStatus(
     *lock(&CARRY_STATUS)
 }
 
+// === Cross-device import ===
+// The shell picks a carry file and a passphrase. This side checks the
+// posture, the file, and the passphrase, opens the envelope, and places
+// the ratchet in the first empty slot. An established session is not
+// replaced. The store lock is not held across Argon2id.
+
+fn established_roots(store: &[ratchet::DoubleRatchet]) -> Vec<[u8; 32]> {
+    let mut roots = Vec::new();
+    for ratchet in store {
+        let (mut root, _, _) = ratchet.export_state();
+        if device_export::root_is_established(&root) {
+            roots.push(root);
+        } else {
+            root.zeroize();
+        }
+    }
+    roots
+}
+
+fn zeroize_roots(roots: &mut [[u8; 32]]) {
+    for root in roots.iter_mut() {
+        root.zeroize();
+    }
+}
+
+/// Place `restored` in the first empty slot. The ratchet is zeroized on
+/// every refusal path because [`ratchet::DoubleRatchet`] drops that way.
+fn install_restored(
+    store: &Mutex<Vec<ratchet::DoubleRatchet>>,
+    restored: ratchet::DoubleRatchet,
+) -> Result<usize, DeviceImportRefusal> {
+    let (mut root, _, _) = restored.export_state();
+    if !device_export::root_is_established(&root) {
+        root.zeroize();
+        return Err(DeviceImportRefusal::UnboundRatchet);
+    }
+    let mut guard = store
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let flags = established_flags(&guard);
+    let mut loaded = established_roots(&guard);
+    let duplicate = device_export::root_already_loaded(&loaded, &root);
+    zeroize_roots(&mut loaded);
+    root.zeroize();
+    if duplicate {
+        return Err(DeviceImportRefusal::Duplicate);
+    }
+    let idx = device_export::empty_install_index(&flags, device_export::MAX_RATCHET_SLOTS)?;
+    let hole = idx < guard.len() && flags.get(idx) == Some(&false);
+    let append = idx == guard.len();
+    if !hole && !append {
+        return Err(DeviceImportRefusal::NoEmptySlot);
+    }
+    if append {
+        guard.push(restored);
+    } else {
+        guard[idx] = restored;
+    }
+    Ok(idx)
+}
+
+/// Posture, carry shape, and an empty slot. Does not run the KDF.
+fn inspect_carry(
+    store: &Mutex<Vec<ratchet::DoubleRatchet>>,
+    extreme: bool,
+    strict_refuses: bool,
+    file: &[u8],
+) -> Result<(), DeviceImportRefusal> {
+    device_export::posture_blocks_import(extreme, strict_refuses)?;
+    let mut sealed =
+        device_export::open_carry(false, file).map_err(device_export::import_from_carry)?;
+    sealed.zeroize();
+    let guard = store
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let flags = established_flags(&guard);
+    device_export::empty_install_index(&flags, device_export::MAX_RATCHET_SLOTS)?;
+    Ok(())
+}
+
+/// Open a carry file and install it. Does not hold `store` during the KDF.
+fn import_carry_into(
+    store: &Mutex<Vec<ratchet::DoubleRatchet>>,
+    extreme: bool,
+    strict_refuses: bool,
+    passphrase: &[u8],
+    file: &[u8],
+) -> Result<usize, DeviceImportRefusal> {
+    device_export::posture_blocks_import(extreme, strict_refuses)?;
+    device_export::passphrase_allows_import(passphrase)?;
+    let mut sealed =
+        device_export::open_carry(false, file).map_err(device_export::import_from_carry)?;
+    let mut plain = match unwrap_ratchet_blob(&sealed, passphrase) {
+        Ok(bytes) => Zeroizing::new(bytes),
+        Err(_) => {
+            sealed.zeroize();
+            return Err(DeviceImportRefusal::OpenFailed);
+        }
+    };
+    sealed.zeroize();
+    let restored = match ratchet::DoubleRatchet::from_bytes(&plain) {
+        Ok(ratchet) => ratchet,
+        Err(_) => {
+            plain.zeroize();
+            return Err(DeviceImportRefusal::OpenFailed);
+        }
+    };
+    plain.zeroize();
+    install_restored(store, restored)
+}
+
+/// Largest carry file the shell should read. One past this is refused.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceCarryMaxBytes(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    jint::try_from(device_export::MAX_CARRY_FILE_BYTES).unwrap_or(jint::MAX)
+}
+
+/// Posture and an empty slot, before the shell asks for a file.
+/// `0` means the user may choose a carry file.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceImportPrepare(
+    _env: JNIEnv,
+    _class: JClass,
+    strict_refuses: jboolean,
+) -> jint {
+    let extreme = with_profile(|p| p.extreme());
+    if let Err(refusal) = device_export::posture_blocks_import(extreme, strict_refuses != 0) {
+        return refusal.code();
+    }
+    let store = lock(&ANDROID_RATCHET_STORE);
+    let flags = established_flags(&store);
+    match device_export::empty_install_index(&flags, device_export::MAX_RATCHET_SLOTS) {
+        Ok(_) => 0,
+        Err(refusal) => refusal.code(),
+    }
+}
+
+/// Carry shape, posture, and an empty slot. Does not decrypt.
+/// `0` means the shell may ask for the passphrase.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceImportInspect(
+    mut env: JNIEnv,
+    _class: JClass,
+    file: jbyteArray,
+    strict_refuses: jboolean,
+) -> jint {
+    let extreme = with_profile(|p| p.extreme());
+    let strict = strict_refuses != 0;
+    if let Err(refusal) = device_export::posture_blocks_import(extreme, strict) {
+        return refusal.code();
+    }
+    let mut file = match copy_carry_input(&mut env, file, device_export::MAX_CARRY_FILE_BYTES) {
+        Ok(bytes) => bytes,
+        Err(refusal) => return device_export::import_from_carry(refusal).code(),
+    };
+    let result = inspect_carry(&ANDROID_RATCHET_STORE, extreme, strict, &file);
+    file.zeroize();
+    match result {
+        Ok(()) => 0,
+        Err(refusal) => refusal.code(),
+    }
+}
+
+/// Decrypt a carry file and install it into an empty slot.
+/// Returns the slot index, or a negative [`DeviceImportRefusal`] code.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_deviceImportInstall(
+    mut env: JNIEnv,
+    _class: JClass,
+    file: jbyteArray,
+    passphrase: jbyteArray,
+    strict_refuses: jboolean,
+) -> jint {
+    let extreme = with_profile(|p| p.extreme());
+    let strict = strict_refuses != 0;
+    if let Err(refusal) = device_export::posture_blocks_import(extreme, strict) {
+        return refusal.code();
+    }
+    let mut pass = copy_passphrase(&mut env, passphrase);
+    if let Err(refusal) = device_export::passphrase_allows_import(&pass) {
+        pass.zeroize();
+        return refusal.code();
+    }
+    let mut file = match copy_carry_input(&mut env, file, device_export::MAX_CARRY_FILE_BYTES) {
+        Ok(bytes) => bytes,
+        Err(refusal) => {
+            pass.zeroize();
+            return device_export::import_from_carry(refusal).code();
+        }
+    };
+    let result = import_carry_into(&ANDROID_RATCHET_STORE, extreme, strict, &pass, &file);
+    pass.zeroize();
+    file.zeroize();
+    match result {
+        Ok(idx) => jint::try_from(idx).unwrap_or(DeviceImportRefusal::NoEmptySlot.code()),
+        Err(refusal) => refusal.code(),
+    }
+}
+
 // === med-10: Real tests exercising the new strong Argon2id envelope + ratchet roundtrips ===
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hashchat_rust::device_posture::Posture;
 
     #[test]
     fn test_envelope_wrap_unwrap_basic() {
@@ -2164,5 +2437,216 @@ mod store_tests {
         let b = GroupSenderKey::new(1);
         assert_ne!(a.gsk_chain_key, [0u8; 32]);
         assert_ne!(a.gsk_chain_key, b.gsk_chain_key);
+    }
+
+    fn bound_ratchet(n: u8) -> ratchet::DoubleRatchet {
+        let mut ratchet = ratchet::DoubleRatchet::new();
+        let mut shared = [0u8; 32];
+        shared[0] = n;
+        shared[1] = n.wrapping_mul(3).wrapping_add(1);
+        ratchet.init_symmetric(&shared);
+        shared.zeroize();
+        ratchet
+    }
+
+    fn snapshot(store: &Mutex<Vec<ratchet::DoubleRatchet>>) -> Vec<Vec<u8>> {
+        store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .map(|ratchet| ratchet.to_bytes())
+            .collect()
+    }
+
+    #[test]
+    fn export_choice_names_one_established_session_among_several() {
+        let store = vec![
+            bound_ratchet(1),
+            ratchet::DoubleRatchet::new(),
+            bound_ratchet(2),
+        ];
+        assert!(export_choice(&store, 0).is_ok());
+        assert!(export_choice(&store, 2).is_ok());
+        assert_eq!(
+            export_choice(&store, 1).err(),
+            Some(DeviceExportRefusal::UnboundRatchet)
+        );
+        assert_eq!(
+            export_choice(&store, 3).err(),
+            Some(DeviceExportRefusal::MissingRatchet)
+        );
+        assert_eq!(
+            export_choice(&store, -1).err(),
+            Some(DeviceExportRefusal::MissingRatchet)
+        );
+        assert_eq!(established_slot_ids(&store), vec![0, 2]);
+    }
+
+    #[test]
+    fn import_fills_the_first_empty_slot_and_refuses_a_second_copy() {
+        let first = bound_ratchet(1);
+        let third = bound_ratchet(3);
+        let first_bytes = first.to_bytes();
+        let third_bytes = third.to_bytes();
+        let incoming = bound_ratchet(4);
+        let incoming_bytes = incoming.to_bytes();
+        let store = Mutex::new(vec![first, ratchet::DoubleRatchet::new(), third]);
+
+        let idx = install_restored(
+            &store,
+            ratchet::DoubleRatchet::from_bytes(&incoming_bytes).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(idx, 1);
+        {
+            let guard = store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert_eq!(guard[0].to_bytes(), first_bytes);
+            assert_eq!(guard[1].to_bytes(), incoming_bytes);
+            assert_eq!(guard[2].to_bytes(), third_bytes);
+        }
+
+        let again = install_restored(
+            &store,
+            ratchet::DoubleRatchet::from_bytes(&incoming_bytes).unwrap(),
+        );
+        assert_eq!(again, Err(DeviceImportRefusal::Duplicate));
+        assert_eq!(
+            store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len(),
+            3
+        );
+
+        let fresh = install_restored(&store, ratchet::DoubleRatchet::new());
+        assert_eq!(fresh, Err(DeviceImportRefusal::UnboundRatchet));
+        assert_eq!(snapshot(&store)[0], first_bytes);
+        assert_eq!(snapshot(&store)[1], incoming_bytes);
+    }
+
+    #[test]
+    fn import_appends_when_every_loaded_slot_is_established() {
+        let store = Mutex::new(vec![bound_ratchet(1)]);
+        let idx = install_restored(&store, bound_ratchet(2)).unwrap();
+        assert_eq!(idx, 1);
+        assert_eq!(
+            store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn import_refuses_when_the_cap_is_full_of_sessions() {
+        let store = Mutex::new(
+            (0..device_export::MAX_RATCHET_SLOTS)
+                .map(|n| bound_ratchet((n as u8).wrapping_add(1)))
+                .collect::<Vec<_>>(),
+        );
+        let sealed = {
+            let mut bytes = vec![0x5a; device_export::MIN_SEALED_BLOB_BYTES];
+            bytes[..device_export::SEALED_BLOB_MAGIC.len()]
+                .copy_from_slice(device_export::SEALED_BLOB_MAGIC);
+            bytes
+        };
+        let file = device_export::pack_carry(false, &sealed).unwrap();
+        assert_eq!(
+            inspect_carry(&store, false, false, &file),
+            Err(DeviceImportRefusal::NoEmptySlot)
+        );
+        // 200 is not one of the 1..=64 secrets already loaded, so this is a
+        // full store rather than a second copy of an existing root.
+        assert_eq!(
+            install_restored(&store, bound_ratchet(200)),
+            Err(DeviceImportRefusal::NoEmptySlot)
+        );
+        assert_eq!(
+            store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len(),
+            device_export::MAX_RATCHET_SLOTS
+        );
+    }
+
+    #[test]
+    fn inspect_refuses_extreme_strict_and_a_file_that_is_not_a_carry() {
+        let store = Mutex::new(vec![ratchet::DoubleRatchet::new()]);
+        assert_eq!(
+            inspect_carry(&store, true, false, b"HC-XDEV-v1\n"),
+            Err(DeviceImportRefusal::Extreme)
+        );
+        assert_eq!(
+            inspect_carry(&store, false, true, b"HC-XDEV-v1\n"),
+            Err(DeviceImportRefusal::Strict)
+        );
+        assert_eq!(
+            inspect_carry(&store, false, false, b"not-a-carry"),
+            Err(DeviceImportRefusal::NotACarry)
+        );
+        assert_eq!(snapshot(&store).len(), 1);
+    }
+
+    #[test]
+    fn carry_file_installs_into_the_hole_and_a_wrong_passphrase_does_not() {
+        let session = bound_ratchet(7);
+        let bytes = session.to_bytes();
+        let pass = b"correct horse battery";
+        let sealed = wrap_ratchet_blob(&bytes, pass).unwrap();
+        let file = device_export::pack_carry(false, &sealed).unwrap();
+        let store = Mutex::new(vec![bound_ratchet(1), ratchet::DoubleRatchet::new()]);
+
+        assert_eq!(inspect_carry(&store, false, false, &file), Ok(()));
+        let idx = import_carry_into(&store, false, false, pass, &file).unwrap();
+        assert_eq!(idx, 1);
+        assert_eq!(snapshot(&store)[1], bytes);
+
+        let before = snapshot(&store);
+        assert_eq!(
+            import_carry_into(
+                &store,
+                false,
+                false,
+                b"correct horse battery staples",
+                &file
+            ),
+            Err(DeviceImportRefusal::OpenFailed)
+        );
+        assert_eq!(
+            import_carry_into(&store, false, false, pass, &file),
+            Err(DeviceImportRefusal::Duplicate)
+        );
+        assert_eq!(
+            import_carry_into(&store, true, false, pass, &file),
+            Err(DeviceImportRefusal::Extreme)
+        );
+        assert_eq!(
+            import_carry_into(&store, false, true, pass, &file),
+            Err(DeviceImportRefusal::Strict)
+        );
+        assert_eq!(
+            import_carry_into(
+                &store,
+                false,
+                false,
+                device_export::REFUSED_EXPORT_PASSPHRASE,
+                &file
+            ),
+            Err(DeviceImportRefusal::RefusedPassphrase)
+        );
+        assert_eq!(snapshot(&store), before);
+
+        let fresh = ratchet::DoubleRatchet::new();
+        let fresh_sealed = wrap_ratchet_blob(&fresh.to_bytes(), pass).unwrap();
+        let fresh_file = device_export::pack_carry(false, &fresh_sealed).unwrap();
+        assert_eq!(
+            import_carry_into(&store, false, false, pass, &fresh_file),
+            Err(DeviceImportRefusal::UnboundRatchet)
+        );
+        assert_eq!(snapshot(&store), before);
     }
 }
