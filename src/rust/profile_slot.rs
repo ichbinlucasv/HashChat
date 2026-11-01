@@ -75,7 +75,9 @@ impl GatedSurface {
         match s.trim().to_ascii_lowercase().as_str() {
             "voice" => Some(Self::Voice),
             "groups" | "group" => Some(Self::Groups),
-            "export" => Some(Self::Export),
+            // Import is the other half of a cross-device move, so Extreme
+            // turns it off with export.
+            "export" | "import" => Some(Self::Export),
             "decoy" => Some(Self::Decoy),
             _ => None,
         }
@@ -221,6 +223,7 @@ mod tests {
         assert!(p.blocks("voice"));
         assert!(p.blocks(" groups "));
         assert!(p.blocks("export"));
+        assert!(p.blocks("import"));
         assert!(p.blocks("decoy"));
         assert!(!p.blocks("send"));
         assert!(!p.blocks(""));

@@ -16,6 +16,14 @@
 //! KDF and it does not decrypt. The digest catches a partial or damaged
 //! copy. It is not a MAC: anyone who can rewrite the file can recompute it.
 //! The passphrase is never part of the file.
+//!
+//! When several established sessions are loaded, [`sole_established_index`]
+//! returns [`DeviceExportRefusal::Ambiguous`] and the shell lists
+//! [`established_indices`]. Export of the chosen slot uses
+//! [`chosen_established_index`]. On the other device, [`empty_install_index`]
+//! is the first slot that is not established, under [`MAX_RATCHET_SLOTS`].
+//! An established session is never replaced. A second copy of a root that
+//! is already loaded is refused.
 
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -99,11 +107,15 @@ impl DeviceExportRefusal {
             Self::UnboundRatchet => {
                 "That ratchet was never bound to a contact, so it is not exported."
             }
-            Self::Ambiguous => {
-                "More than one contact session is loaded. Export one contact at a time."
-            }
+            Self::Ambiguous => "More than one contact session is loaded. Choose one to export.",
             Self::SealFailed => "Export could not be sealed.",
         }
+    }
+
+    /// Prepare could not pick a single session. The shell lists
+    /// [`established_indices`] and the user chooses one.
+    pub fn needs_picker(self) -> bool {
+        matches!(self, Self::Ambiguous)
     }
 }
 
@@ -129,11 +141,24 @@ pub fn root_is_established(root: &[u8]) -> bool {
     root.len() == 32 && root.iter().any(|b| *b != 0)
 }
 
+/// True when `root` is already one of the loaded established roots.
+///
+/// Every loaded root is compared. A match in the middle does not return
+/// early, so the comparison does not stop at the matching slot.
+pub fn root_already_loaded(roots: &[[u8; 32]], root: &[u8; 32]) -> bool {
+    let mut found = subtle::Choice::from(0u8);
+    for have in roots {
+        found |= have.ct_eq(root);
+    }
+    bool::from(found)
+}
+
 /// Index of the only established slot.
 ///
 /// `established[i]` is [`root_is_established`] for that slot. Unbound slots
 /// are ignored. None established is [`DeviceExportRefusal::MissingRatchet`].
-/// Two or more is [`DeviceExportRefusal::Ambiguous`].
+/// Two or more is [`DeviceExportRefusal::Ambiguous`]: the shell shows a
+/// picker and then calls [`chosen_established_index`].
 pub fn sole_established_index(established: &[bool]) -> Result<usize, DeviceExportRefusal> {
     let mut found: Option<usize> = None;
     for (i, on) in established.iter().enumerate() {
@@ -145,6 +170,42 @@ pub fn sole_established_index(established: &[bool]) -> Result<usize, DeviceExpor
         }
     }
     found.ok_or(DeviceExportRefusal::MissingRatchet)
+}
+
+/// Slot indices whose flag is set, in order. Empty when nothing is established.
+pub fn established_indices(established: &[bool]) -> Vec<usize> {
+    established
+        .iter()
+        .enumerate()
+        .filter(|(_, on)| **on)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Picker line for one slot. The index is the only text. No key material.
+pub fn session_picker_label(index: usize) -> String {
+    format!("Session {index}")
+}
+
+/// `choice` may be exported when that slot itself is established.
+///
+/// Other established slots do not matter: the user already chose. No
+/// established session at all is [`DeviceExportRefusal::MissingRatchet`].
+/// A loaded slot that is still a fresh ratchet is
+/// [`DeviceExportRefusal::UnboundRatchet`]. An index past the store is
+/// [`DeviceExportRefusal::MissingRatchet`].
+pub fn chosen_established_index(
+    established: &[bool],
+    choice: usize,
+) -> Result<usize, DeviceExportRefusal> {
+    if !established.iter().any(|on| *on) {
+        return Err(DeviceExportRefusal::MissingRatchet);
+    }
+    match established.get(choice) {
+        Some(true) => Ok(choice),
+        Some(false) => Err(DeviceExportRefusal::UnboundRatchet),
+        None => Err(DeviceExportRefusal::MissingRatchet),
+    }
 }
 
 /// Passphrase floor for a transfer. Does not echo the input.
@@ -212,6 +273,10 @@ pub const CARRY_HEADER_LEN: usize = CARRY_MAGIC.len() + 4 + CARRY_DIGEST_LEN;
 
 /// Largest file [`open_carry`] will accept.
 pub const MAX_CARRY_FILE_BYTES: usize = CARRY_HEADER_LEN + MAX_SEALED_BLOB_BYTES;
+
+/// Most ratchet slots an import may use. Matches the Android store reservation.
+/// Import will not grow the store to this index or past it.
+pub const MAX_RATCHET_SLOTS: usize = 64;
 
 /// Why a carry file was not written or not accepted. `0` is not a refusal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,6 +404,179 @@ pub fn open_carry(extreme: bool, file: &[u8]) -> Result<Zeroizing<Vec<u8>>, Carr
         return Err(CarryRefusal::NotSealed);
     }
     Ok(Zeroizing::new(sealed.to_vec()))
+}
+
+/// Why a carry file was not installed. `0` is not a refusal.
+///
+/// Codes start at `-20` so they do not overlap [`DeviceExportRefusal`] or
+/// [`CarryRefusal`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceImportRefusal {
+    /// Extreme builds have no cross-device import.
+    Extreme,
+    /// The shell's strict-posture check refused the action.
+    Strict,
+    /// No passphrase bytes were passed.
+    EmptyPassphrase,
+    /// The passphrase is the old hardcoded shell value.
+    RefusedPassphrase,
+    /// Too short, repetitive, not UTF-8, or longer than the cap.
+    WeakPassphrase,
+    /// No carry bytes were passed.
+    Empty,
+    /// The file does not start with [`CARRY_MAGIC`].
+    NotACarry,
+    /// The header or the declared payload is cut off, or extra bytes follow.
+    Truncated,
+    /// The stored SHA-256 does not match the payload.
+    DigestMismatch,
+    /// Larger than [`MAX_CARRY_FILE_BYTES`].
+    TooLarge,
+    /// The payload is not a `REAL-EXP-v2` envelope.
+    NotSealed,
+    /// The passphrase did not open the envelope, or the plaintext is not a ratchet.
+    OpenFailed,
+    /// The opened ratchet's root key is still all zeros.
+    UnboundRatchet,
+    /// Every slot under [`MAX_RATCHET_SLOTS`] is already established.
+    NoEmptySlot,
+    /// That root is already loaded. A second copy is not installed.
+    Duplicate,
+}
+
+impl DeviceImportRefusal {
+    /// JNI status code. A slot index from install is `>= 0`, never one of these.
+    pub fn code(self) -> i32 {
+        match self {
+            Self::Extreme => -20,
+            Self::Strict => -21,
+            Self::EmptyPassphrase => -22,
+            Self::RefusedPassphrase => -23,
+            Self::WeakPassphrase => -24,
+            Self::Empty => -25,
+            Self::NotACarry => -26,
+            Self::Truncated => -27,
+            Self::DigestMismatch => -28,
+            Self::TooLarge => -29,
+            Self::NotSealed => -30,
+            Self::OpenFailed => -31,
+            Self::UnboundRatchet => -32,
+            Self::NoEmptySlot => -33,
+            Self::Duplicate => -34,
+        }
+    }
+
+    pub fn from_code(code: i32) -> Option<Self> {
+        match code {
+            -20 => Some(Self::Extreme),
+            -21 => Some(Self::Strict),
+            -22 => Some(Self::EmptyPassphrase),
+            -23 => Some(Self::RefusedPassphrase),
+            -24 => Some(Self::WeakPassphrase),
+            -25 => Some(Self::Empty),
+            -26 => Some(Self::NotACarry),
+            -27 => Some(Self::Truncated),
+            -28 => Some(Self::DigestMismatch),
+            -29 => Some(Self::TooLarge),
+            -30 => Some(Self::NotSealed),
+            -31 => Some(Self::OpenFailed),
+            -32 => Some(Self::UnboundRatchet),
+            -33 => Some(Self::NoEmptySlot),
+            -34 => Some(Self::Duplicate),
+            _ => None,
+        }
+    }
+
+    /// Toast text. Never echoes a passphrase or a root key.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Extreme => "EXTREME MODE: Cross-device import disabled.",
+            Self::Strict => "STRICT MODE: Cross-device import refused (bad environment).",
+            Self::EmptyPassphrase => "Cross-device import needs a passphrase.",
+            Self::RefusedPassphrase => "That passphrase is refused.",
+            Self::WeakPassphrase => "Passphrase refused (at least 12 characters, not repetitive).",
+            Self::Empty => "Nothing to import.",
+            Self::NotACarry => "That is not a HashChat carry file.",
+            Self::Truncated => "Carry file length does not match.",
+            Self::DigestMismatch => "Carry file is damaged.",
+            Self::TooLarge => "Carry file is too large.",
+            Self::NotSealed => "That is not a sealed export.",
+            Self::OpenFailed => "Could not open the carry file.",
+            Self::UnboundRatchet => "That file does not hold a contact session.",
+            Self::NoEmptySlot => "No empty session slot for this import.",
+            Self::Duplicate => "That contact session is already on this device.",
+        }
+    }
+}
+
+/// Posture gate for import, before a file is read and before a passphrase is asked for.
+pub fn posture_blocks_import(
+    extreme: bool,
+    strict_refuses: bool,
+) -> Result<(), DeviceImportRefusal> {
+    if extreme {
+        return Err(DeviceImportRefusal::Extreme);
+    }
+    if strict_refuses {
+        return Err(DeviceImportRefusal::Strict);
+    }
+    Ok(())
+}
+
+/// Same passphrase floor as export, with import status codes.
+pub fn passphrase_allows_import(passphrase: &[u8]) -> Result<(), DeviceImportRefusal> {
+    match passphrase_allows_export(passphrase) {
+        Ok(()) => Ok(()),
+        Err(err) => Err(import_passphrase_refusal(err)),
+    }
+}
+
+fn import_passphrase_refusal(err: DeviceExportRefusal) -> DeviceImportRefusal {
+    match err {
+        DeviceExportRefusal::EmptyPassphrase => DeviceImportRefusal::EmptyPassphrase,
+        DeviceExportRefusal::RefusedPassphrase => DeviceImportRefusal::RefusedPassphrase,
+        DeviceExportRefusal::WeakPassphrase => DeviceImportRefusal::WeakPassphrase,
+        DeviceExportRefusal::Extreme
+        | DeviceExportRefusal::Strict
+        | DeviceExportRefusal::MissingRatchet
+        | DeviceExportRefusal::UnboundRatchet
+        | DeviceExportRefusal::Ambiguous
+        | DeviceExportRefusal::SealFailed => DeviceImportRefusal::WeakPassphrase,
+    }
+}
+
+/// Carry-file shape errors, as import status codes.
+pub fn import_from_carry(err: CarryRefusal) -> DeviceImportRefusal {
+    match err {
+        CarryRefusal::Extreme => DeviceImportRefusal::Extreme,
+        CarryRefusal::Empty => DeviceImportRefusal::Empty,
+        CarryRefusal::NotSealed => DeviceImportRefusal::NotSealed,
+        CarryRefusal::TooLarge => DeviceImportRefusal::TooLarge,
+        CarryRefusal::NotACarry => DeviceImportRefusal::NotACarry,
+        CarryRefusal::Truncated => DeviceImportRefusal::Truncated,
+        CarryRefusal::DigestMismatch => DeviceImportRefusal::DigestMismatch,
+    }
+}
+
+/// First slot an import may occupy.
+///
+/// `established[i]` is [`root_is_established`] for that slot. The first
+/// index below `cap` that is missing or not established is empty. When
+/// every loaded slot in that window is established, the next index is
+/// empty only while the store is still shorter than `cap`. A hole at
+/// `cap` or past it is not used, and the store is not grown to `cap`.
+pub fn empty_install_index(established: &[bool], cap: usize) -> Result<usize, DeviceImportRefusal> {
+    let window = established.len().min(cap);
+    for (i, on) in established.iter().enumerate().take(window) {
+        if !on {
+            return Ok(i);
+        }
+    }
+    if established.len() < cap {
+        Ok(established.len())
+    } else {
+        Err(DeviceImportRefusal::NoEmptySlot)
+    }
 }
 
 #[cfg(test)]
@@ -592,5 +830,137 @@ mod tests {
         }
         assert_eq!(CarryRefusal::from_code(0), None);
         assert_eq!(CarryRefusal::from_code(-1), None);
+    }
+
+    #[test]
+    fn a_picker_lists_established_slots_and_the_choice_must_be_one_of_them() {
+        assert_eq!(established_indices(&[false, true, false, true]), vec![1, 3]);
+        assert!(established_indices(&[false, false]).is_empty());
+        assert_eq!(session_picker_label(3), "Session 3");
+        assert!(!session_picker_label(0).contains("correct horse"));
+
+        assert_eq!(chosen_established_index(&[true, true], 1), Ok(1));
+        assert_eq!(chosen_established_index(&[true, true, false], 0), Ok(0));
+        assert_eq!(
+            chosen_established_index(&[true, false], 1),
+            Err(DeviceExportRefusal::UnboundRatchet)
+        );
+        assert_eq!(
+            chosen_established_index(&[true], 4),
+            Err(DeviceExportRefusal::MissingRatchet)
+        );
+        assert_eq!(
+            chosen_established_index(&[false, false], 0),
+            Err(DeviceExportRefusal::MissingRatchet)
+        );
+        assert!(DeviceExportRefusal::Ambiguous.needs_picker());
+        assert!(!DeviceExportRefusal::MissingRatchet.needs_picker());
+        assert!(
+            DeviceExportRefusal::from_code(DeviceExportRefusal::Ambiguous.code())
+                .unwrap()
+                .needs_picker()
+        );
+    }
+
+    #[test]
+    fn an_empty_slot_is_the_first_hole_under_the_cap() {
+        assert_eq!(empty_install_index(&[], MAX_RATCHET_SLOTS), Ok(0));
+        assert_eq!(
+            empty_install_index(&[false, false], MAX_RATCHET_SLOTS),
+            Ok(0)
+        );
+        assert_eq!(
+            empty_install_index(&[true, false, true], MAX_RATCHET_SLOTS),
+            Ok(1)
+        );
+        assert_eq!(empty_install_index(&[true, true], MAX_RATCHET_SLOTS), Ok(2));
+        let full = vec![true; MAX_RATCHET_SLOTS];
+        assert_eq!(
+            empty_install_index(&full, MAX_RATCHET_SLOTS),
+            Err(DeviceImportRefusal::NoEmptySlot)
+        );
+        // A hole past the cap is not an install destination, and the store
+        // is not grown up to the cap when the window is already full.
+        let mut past = vec![true; MAX_RATCHET_SLOTS];
+        past.push(false);
+        assert_eq!(
+            empty_install_index(&past, MAX_RATCHET_SLOTS),
+            Err(DeviceImportRefusal::NoEmptySlot)
+        );
+        assert_eq!(
+            empty_install_index(&[false], 0),
+            Err(DeviceImportRefusal::NoEmptySlot)
+        );
+    }
+
+    #[test]
+    fn a_loaded_root_is_a_duplicate_whichever_slot_holds_it() {
+        let roots = [[1u8; 32], [2u8; 32], [3u8; 32]];
+        assert!(root_already_loaded(&roots, &[2u8; 32]));
+        assert!(!root_already_loaded(&roots, &[4u8; 32]));
+        assert!(!root_already_loaded(&[], &[1u8; 32]));
+    }
+
+    #[test]
+    fn import_codes_do_not_overlap_export_or_carry_and_labels_stay_quiet() {
+        let refused = std::str::from_utf8(REFUSED_EXPORT_PASSPHRASE).unwrap();
+        for r in [
+            DeviceImportRefusal::Extreme,
+            DeviceImportRefusal::Strict,
+            DeviceImportRefusal::EmptyPassphrase,
+            DeviceImportRefusal::RefusedPassphrase,
+            DeviceImportRefusal::WeakPassphrase,
+            DeviceImportRefusal::Empty,
+            DeviceImportRefusal::NotACarry,
+            DeviceImportRefusal::Truncated,
+            DeviceImportRefusal::DigestMismatch,
+            DeviceImportRefusal::TooLarge,
+            DeviceImportRefusal::NotSealed,
+            DeviceImportRefusal::OpenFailed,
+            DeviceImportRefusal::UnboundRatchet,
+            DeviceImportRefusal::NoEmptySlot,
+            DeviceImportRefusal::Duplicate,
+        ] {
+            assert_eq!(DeviceImportRefusal::from_code(r.code()), Some(r));
+            assert!(DeviceExportRefusal::from_code(r.code()).is_none());
+            assert!(CarryRefusal::from_code(r.code()).is_none());
+            assert!(r.code() <= -20);
+            assert!(!r.label().is_empty());
+            assert!(!r.label().contains(refused));
+            assert!(!r.label().contains("correct horse"));
+        }
+        assert_eq!(DeviceImportRefusal::from_code(0), None);
+        assert_eq!(DeviceImportRefusal::from_code(-1), None);
+        assert_eq!(DeviceImportRefusal::from_code(-16), None);
+        assert_eq!(
+            passphrase_allows_import(b""),
+            Err(DeviceImportRefusal::EmptyPassphrase)
+        );
+        assert_eq!(
+            passphrase_allows_import(REFUSED_EXPORT_PASSPHRASE),
+            Err(DeviceImportRefusal::RefusedPassphrase)
+        );
+        assert_eq!(
+            passphrase_allows_import(b"short"),
+            Err(DeviceImportRefusal::WeakPassphrase)
+        );
+        assert!(passphrase_allows_import(b"correct horse battery").is_ok());
+        assert_eq!(
+            import_from_carry(CarryRefusal::DigestMismatch),
+            DeviceImportRefusal::DigestMismatch
+        );
+        assert_eq!(
+            import_from_carry(CarryRefusal::NotACarry),
+            DeviceImportRefusal::NotACarry
+        );
+        assert_eq!(
+            posture_blocks_import(true, false),
+            Err(DeviceImportRefusal::Extreme)
+        );
+        assert_eq!(
+            posture_blocks_import(false, true),
+            Err(DeviceImportRefusal::Strict)
+        );
+        assert!(posture_blocks_import(false, false).is_ok());
     }
 }
