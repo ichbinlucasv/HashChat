@@ -138,6 +138,10 @@ authoritative restart path for contacts/ratchets/pending is `state.enc`.
 
 **Disappearing messages (Rust TUI):** `:disappear` / `:ttl` sets a local TTL (persisted in `state.enc` blob v4). Expiry erases UI plaintext and attempts `wipe_skipped_key` on the contact ratchet when `msg_number` is known. **TTL is not on the wire** — peers are not forced to erase. Bodies are not durably logged beyond the in-memory transcript. Extreme defaults to 1h when TTL was off.
 
+**Android voice frames:** `voice_chain` seals each padded chunk under a fresh HKDF message key. The seed stays in the process and is wiped with the profile. It is not a contact key and not a DH ratchet. `encryptWithKey` / `decryptWithKey` (the shell's raw AES helper, not the voice path) prepend a random 12-byte nonce and refuse a key that is not exactly 32 bytes or is all zeros. A reused nonce is not used on that path.
+
+**Android ratchet envelope:** `REAL-EXP-v2` stores the plaintext length outside the AES-GCM tag. Unwrap accepts that length only when the opened plaintext is exactly that many bytes plus the 16 zero bytes wrap adds. A flipped length returns an error. It does not truncate the ratchet state and it does not panic.
+
 ## Unsafe inventory (I-5)
 
 `hashchat-tui` contains **no** `unsafe`. All `unsafe` lives in the Rust library and

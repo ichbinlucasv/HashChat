@@ -80,7 +80,7 @@ Keep only the current model:
 
 - Many features already have `isStrictModeEnabled()` checks.
 - `EXTREME_MODE` constant / gating already exists in some Android paths (especially group persistence demo-pass).
-- VoiceStream, groups, and export paths have partial posture gating.
+- Voice, groups, and export paths are refused under Extreme. The voice chain refuses before it uses the seed.
 - No unified `ExtremeMode` flag yet across the whole application.
 
 ---
