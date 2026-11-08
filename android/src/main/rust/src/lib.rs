@@ -11,6 +11,7 @@
 use jni::objects::{JByteArray, JClass};
 use jni::sys::{jboolean, jbyteArray, jint};
 use jni::JNIEnv;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use argon2::{
@@ -24,14 +25,19 @@ use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 // These are already in Cargo.toml for parity with the core ratchet work.
 use hkdf::Hkdf;
 use sha2::Sha256;
-use zeroize::{Zeroize, Zeroizing}; // Required for explicit zeroize() on local chunk keys in VoiceStream (Wave 3)
+use zeroize::{Zeroize, Zeroizing};
 
 use hashchat_rust::device_export::{self, CarryRefusal, DeviceExportRefusal, DeviceImportRefusal};
 use hashchat_rust::device_posture::{self, DeviceSignals};
 use hashchat_rust::group_store::{GroupBook, GroupBookError};
 use hashchat_rust::message_book::{Delivery, MessageBook};
 use hashchat_rust::profile_slot::{DecoyRefusal, ProfileSlot};
+use hashchat_rust::voice_chain::{
+    self, VoiceChain, VoiceRefusal, MAX_BUNDLE_BYTES, MAX_RECORDING_BYTES, VOICE_FRAME_LEN,
+    VOICE_STATUS_OK, VOICE_STATUS_PENDING,
+};
 use hashchat_rust::voice_queue::{VoiceChunkQueue, MAX_VOICE_CHUNK_BYTES};
+use subtle::ConstantTimeEq;
 
 /// Helper: wrap a raw jbyteArray (from Java native) into a high-level JByteArray for jni 0.21+.
 #[inline]
@@ -92,8 +98,8 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_init(_env: JNIEnv, _class: J
 // NEVER rely on this mlock for protection against memory forensics on Android.
 // The posture hook already surfaces "mlock best-effort only".
 //
-// Wave 9: VoiceStream chain keys + skipped keys are also sensitive and should eventually
-// be covered by the same best-effort mlock (or explicit madvise + zeroize on destroy).
+// The voice chain's seed and skipped keys are sensitive. They are zeroized on
+// wipe. This mlock does not cover them.
 // Real protection on Android remains Keystore + short lifetime + explicit wipe.
 //
 // This limitation must remain loudly documented until (if ever) a reliable
@@ -357,7 +363,7 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_isActionAllowedForSignals(
 pub extern "C" fn Java_chat_hashchat_HashChatNative_wipeAll(_env: JNIEnv, _class: JClass) {
     lock(&ANDROID_RATCHET_STORE).clear();
     lock(&ANDROID_GROUP_SENDER_KEY_STORE).clear();
-    lock(&VOICE_STREAMS).clear();
+    lock(&VOICE_CHAIN).take();
     lock(&VOICE_QUEUE).clear();
     with_group_book(|b| b.clear());
     with_message_book(|b| b.clear());
@@ -814,101 +820,84 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_ratchetNew(
     id
 }
 
+/// Exactly 32 bytes, and not all zeros. A short buffer used to be treated as
+/// a zero key. That is refused.
+fn read_exact_key(env: &mut JNIEnv, raw: jbyteArray) -> Option<[u8; 32]> {
+    if raw.is_null() {
+        return None;
+    }
+    let arr = unsafe { wrap_byte_array(raw) };
+    if env.get_array_length(&arr).unwrap_or(0) != 32 {
+        return None;
+    }
+    let mut tmp = [0i8; 32];
+    if env.get_byte_array_region(&arr, 0, &mut tmp).is_err() {
+        tmp.fill(0);
+        return None;
+    }
+    let mut key = [0u8; 32];
+    for (i, byte) in tmp.iter().enumerate() {
+        key[i] = *byte as u8;
+    }
+    tmp.fill(0);
+    if bool::from(key.ct_eq(&[0u8; 32])) {
+        key.zeroize();
+        return None;
+    }
+    Some(key)
+}
+
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_encryptWithKey(
-    mut _env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     key: jbyteArray,
     plaintext: jbyteArray,
 ) -> jbyteArray {
-    // High-4 deep work (expert view): In a full real DoubleRatchet integration, the key should come from
-    // ratchet_send on the specific state_id. For now we still accept external key for compatibility,
-    // but we perform real AES-256-GCM. Future improvement: when a valid ratchet exists for the context,
-    // derive the message key internally from the ratchet instead of trusting the caller.
-    let pt_jba = unsafe { wrap_byte_array(plaintext) };
-    let pt_len = _env.get_array_length(&pt_jba).unwrap_or(0) as usize;
-    if pt_len == 0 {
-        return vec_to_java_byte_array(&mut _env, &[]);
-    }
-
-    let mut pt_i8 = vec![0i8; pt_len];
-    let _ = _env.get_byte_array_region(&pt_jba, 0, &mut pt_i8);
-    let pt: Vec<u8> = pt_i8.into_iter().map(|b| b as u8).collect();
-
-    // Use the provided key (in real flow this would come from ratchet_send)
-    let key_jba = unsafe { wrap_byte_array(key) };
-    let key_len = _env.get_array_length(&key_jba).unwrap_or(0) as usize;
-    let mut key_bytes = [0u8; 32];
-    if key_len >= 32 {
-        let mut kb_i8 = vec![0i8; 32];
-        let _ = _env.get_byte_array_region(&key_jba, 0, &mut kb_i8);
-        for (i, b) in kb_i8.iter().take(32).enumerate() {
-            key_bytes[i] = *b as u8;
-        }
-    }
-
-    let unbound = match UnboundKey::new(&AES_256_GCM, &key_bytes) {
-        Ok(k) => k,
-        Err(_) => return vec_to_java_byte_array(&mut _env, &[]),
+    // AES-256-GCM with a fresh nonce, same layout as the desktop helper:
+    // nonce(12) || ciphertext || tag(16). A fixed nonce is not used.
+    // The caller still supplies the key. Voice does not use this entry.
+    let Some(mut key_bytes) = read_exact_key(&mut env, key) else {
+        return vec_to_java_byte_array(&mut env, &[]);
     };
-    let lsk = LessSafeKey::new(unbound);
-    let nonce = Nonce::assume_unique_for_key([0u8; 12]); // In real use this must be unique per message
-
-    let mut buf = pt;
-    buf.resize(buf.len() + AES_256_GCM.tag_len(), 0);
-
-    if lsk
-        .seal_in_place_append_tag(nonce, Aad::empty(), &mut buf)
-        .is_err()
-    {
-        return vec_to_java_byte_array(&mut _env, &[]);
+    let Some(pt) = copy_capped(&mut env, plaintext, hashchat_rust::MAX_PLAINTEXT_SEND_BYTES) else {
+        key_bytes.zeroize();
+        return vec_to_java_byte_array(&mut env, &[]);
+    };
+    let sealed = hashchat_rust::encrypt_with_key(&key_bytes, &pt, &[]);
+    key_bytes.zeroize();
+    match sealed {
+        Ok(buf) => vec_to_java_byte_array(&mut env, &buf),
+        Err(_) => vec_to_java_byte_array(&mut env, &[]),
     }
-
-    vec_to_java_byte_array(&mut _env, &buf)
 }
 
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_decryptWithKey(
-    mut _env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     key: jbyteArray,
     ciphertext: jbyteArray,
 ) -> jbyteArray {
-    // High-4: Real AES-256-GCM decrypt instead of placeholder
-    let ct_jba = unsafe { wrap_byte_array(ciphertext) };
-    let ct_len = _env.get_array_length(&ct_jba).unwrap_or(0) as usize;
-    if ct_len == 0 {
-        return vec_to_java_byte_array(&mut _env, &[]);
-    }
-
-    let mut ct_i8 = vec![0i8; ct_len];
-    let _ = _env.get_byte_array_region(&ct_jba, 0, &mut ct_i8);
-    let mut ct: Vec<u8> = ct_i8.into_iter().map(|b| b as u8).collect();
-
-    let key_jba = unsafe { wrap_byte_array(key) };
-    let key_len = _env.get_array_length(&key_jba).unwrap_or(0) as usize;
-    let mut key_bytes = [0u8; 32];
-    if key_len >= 32 {
-        let mut kb_i8 = vec![0i8; 32];
-        let _ = _env.get_byte_array_region(&key_jba, 0, &mut kb_i8);
-        for (i, b) in kb_i8.iter().take(32).enumerate() {
-            key_bytes[i] = *b as u8;
+    let Some(mut key_bytes) = read_exact_key(&mut env, key) else {
+        return vec_to_java_byte_array(&mut env, &[]);
+    };
+    // nonce(12) + plaintext cap + tag(16). Longer input is not copied.
+    let max_ct = hashchat_rust::MAX_PLAINTEXT_SEND_BYTES + 12 + 16;
+    let Some(ct) = copy_capped(&mut env, ciphertext, max_ct) else {
+        key_bytes.zeroize();
+        return vec_to_java_byte_array(&mut env, &[]);
+    };
+    let opened = hashchat_rust::decrypt_with_key(&key_bytes, &ct, &[]);
+    key_bytes.zeroize();
+    match opened {
+        Ok(mut pt) => {
+            let out = vec_to_java_byte_array(&mut env, &pt);
+            pt.zeroize();
+            out
         }
+        Err(_) => vec_to_java_byte_array(&mut env, &[]),
     }
-
-    let unbound = match UnboundKey::new(&AES_256_GCM, &key_bytes) {
-        Ok(k) => k,
-        Err(_) => return vec_to_java_byte_array(&mut _env, &[]),
-    };
-    let lsk = LessSafeKey::new(unbound);
-    let nonce = Nonce::assume_unique_for_key([0u8; 12]);
-
-    let pt = match lsk.open_in_place(nonce, Aad::empty(), &mut ct) {
-        Ok(p) => p.to_vec(),
-        Err(_) => return vec_to_java_byte_array(&mut _env, &[]),
-    };
-
-    vec_to_java_byte_array(&mut _env, &pt)
 }
 
 // === Ratchet Export/Import for Group Persistence & Cross-Device (high-4 + real OPSEC) ===
@@ -1034,19 +1023,36 @@ fn wrap_ratchet_blob(plaintext: &[u8], passphrase: &[u8]) -> Result<Vec<u8>, &'s
     let hash = argon
         .hash_password(passphrase, &salt_str)
         .map_err(|_| "argon")?;
-    let binding = hash.hash.unwrap();
+    let Some(binding) = hash.hash else {
+        return Err("argon");
+    };
     let key_bytes = binding.as_bytes();
     let mut key = [0u8; 32];
     key.copy_from_slice(&key_bytes[..32]);
 
-    let unbound = UnboundKey::new(&AES_256_GCM, &key).map_err(|_| "key")?;
+    let unbound = match UnboundKey::new(&AES_256_GCM, &key) {
+        Ok(k) => k,
+        Err(_) => {
+            key.zeroize();
+            return Err("key");
+        }
+    };
     let lsk = LessSafeKey::new(unbound);
     let nonce = Nonce::assume_unique_for_key(nonce_bytes);
     let mut buf = plaintext.to_vec();
     let original_len = buf.len() as u32;
+    // The extra zeros are inside the sealed plaintext. Unwrap accepts the
+    // stored length only when it matches this exact pad.
     buf.resize(buf.len() + AES_256_GCM.tag_len(), 0);
-    lsk.seal_in_place_append_tag(nonce, Aad::empty(), &mut buf)
-        .map_err(|_| "seal")?;
+    if lsk
+        .seal_in_place_append_tag(nonce, Aad::empty(), &mut buf)
+        .is_err()
+    {
+        buf.zeroize();
+        key.zeroize();
+        return Err("seal");
+    }
+    key.zeroize();
 
     let mut out = b"REAL-EXP-v2".to_vec();
     out.extend_from_slice(&salt);
@@ -1057,15 +1063,21 @@ fn wrap_ratchet_blob(plaintext: &[u8], passphrase: &[u8]) -> Result<Vec<u8>, &'s
 }
 
 fn unwrap_ratchet_blob(blob: &[u8], passphrase: &[u8]) -> Result<Vec<u8>, &'static str> {
-    if !blob.starts_with(b"REAL-EXP-v2") || blob.len() < 12 + 16 + 12 + 4 + 16 {
+    const MAGIC: &[u8] = b"REAL-EXP-v2";
+    let header = MAGIC.len() + 16 + 12 + 4;
+    if !blob.starts_with(MAGIC) || blob.len() < header + AES_256_GCM.tag_len() {
         return Err("bad v2 blob");
     }
 
-    let salt = &blob[11..11 + 16];
-    let nonce_bytes = &blob[11 + 16..11 + 16 + 12];
-    let orig_len =
-        u32::from_be_bytes(blob[11 + 16 + 12..11 + 16 + 12 + 4].try_into().unwrap()) as usize;
-    let ct = &blob[11 + 16 + 12 + 4..];
+    let salt = &blob[MAGIC.len()..MAGIC.len() + 16];
+    let mut nonce_bytes = [0u8; 12];
+    nonce_bytes.copy_from_slice(&blob[MAGIC.len() + 16..MAGIC.len() + 28]);
+    let orig_len = u32::from_be_bytes(
+        blob[MAGIC.len() + 28..header]
+            .try_into()
+            .map_err(|_| "len")?,
+    ) as usize;
+    let ct = &blob[header..];
 
     let salt_str = SaltString::encode_b64(salt).map_err(|_| "salt")?;
     let argon = Argon2::new(
@@ -1076,20 +1088,44 @@ fn unwrap_ratchet_blob(blob: &[u8], passphrase: &[u8]) -> Result<Vec<u8>, &'stat
     let hash = argon
         .hash_password(passphrase, &salt_str)
         .map_err(|_| "argon")?;
-    let binding = hash.hash.unwrap();
+    let Some(binding) = hash.hash else {
+        return Err("argon");
+    };
     let key_bytes = binding.as_bytes();
     let mut key = [0u8; 32];
     key.copy_from_slice(&key_bytes[..32]);
 
-    let unbound = UnboundKey::new(&AES_256_GCM, &key).map_err(|_| "key")?;
+    let unbound = match UnboundKey::new(&AES_256_GCM, &key) {
+        Ok(k) => k,
+        Err(_) => {
+            key.zeroize();
+            return Err("key");
+        }
+    };
     let lsk = LessSafeKey::new(unbound);
-    let nonce = Nonce::assume_unique_for_key(nonce_bytes.try_into().unwrap());
+    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
     let mut buf = ct.to_vec();
-    let pt = lsk
-        .open_in_place(nonce, Aad::empty(), &mut buf)
-        .map_err(|_| "open")?;
-    // Trim to the original plaintext length we stored (removes GCM padding zeros)
-    Ok(pt[..orig_len].to_vec())
+    let opened = match lsk.open_in_place(nonce, Aad::empty(), &mut buf) {
+        Ok(pt) => pt.len(),
+        Err(_) => {
+            buf.zeroize();
+            key.zeroize();
+            return Err("open");
+        }
+    };
+    // The length sits outside the AEAD. Accept it only when it names the
+    // plaintext that wrap sealed (real bytes, then tag_len zeros). A flipped
+    // length must not truncate the ratchet state or panic.
+    let pad = AES_256_GCM.tag_len();
+    if opened < pad || orig_len != opened - pad {
+        buf.zeroize();
+        key.zeroize();
+        return Err("bad length");
+    }
+    let out = buf[..orig_len].to_vec();
+    buf.zeroize();
+    key.zeroize();
+    Ok(out)
 }
 
 // === Real voice receive from the actual Tor receiver ===
@@ -1115,15 +1151,9 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_startTorReceiver(_env: JNIEn
 
     thread::spawn(move || {
         for data in rx {
-            // This is the "actual Tor receiver" in the Rust layer.
-            // In a full implementation this thread would:
-            // - Parse the framed blob (length prefix + type/hint like in Tor.hs)
-            // - If voice, the shell pushes the frame with pushReceivedVoiceChunk
-            // For now we at least print and could forward via a global if needed.
-            println!(
-                "[Android Rust Receiver] Tor layer delivered {} bytes",
-                data.len()
-            );
+            // The shell pushes voice frames itself. This thread only keeps
+            // the channel alive. Do not log lengths or bytes.
+            drop(data);
         }
     });
 }
@@ -1138,7 +1168,10 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_feedReceivedData(
         return;
     };
     let data_jba = unsafe { wrap_byte_array(data) };
-    let len = _env.get_array_length(&data_jba).unwrap_or(0) as usize;
+    let len = usize::try_from(_env.get_array_length(&data_jba).unwrap_or(0)).unwrap_or(usize::MAX);
+    if len == 0 || len > hashchat_rust::MAX_HS_INBOUND_FRAME {
+        return;
+    }
     let mut data_i8 = vec![0i8; len];
     let _ = _env.get_byte_array_region(&data_jba, 0, &mut data_i8);
     let buf: Vec<u8> = data_i8.into_iter().map(|b| b as u8).collect();
@@ -1162,75 +1195,38 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_feedReceivedData(
 // This keeps the Kotlin voice processor extremely dumb (just queue + UI + MediaPlayer).
 // The crown jewels (ratchet state + forward secrecy) stay in Rust.
 
-// Real (simplified) per-stream voice ratchet state for Tier 2 voice deepening.
-// Each VoiceStream now owns its own forward-secret chain (HKDF-SHA256 advancement).
-// This moves voice closer to the same security model as GroupSenderKey and the main DoubleRatchet.
-// Still not a full per-stream DoubleRatchet (future), but no longer pure simulation.
-//
-// Wave 8 deeper notes (keep going):
-// - Full lifecycle: explicit create (JNI) + destroy that zeroizes chain_key + step.
-// - Skipped keys BTreeMap like main ratchet (for out-of-order voice chunks in bad networks).
-// - Extreme gate: refuse VoiceStream::new if is_strict_mode() or EXTREME_MODE const (already wired at Kotlin onVoiceMessage).
-// - Expose to desktop TUI via FFI or separate voice module for parity.
-// - When destroying a stream (call end), zeroize + remove from any global map to minimize sensitive material lifetime.
-struct VoiceStream {
-    id: u32,
-    chain_key: [u8; 32],
-    step: u32,
-    // Wave 9: basic skipped keys support (real Double Ratchet parity direction)
-    skipped_keys: Vec<(u32, [u8; 32])>, // (step, key) for out-of-order chunks
+/// Process-local voice chain. The seed is random and memory-only. Wipe drops
+/// it. A second device cannot open these frames until a contact session
+/// carries the seed, which this bridge does not do.
+static VOICE_CHAIN: Mutex<Option<VoiceChain>> = Mutex::new(None);
+static VOICE_STATUS: AtomicI32 = AtomicI32::new(VOICE_STATUS_OK);
+
+fn voice_status_store(code: i32) {
+    VOICE_STATUS.store(code, Ordering::Relaxed);
 }
 
-impl VoiceStream {
-    fn new(id: u32) -> Self {
-        VoiceStream {
-            id,
-            chain_key: [0u8; 32],
-            step: 0,
-            skipped_keys: Vec::new(),
-        }
+/// Extreme and a failed environment check refuse before the seed is used.
+fn voice_gate() -> Result<(), VoiceRefusal> {
+    if with_profile(|p| p.blocks("voice")) {
+        return Err(VoiceRefusal::Extreme);
     }
-
-    /// Wave 9: explicit destroy with zeroization (lifecycle completeness)
-    fn destroy(&mut self) {
-        self.chain_key.zeroize();
-        for (_, k) in &mut self.skipped_keys {
-            k.zeroize();
-        }
-        self.skipped_keys.clear();
-        self.step = 0;
+    if !is_environment_strict() {
+        return Err(VoiceRefusal::Strict);
     }
-
-    /// Real HKDF-based advancement for voice chunks (matches the pattern we proved with GroupSenderKey).
-    /// Derives a per-chunk message key and advances the chain with domain separation.
-    fn process_chunk(&mut self, encrypted: &[u8]) -> Vec<u8> {
-        self.step = self.step.wrapping_add(1);
-
-        // Real HKDF-SHA256 per-chunk derivation (no longer naive step-fill)
-        let hk = Hkdf::<Sha256>::new(None, &self.chain_key);
-
-        let mut chunk_key = [0u8; 32];
-        hk.expand(b"HashChat-Voice-Chunk-Key", &mut chunk_key)
-            .expect("HKDF voice chunk key derivation");
-
-        let mut next_chain = [0u8; 32];
-        hk.expand(b"HashChat-Voice-Next-Chain", &mut next_chain)
-            .expect("HKDF voice chain advancement");
-
-        self.chain_key = next_chain;
-
-        // Decrypt using the derived per-chunk key (real ratchet output style)
-        let plaintext = ratchet::decrypt_with_key(&chunk_key, encrypted, &[]).unwrap_or_default();
-
-        // Wave 3 improvement: explicit zeroization of the just-used chunk key
-        // (zeroize crate is already a dependency for the ratchet work)
-        chunk_key.zeroize();
-
-        plaintext
-    }
+    Ok(())
 }
 
-static VOICE_STREAMS: Mutex<Vec<VoiceStream>> = Mutex::new(Vec::new());
+fn with_voice<R>(f: impl FnOnce(&mut VoiceChain) -> R) -> Result<R, VoiceRefusal> {
+    voice_gate()?;
+    let mut guard = lock(&VOICE_CHAIN);
+    if guard.is_none() {
+        *guard = Some(VoiceChain::generate()?);
+    }
+    match guard.as_mut() {
+        Some(chain) => Ok(f(chain)),
+        None => Err(VoiceRefusal::Rng),
+    }
+}
 
 /// Inbound voice frames waiting for the shell to take them. Bounded; wiped
 /// with the rest of the process state. See `hashchat_rust::voice_queue`.
@@ -1300,49 +1296,187 @@ pub extern "C" fn Java_chat_hashchat_HashChatNative_takeReceivedVoiceChunk(
     }
 }
 
-// Internal Rust function for voice chunk processing.
-// This is where real per-stream ratchet logic will eventually live.
-fn process_voice_chunk_internal(encrypted: &[u8]) -> Vec<u8> {
-    // === DEEP MIGRATION NOTE (Tier 3) ===
-    // Currently still using placeholder key.
-    // Real version will:
-    // 1. Select or create the correct VoiceStream for this call (by stream ID)
-    // 2. Decrypt using the current ratchet key from that stream
-    // 3. Advance the ratchet (update chain key + step)
-    // 4. Wipe the used key (and prune skipped keys if needed)
-    // 5. Return plaintext
-
-    let mut streams = lock(&VOICE_STREAMS);
-    // ALL RECOMMENDATIONS deep wave: Real per-stream direction
-    if streams.is_empty() {
-        streams.push(VoiceStream::new(0));
-    }
-    // Moving toward full per-stream Double Ratchet (key chain, zeroize on close, skipped keys)
-    // Lifecycle note: Full stream destruction + key erasure on close planned for future waves
-    streams[0].process_chunk(encrypted)
+fn voice_empty(env: &mut JNIEnv) -> jbyteArray {
+    vec_to_java_byte_array(env, &[])
 }
 
+fn voice_fail(env: &mut JNIEnv, err: VoiceRefusal) -> jbyteArray {
+    voice_status_store(err.code());
+    voice_empty(env)
+}
+
+/// Seal a recording. Empty means refused; `voiceLastStatus` says why.
+/// The shell does not pass a key.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_voiceSealRecording(
+    mut env: JNIEnv,
+    _class: JClass,
+    audio: jbyteArray,
+) -> jbyteArray {
+    if let Err(err) = voice_gate() {
+        return voice_fail(&mut env, err);
+    }
+    if audio.is_null() {
+        return voice_fail(&mut env, VoiceRefusal::Empty);
+    }
+    let arr = unsafe { wrap_byte_array(audio) };
+    let len = usize::try_from(env.get_array_length(&arr).unwrap_or(0)).unwrap_or(usize::MAX);
+    if len == 0 {
+        return voice_fail(&mut env, VoiceRefusal::Empty);
+    }
+    if len > MAX_RECORDING_BYTES {
+        return voice_fail(&mut env, VoiceRefusal::TooLarge);
+    }
+    let Some(mut bytes) = copy_capped(&mut env, audio, MAX_RECORDING_BYTES) else {
+        return voice_fail(&mut env, VoiceRefusal::Empty);
+    };
+    let sealed = with_voice(|chain| chain.seal_recording(false, &bytes));
+    bytes.zeroize();
+    match sealed {
+        Ok(Ok(mut bundle)) => {
+            voice_status_store(VOICE_STATUS_OK);
+            let out = vec_to_java_byte_array(&mut env, &bundle);
+            bundle.zeroize();
+            out
+        }
+        Ok(Err(err)) | Err(err) => voice_fail(&mut env, err),
+    }
+}
+
+/// Frames in a bundle, or a negative refusal.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_voiceBundleCount(
+    mut env: JNIEnv,
+    _class: JClass,
+    bundle: jbyteArray,
+) -> jint {
+    if let Err(err) = voice_gate() {
+        voice_status_store(err.code());
+        return err.code();
+    }
+    let Some(bytes) = copy_capped(&mut env, bundle, MAX_BUNDLE_BYTES) else {
+        voice_status_store(VoiceRefusal::BadFrame.code());
+        return VoiceRefusal::BadFrame.code();
+    };
+    match voice_chain::bundle_count(&bytes) {
+        Ok(n) => {
+            voice_status_store(VOICE_STATUS_OK);
+            jint::from(n)
+        }
+        Err(err) => {
+            voice_status_store(err.code());
+            err.code()
+        }
+    }
+}
+
+/// Open a bundle this process sealed. Empty means refused.
+/// One recording comes back, or the chain is left as it was.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_voiceOpenBundle(
+    mut env: JNIEnv,
+    _class: JClass,
+    bundle: jbyteArray,
+) -> jbyteArray {
+    if let Err(err) = voice_gate() {
+        return voice_fail(&mut env, err);
+    }
+    let Some(mut bytes) = copy_capped(&mut env, bundle, MAX_BUNDLE_BYTES) else {
+        return voice_fail(&mut env, VoiceRefusal::BadFrame);
+    };
+    let opened = with_voice(|chain| chain.open_bundle(false, &bytes));
+    bytes.zeroize();
+    match opened {
+        Ok(Ok(mut audio)) => {
+            voice_status_store(VOICE_STATUS_OK);
+            let out = vec_to_java_byte_array(&mut env, &audio);
+            audio.zeroize();
+            out
+        }
+        Ok(Err(err)) | Err(err) => voice_fail(&mut env, err),
+    }
+}
+
+/// One frame from a bundle. Empty means refused.
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_voiceBundleFrame(
+    mut env: JNIEnv,
+    _class: JClass,
+    bundle: jbyteArray,
+    index: jint,
+) -> jbyteArray {
+    if let Err(err) = voice_gate() {
+        return voice_fail(&mut env, err);
+    }
+    let Ok(idx) = u16::try_from(index) else {
+        return voice_fail(&mut env, VoiceRefusal::BadFrame);
+    };
+    let Some(bytes) = copy_capped(&mut env, bundle, MAX_BUNDLE_BYTES) else {
+        return voice_fail(&mut env, VoiceRefusal::BadFrame);
+    };
+    match voice_chain::bundle_frame(&bytes, idx) {
+        Ok(frame) => {
+            voice_status_store(VOICE_STATUS_OK);
+            vec_to_java_byte_array(&mut env, frame)
+        }
+        Err(err) => voice_fail(&mut env, err),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_voiceLastStatus(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    VOICE_STATUS.load(Ordering::Relaxed)
+}
+
+#[no_mangle]
+pub extern "C" fn Java_chat_hashchat_HashChatNative_voiceStatusLabel(
+    mut env: JNIEnv,
+    _class: JClass,
+    code: jint,
+) -> jni::sys::jstring {
+    string_to_jstring(&mut env, voice_chain::status_label(code))
+}
+
+/// Open one voice frame, or a whole bundle. Empty with status pending means
+/// more chunks are required. Empty with a negative status is a refusal.
+/// The returned bytes are the recording, not an error string.
 #[no_mangle]
 pub extern "C" fn Java_chat_hashchat_HashChatNative_processVoiceChunk(
     mut env: JNIEnv,
     _class: JClass,
     encrypted: jbyteArray,
 ) -> jbyteArray {
-    // Wave 9: Real Extreme / strict gate at the Rust boundary for voice (defense in depth)
-    // Even if Kotlin already refused in EXTREME_MODE, the FFI surface must also refuse.
-    if !is_environment_strict() {
-        let msg = b"STRICT/EXTREME: Voice chunk processing refused in bad environment";
-        return vec_to_java_byte_array(&mut env, msg);
+    if let Err(err) = voice_gate() {
+        return voice_fail(&mut env, err);
     }
-    // This is the official entry point. All future voice security logic belongs here.
-    let enc_jba = unsafe { wrap_byte_array(encrypted) };
-    let enc_len = env.get_array_length(&enc_jba).unwrap_or(0) as usize;
-    let mut enc_i8 = vec![0i8; enc_len];
-    let _ = env.get_byte_array_region(&enc_jba, 0, &mut enc_i8);
-    let encrypted_bytes: Vec<u8> = enc_i8.into_iter().map(|b| b as u8).collect();
-
-    let plaintext = process_voice_chunk_internal(&encrypted_bytes);
-    vec_to_java_byte_array(&mut env, &plaintext)
+    let Some(mut frame) = copy_capped(&mut env, encrypted, MAX_BUNDLE_BYTES) else {
+        return voice_fail(&mut env, VoiceRefusal::BadFrame);
+    };
+    let opened = if frame.len() == VOICE_FRAME_LEN {
+        with_voice(|chain| chain.open_frame(false, &frame))
+    } else if frame.starts_with(b"HVB1") {
+        with_voice(|chain| chain.open_bundle(false, &frame).map(Some))
+    } else {
+        frame.zeroize();
+        return voice_fail(&mut env, VoiceRefusal::BadFrame);
+    };
+    frame.zeroize();
+    match opened {
+        Ok(Ok(Some(mut audio))) => {
+            voice_status_store(VOICE_STATUS_OK);
+            let out = vec_to_java_byte_array(&mut env, &audio);
+            audio.zeroize();
+            out
+        }
+        Ok(Ok(None)) => {
+            voice_status_store(VOICE_STATUS_PENDING);
+            voice_empty(&mut env)
+        }
+        Ok(Err(err)) | Err(err) => voice_fail(&mut env, err),
+    }
 }
 
 // === Group Sender Keys (Tier 3 - moving sensitive group forward secrecy into Rust) ===
@@ -2196,6 +2330,18 @@ mod tests {
     use hashchat_rust::device_posture::Posture;
 
     #[test]
+    fn voice_frame_fits_in_the_inbound_queue() {
+        const {
+            assert!(VOICE_FRAME_LEN <= MAX_VOICE_CHUNK_BYTES);
+            assert!(MAX_BUNDLE_BYTES > VOICE_FRAME_LEN);
+            assert!(
+                MAX_RECORDING_BYTES / hashchat_rust::voice_chain::VOICE_PAYLOAD
+                    == hashchat_rust::voice_chain::MAX_VOICE_CHUNKS
+            );
+        }
+    }
+
+    #[test]
     fn test_envelope_wrap_unwrap_basic() {
         // Direct test of the new strong Argon2id + AES-GCM helpers
         let plaintext =
@@ -2215,6 +2361,19 @@ mod tests {
 
         // Wrong passphrase must fail (auth tag will not verify)
         assert!(unwrap_ratchet_blob(&wrapped, b"wrong-pass").is_err());
+    }
+
+    #[test]
+    fn test_envelope_rejects_a_flipped_length() {
+        let pass = b"a-very-strong-passphrase-123-for-testing";
+        let wrapped = wrap_ratchet_blob(b"ratchet-state", pass).unwrap();
+        let len_at = b"REAL-EXP-v2".len() + 16 + 12;
+        let mut truncated = wrapped.clone();
+        truncated[len_at..len_at + 4].copy_from_slice(&1u32.to_be_bytes());
+        assert!(unwrap_ratchet_blob(&truncated, pass).is_err());
+        let mut huge = wrapped;
+        huge[len_at..len_at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(unwrap_ratchet_blob(&huge, pass).is_err());
     }
 
     #[test]

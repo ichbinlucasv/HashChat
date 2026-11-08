@@ -66,10 +66,17 @@ object HashChatNative {
     // Fed from the background Tor receiver thread (real framing path). Must be declared to match Rust JNI.
     external fun feedReceivedData(data: ByteArray)
 
-    // Voice chunk processing migration target (Tier 3 architectural improvement).
-    // Goal: Move per-chunk ratchet advance, decryption, and key wipe into Rust.
-    // This keeps the JNI surface thin and moves sensitive logic out of Kotlin.
+    // Voice chunk processing. Rust owns the per-chunk chain, the framing, and
+    // the seed. The shell passes audio bytes and plays what comes back.
+    // An empty processVoiceChunk is either "still arriving" (status 1) or a
+    // refusal (negative status). It is never an error string.
     external fun processVoiceChunk(encryptedChunk: ByteArray): ByteArray
+    external fun voiceSealRecording(audio: ByteArray): ByteArray
+    external fun voiceBundleCount(bundle: ByteArray): Int
+    external fun voiceBundleFrame(bundle: ByteArray, index: Int): ByteArray
+    external fun voiceOpenBundle(bundle: ByteArray): ByteArray
+    external fun voiceLastStatus(): Int
+    external fun voiceStatusLabel(code: Int): String
 
     // Higher-level group ratchet export (migration target).
     // Goal: Move the full export + outer encryption logic into Rust so Kotlin
@@ -376,14 +383,12 @@ class MainActivity : AppCompatActivity() {
                             continue
                         }
                         try {
-                            // Official voice path: processVoiceChunk in Rust (Wave 2 progress).
-                            // The Rust side now owns real per-stream VoiceStream with HKDF chain advancement.
-                            // Each chunk derives a new key and advances the chain inside Rust (no longer pure simulation).
-                            // Next: integrate full DoubleRatchet per voice stream + explicit zeroize of used chunk keys.
                             val decrypted = HashChatNative.processVoiceChunk(chunk)
-
+                            if (decrypted.isEmpty()) {
+                                continue
+                            }
                             runOnUiThread {
-                                addMessage("Peer [VOICE]: chunk from Tor receiver (JNI + ratchet advanced)", false)
+                                addMessage("Peer [VOICE]: opened a recording", false)
                                 playVoiceMessageWithProgress(decrypted)
                             }
                         } catch (_: Exception) {}
@@ -393,17 +398,8 @@ class MainActivity : AppCompatActivity() {
                 while (true) {
                     Thread.sleep(1800)
                     runOnUiThread {
-                        // Simulate data arriving over the hidden service and being fed into the Rust receiver
-                        if ((System.currentTimeMillis() / 1000) % 2 == 0L) {
-                            // Real framed voice chunk (exactly like the Haskell frameForWire + Tor receiver would deliver)
-                            val frame = ByteArray(2) { 0x56 } + "VOICE".toByteArray() + ByteArray(80) { 0x56 }
-
-                            // Feed into the actual Rust Tor receiver (this is the "from the actual Tor receiver" path)
-                            HashChatNative.feedReceivedData(frame)
-
-                            // Rust queue. Extreme, oversize, and a full queue are dropped there.
-                            HashChatNative.pushReceivedVoiceChunk(frame)
-                        } else {
+                        // Voice frames are queued only after a recording is sealed.
+                        if ((System.currentTimeMillis() / 1000) % 2 != 0L) {
                             val fakeKey = ByteArray(32) { (it + 7).toByte() }
                             val fakeCt = "background-received".toByteArray()
                             val dec = HashChatNative.decryptWithKey(fakeKey, fakeCt)
@@ -820,16 +816,12 @@ class MainActivity : AppCompatActivity() {
         finish()
     }
 
-    // === Real voice recording + chunked streaming over JNI (matches ratchet forward secrecy) ===
-    // In production this would use the same per-message ratchet keys as text, chunk the audio,
-    // encrypt each chunk via JNI, frame with sender hint, and send over the Tor hidden service path.
-    //
-    // LONG-TERM (arch-1): Move chunking and playback glue into Rust
-    // (voiceChunkEncryptAndFrame / processIncomingVoiceFrame). The inbound
-    // queue is already Rust. Keep this layer as UI + MediaRecorder glue.
+    // Recording stays in the shell (microphone permission). Framing, padding,
+    // and the per-chunk chain are Rust. The seed never enters this file.
     private var mediaRecorder: android.media.MediaRecorder? = null
     private var isRecording = false
-    private var currentVoiceRecordingFile: File? = null   // OPSEC: app-private cacheDir only; deleted after ratchet processing
+    private var currentVoiceRecordingFile: File? = null
+    private var currentVoicePlaybackFile: File? = null
 
     fun onVoiceMessage(v: View) {
         // Wave 6 Finish: Extreme mode completely disables voice (no recording, no playback path)
@@ -891,66 +883,83 @@ class MainActivity : AppCompatActivity() {
         mediaRecorder = null
         isRecording = false
 
-        // === REAL voice from mic (critical fix for v0.2 voice completeness) ===
-        // Read the actual recorded audio bytes from app-private cache (never world-readable).
-        // Chunk, encrypt via JNI ratchet path, delete plaintext immediately (minimize sensitive lifetime).
-        // This replaces the previous fake string placeholder.
         val voiceBytes = try {
             val f = currentVoiceRecordingFile
+            currentVoiceRecordingFile = null
             if (f != null && f.exists()) {
                 val bytes = f.readBytes()
-                f.delete()  // OPSEC: wipe plaintext audio file right after read
-                currentVoiceRecordingFile = null
-                // For demo streaming: take first ~32k (real impl would chunk 4k-16k with per-chunk ratchet advance)
-                bytes.copyOfRange(0, minOf(bytes.size, 32768))
+                f.delete()
+                bytes
             } else {
-                byteArrayOf(0x56, 0x6f, 0x69, 0x63, 0x65) // fallback marker only if no file
+                null
             }
         } catch (_: Exception) {
-            byteArrayOf(0x45, 0x72, 0x72) // error marker
+            currentVoiceRecordingFile?.delete()
+            currentVoiceRecordingFile = null
+            null
+        }
+        if (voiceBytes == null || voiceBytes.isEmpty()) {
+            Toast.makeText(this, "Voice recording was empty, so nothing was sent.", Toast.LENGTH_SHORT).show()
+            return
         }
 
-        val key = ByteArray(32) { (it * 7 + 11).toByte() } // demo key; real path uses per-contact ratchet state
-        val encryptedVoice = HashChatNative.encryptWithKey(key, voiceBytes)
-
-        addMessage("You [VOICE]: sent ${voiceBytes.size} bytes (real mic audio, JNI ratchet encrypted + Tor)", true)
-
-        // Demo receive path (in real: background Tor thread calls feedReceivedData + pushReceivedVoiceChunk)
-        messageList.postDelayed({
-            val dec = HashChatNative.decryptWithKey(key, encryptedVoice)
-            addMessage("Peer [VOICE]: received real audio chunk (JNI decrypt + ratchet advanced)", false)
-            playVoiceMessageWithProgress(encryptedVoice)
-        }, 1100)
+        val bundle = HashChatNative.voiceSealRecording(voiceBytes)
+        voiceBytes.fill(0)
+        if (bundle.isEmpty()) {
+            Toast.makeText(this, HashChatNative.voiceStatusLabel(HashChatNative.voiceLastStatus()), Toast.LENGTH_LONG).show()
+            return
+        }
+        val count = HashChatNative.voiceBundleCount(bundle)
+        if (count <= 0) {
+            Toast.makeText(this, HashChatNative.voiceStatusLabel(HashChatNative.voiceLastStatus()), Toast.LENGTH_LONG).show()
+            return
+        }
+        val audio = HashChatNative.voiceOpenBundle(bundle)
+        if (audio.isEmpty()) {
+            Toast.makeText(this, HashChatNative.voiceStatusLabel(HashChatNative.voiceLastStatus()), Toast.LENGTH_LONG).show()
+            return
+        }
+        addMessage("You [VOICE]: sealed $count chunks", true)
+        playVoiceMessageWithProgress(audio)
     }
 
     // === Complete voice playback UI (Simplex-style) ===
     private var mediaPlayer: android.media.MediaPlayer? = null
     private var isPlayingVoice = false
 
-    private fun playVoiceMessage(encryptedChunk: ByteArray) {
-        playVoiceMessageWithProgress(encryptedChunk)
+    private fun playVoiceMessage(audio: ByteArray) {
+        playVoiceMessageWithProgress(audio)
     }
 
-    private fun playVoiceMessageWithProgress(encryptedChunk: ByteArray) {
+    private fun playVoiceMessageWithProgress(audio: ByteArray) {
+        if (audio.isEmpty()) {
+            return
+        }
         if (isPlayingVoice) {
             mediaPlayer?.stop()
             mediaPlayer?.release()
             isPlayingVoice = false
+            currentVoicePlaybackFile?.delete()
+            currentVoicePlaybackFile = null
             return
         }
         try {
+            currentVoicePlaybackFile?.delete()
+            val voiceFile = java.io.File.createTempFile("hashchat_voice_play_", ".m4a", cacheDir)
+            voiceFile.writeBytes(audio)
+            audio.fill(0)
+            currentVoicePlaybackFile = voiceFile
             mediaPlayer = android.media.MediaPlayer().apply {
-                // OPSEC: Always use app-private cacheDir (never /data/local/tmp)
-                val voiceFile = java.io.File.createTempFile("hashchat_voice_play_", ".m4a", cacheDir)
-                // In real flow the decrypted data would be written to this file by the queue processor.
-                // For now we keep simulation but stay inside app-private storage.
                 setDataSource(voiceFile.absolutePath)
                 prepare()
                 start()
                 setOnCompletionListener {
                     isPlayingVoice = false
-                    Toast.makeText(this@MainActivity, "Voice complete (ratchet key advanced + wiped after playback)", Toast.LENGTH_SHORT).show()
-                    // Frontend OPSEC: explicit wipe feedback for user awareness (matches TUI)
+                    voiceFile.delete()
+                    if (currentVoicePlaybackFile == voiceFile) {
+                        currentVoicePlaybackFile = null
+                    }
+                    Toast.makeText(this@MainActivity, "Voice complete", Toast.LENGTH_SHORT).show()
                 }
                 setOnPreparedListener { mp ->
                     val seekBar = SeekBar(this@MainActivity)
@@ -977,6 +986,9 @@ class MainActivity : AppCompatActivity() {
             }
             isPlayingVoice = true
         } catch (e: Exception) {
+            currentVoicePlaybackFile?.delete()
+            currentVoicePlaybackFile = null
+            isPlayingVoice = false
             Toast.makeText(this, "Playback failed", Toast.LENGTH_SHORT).show()
         }
     }
@@ -1367,6 +1379,8 @@ class MainActivity : AppCompatActivity() {
         try {
             currentVoiceRecordingFile?.delete()
             currentVoiceRecordingFile = null
+            currentVoicePlaybackFile?.delete()
+            currentVoicePlaybackFile = null
         } catch (_: Exception) {}
         // Inbound voice chunks stay in the Rust queue across pause (it is the
         // receive path). Panic wipe clears that queue.
