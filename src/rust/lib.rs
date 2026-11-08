@@ -39,6 +39,8 @@ mod shred;
 mod term_sanitize;
 mod tor_socks;
 mod unlock_backoff;
+/// Per-chunk voice chain and fixed-size recording frames.
+pub mod voice_chain;
 /// Bounded inbound voice-chunk queue (Android maximum-Rust).
 pub mod voice_queue;
 mod wipe_settings;
