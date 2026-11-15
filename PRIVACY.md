@@ -20,7 +20,7 @@ A contact you message learns your onion address and your public keys, and can se
 
 Because the project holds no data about you, there is nothing for it to export, correct or erase on request. Your data is on your device: `:wipe` erases it, with the usual caveat that overwriting does not reliably reach data on SSDs or copy-on-write filesystems. An export of your own data in plain text is planned.
 
-If a self-hosted relay or a payment flow is added, this document and a separate data-processing statement will say exactly what that component sees before it ships. A relay is meant to hold only ciphertext and padded sizes. Licence payments (Monero or Bitcoin by default, Lightning also welcome) are meant to need no account and no personal details: the only record is what the blockchain itself shows, and no name, email, country or ID is asked for. The same applies to donations.
+A self-hosted relay, when you run one and point a profile at it, is described in [`docs/RELAY.md`](docs/RELAY.md). That statement is the data-processing record for the relay: the operator's machine holds fixed-size ciphertext, mailbox ids, and token hashes, and can observe when a deposit or a fetch happens. It does not hold accounts, plaintext, or a request log written by the program. The project itself still runs no relay. If a payment flow is added, this document will say exactly what that flow sees before it ships. Licence payments (Monero or Bitcoin by default, Lightning also welcome) are meant to need no account and no personal details: the only record is what the blockchain itself shows, and no name, email, country or ID is asked for. The same applies to donations.
 
 ## Contact
 

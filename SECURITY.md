@@ -142,6 +142,15 @@ authoritative restart path for contacts/ratchets/pending is `state.enc`.
 
 **Android ratchet envelope:** `REAL-EXP-v2` stores the plaintext length outside the AES-GCM tag. Unwrap accepts that length only when the opened plaintext is exactly that many bytes plus the 16 zero bytes wrap adds. A flipped length returns an error. It does not truncate the ratchet state and it does not panic.
 
+## Self-hosted relay
+
+`hashchat-relay` is a loopback store-and-forward process. The data-processing
+statement, the wire limits, and what an operator can and cannot see are in
+[`docs/RELAY.md`](docs/RELAY.md). Short version: ciphertext and token hashes
+only, no accounts, no program request log, create/delete/wipe not reachable
+through the onion, Extreme and backups do not keep the tokens. Failover
+across several relays is not implemented.
+
 ## Unsafe inventory (I-5)
 
 `hashchat-tui` contains **no** `unsafe`. All `unsafe` lives in the Rust library and
