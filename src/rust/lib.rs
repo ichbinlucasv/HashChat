@@ -32,6 +32,8 @@ mod private_fs;
 /// Android profile screen (primary / decoy) and the Extreme build flag.
 pub mod profile_slot;
 mod ratchet;
+/// Self-hosted store-and-forward relay (ciphertext slots over a Tor onion).
+pub mod relay;
 mod save_mark;
 mod send_jitter;
 mod session_persist;
@@ -87,8 +89,9 @@ pub use failwipe::{
 };
 pub use group_store::{decode_groups, encode_groups, GroupBook, GroupBookError, GroupRecord};
 pub use hidden_service::{
-    cookie_path_from_protocolinfo, query_bridge_status, start_hidden_service_with_key,
-    HiddenService, HS_INBOUND_QUEUE_CAP, MAX_HS_INBOUND_FRAME,
+    cookie_path_from_protocolinfo, publish_onion_on_loopback, query_bridge_status,
+    read_onion_key_file, start_hidden_service_with_key, write_onion_key_file, HiddenService,
+    OnionPublication, HS_INBOUND_QUEUE_CAP, MAX_HS_INBOUND_FRAME, ONION_KEY_FILE,
 };
 pub use longterm_identity::LongTermIdentity;
 pub use longterm_identity::{

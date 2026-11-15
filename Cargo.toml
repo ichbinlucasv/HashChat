@@ -12,6 +12,10 @@ name = "hashchat-tui"
 path = "src/bin/hashchat_tui.rs"
 required-features = ["tui"]
 
+[[bin]]
+name = "hashchat-relay"
+path = "src/bin/hashchat_relay.rs"
+
 [dependencies]
 ring = "0.17"
 zeroize = { version = "1.7", features = ["derive"] }

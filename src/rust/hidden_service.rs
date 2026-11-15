@@ -686,6 +686,111 @@ fn add_onion(
     }
 }
 
+/// Keeps the Tor control connection open so an ephemeral onion stays published.
+///
+/// Dropping this value closes the control connection. Tor then forgets an
+/// onion that was not detached. The private key is zeroized on drop.
+pub struct OnionPublication {
+    onion: String,
+    private_key: Vec<u8>,
+    _control: ControlConn,
+}
+
+impl Drop for OnionPublication {
+    fn drop(&mut self) {
+        self.private_key.zeroize();
+        self.onion.clear();
+    }
+}
+
+impl OnionPublication {
+    /// `name.onion` for the service Tor just published.
+    pub fn onion(&self) -> &str {
+        &self.onion
+    }
+
+    /// `ED25519-V3:` blob returned by this `ADD_ONION`.
+    ///
+    /// Empty when Tor was given an existing key and did not repeat it. The
+    /// caller keeps the key it sent.
+    pub fn returned_private_key(&self) -> &[u8] {
+        &self.private_key
+    }
+}
+
+/// Publish `127.0.0.1:local_port` as a v3 onion on the loopback ControlPort.
+///
+/// Does not accept connections. The caller owns the listener. Authentication
+/// is the same SAFECOOKIE path as [`start_hidden_service_with_key`], and
+/// `ADD_ONION` is sent only after that succeeds. `local_port` must be nonzero.
+/// The mapping is always loopback; this function cannot publish a public IP.
+pub fn publish_onion_on_loopback(
+    control_host: &str,
+    control_port: u16,
+    local_port: u16,
+    existing_key: Option<&[u8]>,
+) -> Result<OnionPublication, String> {
+    if !is_loopback_host(control_host) {
+        return Err("ControlPort host refused (not loopback)".into());
+    }
+    if local_port == 0 {
+        return Err("onion port refused".into());
+    }
+    let mut control = ControlConn::new(connect_control(control_host, control_port)?);
+    let cookie_override = std::env::var_os(TOR_COOKIE_FILE_ENV).map(PathBuf::from);
+    authenticate_cookie_only(&mut control, cookie_override.as_deref())?;
+    let existing_str = existing_key.and_then(|b| std::str::from_utf8(b).ok());
+    let (onion, privkey) = add_onion(&mut control, local_port, existing_str)?;
+    Ok(OnionPublication {
+        onion,
+        private_key: privkey,
+        _control: control,
+    })
+}
+
+/// File name of a persisted onion private key inside a private directory.
+pub const ONION_KEY_FILE: &str = "onion.key";
+
+/// Read an onion private key from `dir/onion.key`.
+///
+/// Missing is `Ok(None)`. A symlink, loose mode, or a value that is not
+/// `ED25519-V3:` is refused. The returned bytes are the key spec with no
+/// trailing newline.
+pub fn read_onion_key_file(dir: &Path) -> Result<Option<Vec<u8>>, String> {
+    match crate::private_fs::read_private_file(dir, ONION_KEY_FILE, 512) {
+        Err(crate::private_fs::PrivateFsError::NotFound) => Ok(None),
+        Err(_) => Err("onion key unreadable (refused)".into()),
+        Ok(bytes) => parse_stored_onion_key(bytes),
+    }
+}
+
+/// Store an onion private key as an owner-only file. Refuses a bad spec.
+pub fn write_onion_key_file(dir: &Path, key: &[u8]) -> Result<(), String> {
+    let spec = std::str::from_utf8(key).map_err(|_| "onion key malformed (refused)")?;
+    if !is_valid_onion_key_spec(spec.trim()) {
+        return Err("onion key malformed (refused)".into());
+    }
+    let mut stored = spec.trim().as_bytes().to_vec();
+    let result = crate::private_fs::write_private_file(dir, ONION_KEY_FILE, &stored)
+        .map_err(|_| "onion key not saved".to_string());
+    stored.zeroize();
+    result
+}
+
+fn parse_stored_onion_key(mut bytes: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
+    while bytes.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
+        bytes.pop();
+    }
+    let valid = std::str::from_utf8(&bytes)
+        .ok()
+        .is_some_and(|s| is_valid_onion_key_spec(s.trim()));
+    if !valid {
+        bytes.zeroize();
+        return Err("onion key malformed (refused)".into());
+    }
+    Ok(Some(bytes))
+}
+
 /// `ED25519-V3:<base64>` only; no whitespace or control bytes can reach the command line.
 fn is_valid_onion_key_spec(k: &str) -> bool {
     match k.strip_prefix("ED25519-V3:") {
@@ -1488,5 +1593,17 @@ mod tests {
         s.flush().unwrap();
         let err = handle.join().unwrap().unwrap_err();
         assert!(err.contains("bad frame length"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn publish_refuses_non_loopback_and_port_zero_without_connecting() {
+        match publish_onion_on_loopback("10.1.1.1", 9051, 80, None) {
+            Err(err) => assert!(err.contains("loopback"), "{err}"),
+            Ok(_) => panic!("non-loopback control host was accepted"),
+        }
+        match publish_onion_on_loopback("127.0.0.1", 9051, 0, None) {
+            Err(err) => assert!(err.contains("refused"), "{err}"),
+            Ok(_) => panic!("port zero was accepted"),
+        }
     }
 }
