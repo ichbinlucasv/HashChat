@@ -47,7 +47,10 @@
 //! v13 = + open one-time invites ([`crate::invite::PendingInvites::to_bytes`],
 //! u32 BE length + bytes; empty = none), so an invite issued before a restart
 //! can still be accepted once and never twice.
-//! Load accepts v1–v13; save always writes v13. Older blobs load empty deny lists;
+//! v14 = + relay inbox and relay deposit targets (length-prefixed bytes;
+//! empty = none). These are bearer tokens for a self-hosted relay. Extreme
+//! saves them empty. A backup leaves them out, same as ratchet state.
+//! Load accepts v1–v14; save always writes v14. Older blobs load empty deny lists;
 //! pre-v6 contacts are treated as **verified** for continuity (new `:add-contact`
 //! entries start unverified). Pre-v7 loads default idle lock to 5 minutes.
 //!
@@ -62,7 +65,8 @@
 //! When [`crate::net_mode::PostureProfile::Extreme`] is set on the session's
 //! [`NetConfig`], [`save_session`] persists **identity + onion + net prefs +
 //! disappear TTL + idle lock timeout + send jitter only**. Contacts, ratchets, pending frames, blocked/muted, and
-//! verified lists are written as empty vectors (blob stays v12). Trade-off: smaller
+//! verified lists, invites, and relay tokens are written as empty (blob stays
+//! v14). Trade-off: smaller
 //! at-rest footprint and no multi-session contact/deny/verify continuity — the user
 //! must re-add contacts (and re-block / re-verify if needed) after restart. Tor 1:1
 //! messaging for the **current** process session is unchanged (in-memory
@@ -112,6 +116,7 @@ const BLOB_VERSION_V10: u8 = 10;
 const BLOB_VERSION_V11: u8 = 11;
 const BLOB_VERSION_V12: u8 = 12;
 const BLOB_VERSION_V13: u8 = 13;
+const BLOB_VERSION_V14: u8 = 14;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PersistMode {
@@ -285,6 +290,13 @@ pub struct SessionState {
     /// [`crate::invite::PendingInvites::to_bytes`]. Holds the bootstrap salts,
     /// so it is zeroized with the state. Empty under Extreme on disk.
     pub pending_invites: Vec<u8>,
+    /// This profile's relay inbox ([`crate::relay::Inbox::to_bytes`]), or
+    /// empty. The pull token is in here. Empty under Extreme on disk and in
+    /// a backup.
+    pub relay_inbox: Vec<u8>,
+    /// Deposit targets ([`crate::relay::TargetBook::to_bytes`]), or empty.
+    /// Push tokens are in here. Empty under Extreme on disk and in a backup.
+    pub relay_targets: Vec<u8>,
 }
 
 impl SessionState {
@@ -306,6 +318,8 @@ impl SessionState {
             wipe_settings: None,
             save_id: None,
             pending_invites: Vec::new(),
+            relay_inbox: Vec::new(),
+            relay_targets: Vec::new(),
         }
     }
 
@@ -328,6 +342,8 @@ impl SessionState {
             wipe_settings: None,
             save_id: None,
             pending_invites: Vec::new(),
+            relay_inbox: Vec::new(),
+            relay_targets: Vec::new(),
         }
     }
 
@@ -801,6 +817,8 @@ impl SessionState {
             wipe_settings: self.wipe_settings,
             save_id: self.save_id,
             pending_invites: Vec::new(),
+            relay_inbox: Vec::new(),
+            relay_targets: Vec::new(),
         }
     }
 
@@ -831,6 +849,10 @@ impl SessionState {
         self.save_id = None;
         self.pending_invites.zeroize();
         self.pending_invites.clear();
+        self.relay_inbox.zeroize();
+        self.relay_inbox.clear();
+        self.relay_targets.zeroize();
+        self.relay_targets.clear();
     }
 }
 
@@ -905,7 +927,7 @@ pub(crate) fn serialize_blob(state: &SessionState) -> Vec<u8> {
 
 fn serialize_blob_at(state: &SessionState, now_unix: u64) -> Vec<u8> {
     let mut plain = Vec::new();
-    plain.push(BLOB_VERSION_V13);
+    plain.push(BLOB_VERSION_V14);
     plain.extend_from_slice(&state.identity.seed);
     write_len_str(&mut plain, &state.identity.onion);
     write_len_bytes(&mut plain, &state.identity.onion_key);
@@ -988,6 +1010,10 @@ fn serialize_blob_at(state: &SessionState, now_unix: u64) -> Vec<u8> {
     // open one-time invites (v13+)
     write_len_bytes(&mut plain, &state.pending_invites);
 
+    // relay inbox and deposit targets (v14+)
+    write_len_bytes(&mut plain, &state.relay_inbox);
+    write_len_bytes(&mut plain, &state.relay_targets);
+
     plain
 }
 
@@ -996,7 +1022,7 @@ pub(crate) fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static st
         return Err("empty state blob");
     }
     let ver = plain[0];
-    if !(BLOB_VERSION_V1..=BLOB_VERSION_V13).contains(&ver) {
+    if !(BLOB_VERSION_V1..=BLOB_VERSION_V14).contains(&ver) {
         return Err("bad state blob version");
     }
     if plain.len() < 33 {
@@ -1203,6 +1229,21 @@ pub(crate) fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static st
         Vec::new()
     };
 
+    let (relay_inbox, relay_targets) = if ver >= BLOB_VERSION_V14 {
+        let mut inbox = read_len_bytes(plain, &mut pos)?;
+        let mut targets = read_len_bytes(plain, &mut pos)?;
+        let inbox_ok = inbox.is_empty() || crate::relay::Inbox::from_bytes(&inbox).is_ok();
+        let targets_ok = crate::relay::TargetBook::from_bytes(&targets).is_ok();
+        if !inbox_ok || !targets_ok {
+            inbox.zeroize();
+            targets.zeroize();
+            return Err("bad relay record");
+        }
+        (inbox, targets)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
     if pos != plain.len() {
         return Err("trailing junk in state blob");
     }
@@ -1224,6 +1265,8 @@ pub(crate) fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static st
         wipe_settings,
         save_id,
         pending_invites,
+        relay_inbox,
+        relay_targets,
     })
 }
 
@@ -1369,9 +1412,9 @@ fn load_session_wrapped(data_dir: &Path, wrap: &Wrap<'_>) -> Result<SessionState
 /// Save session state. Always writes the current blob version.
 ///
 /// Under Extreme posture (`state.net.is_extreme()`), contacts / ratchets / pending /
-/// blocked / muted / verified are stripped via [`SessionState::for_disk`] before sealing
-/// (identity / onion / prefs / TTL / lock-timeout kept).
-/// Standard keeps full H3 + deny lists + verified set.
+/// blocked / muted / verified / open invites / relay tokens are stripped via
+/// [`SessionState::for_disk`] before sealing (identity / onion / prefs / TTL /
+/// lock-timeout kept). Standard keeps full H3 + deny lists + verified set + relay tokens.
 pub fn save_session(
     data_dir: &Path,
     mode: PersistMode,
@@ -3188,6 +3231,35 @@ mod tests {
 
         session.wipe_memory_secure();
         assert!(session.pending_invites.is_empty());
+    }
+
+    #[test]
+    fn relay_records_roundtrip_and_extreme_wipe_drop_them() {
+        use crate::net_mode::PostureProfile;
+        use crate::onion_binding::test_support::onion_and_key;
+        use crate::relay::{Inbox, TargetBook};
+        let (bare, _) = onion_and_key(8);
+        let onion = format!("{bare}.onion");
+        let id = LongTermIdentity::from_seed([0x21; 32]);
+        let mut session =
+            SessionState::from_identity(IdentityOnionState::from_identity(&id, "r.onion", vec![]));
+        let inbox = Inbox::parse(&onion, &"ab".repeat(64)).unwrap();
+        session.relay_inbox = inbox.to_bytes();
+        let mut book = TargetBook::default();
+        book.insert("c1", &onion, &"cd".repeat(64)).unwrap();
+        session.relay_targets = book.to_bytes();
+        let loaded = deserialize_blob(&serialize_blob_at(&session, 1_000)).unwrap();
+        assert_eq!(loaded.relay_inbox, session.relay_inbox);
+        assert_eq!(loaded.relay_targets, session.relay_targets);
+
+        session.net.set_posture(PostureProfile::Extreme);
+        let disk = session.for_disk();
+        assert!(disk.relay_inbox.is_empty());
+        assert!(disk.relay_targets.is_empty());
+
+        session.wipe_memory_secure();
+        assert!(session.relay_inbox.is_empty());
+        assert!(session.relay_targets.is_empty());
     }
 
     #[test]

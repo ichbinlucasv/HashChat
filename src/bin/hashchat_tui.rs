@@ -20,6 +20,7 @@ use crossterm::terminal::{
 };
 use hashchat_rust::backup::{export_backup, install_fresh_profile, open_backup, read_backup_file};
 use hashchat_rust::invite;
+use hashchat_rust::relay::{self, Fetched, Inbox, TargetBook};
 use hashchat_rust::{
     attempt_failed, attempt_succeeded, begin_attempt, binary_status,
     bootstrap_ratchet_from_signed_link, build_wire_aad_v3, check_new_passphrase,
@@ -288,6 +289,8 @@ struct App {
     sealed_send: bool,
     /// Frames committed but not yet handed to Tor because of send jitter.
     held_sends: Vec<HeldSend>,
+    /// Ciphertext already deposited to a relay during this unlock. Not saved.
+    relay_deposited: Vec<[u8; 32]>,
     /// Last bridge check for `:bridges require on`: when, and why sends were
     /// held (`Ok` = bridges active). Re-asked after a short cache window.
     bridge_check: Option<(Instant, Result<(), String>)>,
@@ -339,6 +342,30 @@ enum TorStatus {
 enum TorChange {
     WentDown,
     CameBack,
+}
+
+/// What a relay deposit did. `Skipped` means there was nothing to do.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RelayHop {
+    Skipped,
+    Deposited,
+    Unreachable,
+    Refused,
+}
+
+/// `:relay for <contact> <onion> <card>`. The contact token may contain
+/// spaces, so the onion and the card are the last two words.
+fn split_relay_tail(args: &str) -> Option<(&str, &str, &str)> {
+    let hex_at = args.rfind(char::is_whitespace)?;
+    let hex = args[hex_at + 1..].trim();
+    let rest = args[..hex_at].trim();
+    let onion_at = rest.rfind(char::is_whitespace)?;
+    let onion = rest[onion_at + 1..].trim();
+    let token = rest[..onion_at].trim();
+    if token.is_empty() || onion.is_empty() || hex.is_empty() {
+        return None;
+    }
+    Some((token, onion, hex))
 }
 
 fn tor_change(prev: TorStatus, next: TorStatus) -> Option<TorChange> {
@@ -443,6 +470,7 @@ impl App {
             send_jitter_secs: 0,
             sealed_send: true,
             held_sends: Vec::new(),
+            relay_deposited: Vec::new(),
             bridge_check: None,
             clock_behind_secs: None,
             binary_changed: false,
@@ -1339,6 +1367,10 @@ impl App {
         touch_deadman(Path::new(DATA_DIR), unix_now());
         // Held frames stay in state.enc and go out with :retry after unlock.
         self.held_sends.clear();
+        for id in &mut self.relay_deposited {
+            id.zeroize();
+        }
+        self.relay_deposited.clear();
         self.clock_behind_secs = None;
         self.binary_changed = false;
         self.wipe_settings_changed.clear();
@@ -1377,6 +1409,10 @@ impl App {
     /// Does **not** touch disk — not a substitute for `:wipe`.
     fn emergency_scrub_fields(&mut self) {
         self.held_sends.clear();
+        for id in &mut self.relay_deposited {
+            id.zeroize();
+        }
+        self.relay_deposited.clear();
         self.hs = None;
         self.hs_drops_seen = 0;
         if let Some(mut s) = self.session.take() {
@@ -2421,6 +2457,7 @@ impl App {
         let mut fail = 0usize;
         let mut ok = 0usize;
         let mut remain = Vec::new();
+        let mut relay_down = false;
         for (onion, frame) in waiting {
             // Session borrow ended above so isolation helper can read contacts/seed.
             let isol = self.socks_isolation_creds_for(None, &onion);
@@ -2434,6 +2471,11 @@ impl App {
             ) {
                 Ok(()) => ok += 1,
                 Err(_) => {
+                    if !relay_down
+                        && self.relay_deposit_onion(&onion, &frame) == RelayHop::Unreachable
+                    {
+                        relay_down = true;
+                    }
                     remain.push((onion, frame));
                     fail += 1;
                 }
@@ -2473,33 +2515,380 @@ impl App {
             self.push_msg(self.status_msg.clone());
         }
         for frame in frames {
-            let n = frame.len();
-            match self.try_decrypt_incoming(&frame) {
-                Ok((peer, text, contact_id, msg_number, display)) => {
-                    if display {
-                        // UI inbox may show plaintext; status/logs must not.
-                        self.push_chat(format!("[{peer}] {text}"), &contact_id, msg_number);
-                        self.status_msg = format!("Received {n} B · {peer}");
-                    } else {
-                        // Mute: decrypt advanced ratchet; suppress UI plaintext.
-                        let _ = text;
-                        self.status_msg = format!("Muted inbound suppressed ({n} B)");
-                    }
-                }
-                Err(e) if e == "blocked" => {
-                    // OPSEC: no frame bytes / plaintext in status.
-                    self.push_msg("Incoming frame dropped (blocked contact)");
-                    self.status_msg = format!("Dropped inbound (blocked, {n} B)");
-                }
-                Err(e) if e == "no matching ratchet" && self.try_invite_hello(&frame) => {
-                    self.status_msg = format!("Invite reply received in band ({n} B)");
-                }
-                Err(_e) => {
-                    // OPSEC: no frame bytes / decrypt detail in status.
-                    self.push_msg("Incoming frame dropped (decrypt/verify failed)");
-                    self.status_msg = format!("Dropped inbound frame ({n} B)");
+            self.accept_incoming_frame(&frame);
+        }
+    }
+
+    /// Decrypt one inbound frame the same way for the hidden service and a
+    /// relay fetch. Status stays short: no frame bytes and no decrypt detail.
+    fn accept_incoming_frame(&mut self, frame: &[u8]) {
+        let n = frame.len();
+        match self.try_decrypt_incoming(frame) {
+            Ok((peer, text, contact_id, msg_number, display)) => {
+                if display {
+                    // UI inbox may show plaintext; status/logs must not.
+                    self.push_chat(format!("[{peer}] {text}"), &contact_id, msg_number);
+                    self.status_msg = format!("Received {n} B · {peer}");
+                } else {
+                    // Mute: decrypt advanced ratchet; suppress UI plaintext.
+                    let _ = text;
+                    self.status_msg = format!("Muted inbound suppressed ({n} B)");
                 }
             }
+            Err(e) if e == "blocked" => {
+                self.push_msg("Incoming frame dropped (blocked contact)");
+                self.status_msg = format!("Dropped inbound (blocked, {n} B)");
+            }
+            Err(e) if e == "no matching ratchet" && self.try_invite_hello(frame) => {
+                self.status_msg = format!("Invite reply received in band ({n} B)");
+            }
+            Err(_e) => {
+                self.push_msg("Incoming frame dropped (decrypt/verify failed)");
+                self.status_msg = format!("Dropped inbound frame ({n} B)");
+            }
+        }
+    }
+
+    fn relay_note(&mut self, text: &str) {
+        self.status_msg = text.to_string();
+        self.push_msg(self.status_msg.clone());
+    }
+
+    fn relay_isolation(&self, onion: &str) -> Option<SocksIsolationCreds> {
+        if self.net.socks_isolation_enabled() {
+            socks_isolation_for_onion(onion).ok()
+        } else {
+            None
+        }
+    }
+
+    fn remember_deposit(&mut self, id: [u8; 32]) {
+        if self.relay_deposited.len() >= 128 {
+            self.relay_deposited.remove(0);
+        }
+        self.relay_deposited.push(id);
+    }
+
+    fn relay_ready(&mut self) -> bool {
+        if self.session.is_none() {
+            self.relay_note("Unlock first.");
+            return false;
+        }
+        if self.net.is_extreme() {
+            self.relay_note("extreme posture refuses the relay");
+            return false;
+        }
+        if let Err(e) = self.net.require_messenger_transport() {
+            self.relay_note(&format!("relay refused: {e}"));
+            return false;
+        }
+        if self.tor_status != TorStatus::Available {
+            self.relay_note("relay refused: Tor SOCKS unavailable");
+            return false;
+        }
+        if let Some(why) = self.bridges_hold_reason() {
+            self.relay_note(&format!("relay held: bridges required, {why}"));
+            return false;
+        }
+        true
+    }
+
+    fn relay_deposit_contact(&mut self, contact_id: &str, frame: &[u8]) -> RelayHop {
+        if !self.relay_path_open() {
+            return RelayHop::Skipped;
+        }
+        let target = {
+            let Some(session) = self.session.as_ref() else {
+                return RelayHop::Skipped;
+            };
+            let Ok(book) = TargetBook::from_bytes(&session.relay_targets) else {
+                return RelayHop::Skipped;
+            };
+            let Some(target) = book.get(contact_id) else {
+                return RelayHop::Skipped;
+            };
+            target.clone()
+        };
+        self.deposit_target(&target, frame)
+    }
+
+    fn relay_deposit_onion(&mut self, onion: &str, frame: &[u8]) -> RelayHop {
+        if !self.relay_path_open() {
+            return RelayHop::Skipped;
+        }
+        let target = {
+            let Some(session) = self.session.as_ref() else {
+                return RelayHop::Skipped;
+            };
+            let Ok(book) = TargetBook::from_bytes(&session.relay_targets) else {
+                return RelayHop::Skipped;
+            };
+            let ids: Vec<String> = session
+                .contacts
+                .iter()
+                .filter(|c| c.onion == onion)
+                .map(|c| c.id.clone())
+                .collect();
+            let Some(target) = book.find_onion(onion, &ids) else {
+                return RelayHop::Skipped;
+            };
+            target.clone()
+        };
+        self.deposit_target(&target, frame)
+    }
+
+    /// Tor is up and this posture allows a relay hop. Does not open a socket.
+    fn relay_path_open(&mut self) -> bool {
+        if self.net.is_extreme() || self.session.is_none() {
+            return false;
+        }
+        if self.net.require_messenger_transport().is_err() {
+            return false;
+        }
+        if self.tor_status != TorStatus::Available {
+            return false;
+        }
+        self.bridges_hold_reason().is_none()
+    }
+
+    fn deposit_target(&mut self, target: &relay::Target, frame: &[u8]) -> RelayHop {
+        let id = relay::frame_deposit_id(frame);
+        if self.relay_deposited.contains(&id) {
+            return RelayHop::Skipped;
+        }
+        let isol = self.relay_isolation(target.onion());
+        match target.deposit(SOCKS_HOST, self.socks_port, frame, isol.as_ref()) {
+            Ok(()) => {
+                self.remember_deposit(id);
+                RelayHop::Deposited
+            }
+            Err("relay unreachable") => RelayHop::Unreachable,
+            Err(_) => RelayHop::Refused,
+        }
+    }
+
+    fn handle_relay(&mut self, args: &str) {
+        if self.session.is_none() {
+            self.relay_note("Unlock first.");
+            return;
+        }
+        let args = args.trim();
+        if args.is_empty() || args == "status" {
+            self.relay_status();
+            return;
+        }
+        if self.net.is_extreme() {
+            self.relay_note("extreme posture refuses the relay");
+            return;
+        }
+        if args == "fetch" {
+            self.relay_fetch();
+            return;
+        }
+        if args == "send" {
+            self.relay_send_pending();
+            return;
+        }
+        if args == "clear" {
+            if let Some(session) = self.session.as_mut() {
+                session.relay_inbox.zeroize();
+                session.relay_inbox.clear();
+            }
+            self.note_saved("relay inbox cleared");
+            return;
+        }
+        let mut parts = args.split_whitespace();
+        match parts.next() {
+            Some("inbox") => {
+                let (Some(onion), Some(hex)) = (parts.next(), parts.next()) else {
+                    self.relay_usage();
+                    return;
+                };
+                if parts.next().is_some() {
+                    self.relay_usage();
+                    return;
+                }
+                match Inbox::parse(onion, hex) {
+                    Ok(inbox) => {
+                        let bytes = inbox.to_bytes();
+                        if let Some(session) = self.session.as_mut() {
+                            session.relay_inbox.zeroize();
+                            session.relay_inbox = bytes;
+                        }
+                        self.note_saved("relay inbox set");
+                    }
+                    Err(_) => self.relay_note("relay inbox refused"),
+                }
+            }
+            Some("for") => {
+                let rest = args.strip_prefix("for").unwrap_or("").trim();
+                let Some((token, onion, hex)) = split_relay_tail(rest) else {
+                    self.relay_usage();
+                    return;
+                };
+                let Some(contact_id) = self
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.resolve_deny_token(token))
+                else {
+                    self.relay_note("relay contact refused");
+                    return;
+                };
+                let mut book = self
+                    .session
+                    .as_ref()
+                    .and_then(|s| TargetBook::from_bytes(&s.relay_targets).ok())
+                    .unwrap_or_default();
+                if book.insert(&contact_id, onion, hex).is_err() {
+                    self.relay_note("relay card refused");
+                    return;
+                }
+                let bytes = book.to_bytes();
+                if let Some(session) = self.session.as_mut() {
+                    session.relay_targets.zeroize();
+                    session.relay_targets = bytes;
+                }
+                self.note_saved("relay target set");
+            }
+            Some("forget") => {
+                let token = args.strip_prefix("forget").unwrap_or("").trim();
+                let Some(contact_id) = self
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.resolve_deny_token(token))
+                else {
+                    self.relay_note("relay contact refused");
+                    return;
+                };
+                let mut book = self
+                    .session
+                    .as_ref()
+                    .and_then(|s| TargetBook::from_bytes(&s.relay_targets).ok())
+                    .unwrap_or_default();
+                if !book.remove(&contact_id) {
+                    self.relay_note("relay contact refused");
+                    return;
+                }
+                let bytes = book.to_bytes();
+                if let Some(session) = self.session.as_mut() {
+                    session.relay_targets.zeroize();
+                    session.relay_targets = bytes;
+                }
+                self.note_saved("relay target cleared");
+            }
+            _ => self.relay_usage(),
+        }
+    }
+
+    fn relay_usage(&mut self) {
+        self.relay_note("usage: :relay status|inbox|for|forget|fetch|send|clear");
+    }
+
+    fn note_saved(&mut self, ok: &str) {
+        if self.persist_session().is_ok() {
+            self.relay_note(ok);
+        } else {
+            self.relay_note(&format!("{ok} (not saved)"));
+        }
+    }
+
+    fn relay_status(&mut self) {
+        if self.net.is_extreme() {
+            self.relay_note("relay off (extreme)");
+            return;
+        }
+        let (inbox, targets) = self
+            .session
+            .as_ref()
+            .map(|s| {
+                let inbox = !s.relay_inbox.is_empty();
+                let targets = TargetBook::from_bytes(&s.relay_targets)
+                    .map(|b| b.len())
+                    .unwrap_or(0);
+                (inbox, targets)
+            })
+            .unwrap_or((false, 0));
+        let inbox = if inbox { "set" } else { "off" };
+        self.relay_note(&format!("relay inbox={inbox} targets={targets}"));
+    }
+
+    fn relay_fetch(&mut self) {
+        if !self.relay_ready() {
+            return;
+        }
+        let inbox = {
+            let Some(session) = self.session.as_ref() else {
+                return;
+            };
+            if session.relay_inbox.is_empty() {
+                self.relay_note("no relay inbox");
+                return;
+            }
+            match Inbox::from_bytes(&session.relay_inbox) {
+                Ok(inbox) => inbox,
+                Err(_) => {
+                    self.relay_note("relay inbox refused");
+                    return;
+                }
+            }
+        };
+        let isol = self.relay_isolation(inbox.onion());
+        let mut got = 0usize;
+        for _ in 0..8 {
+            match inbox.fetch(SOCKS_HOST, self.socks_port, isol.as_ref()) {
+                Ok(Fetched::Empty) => break,
+                Ok(Fetched::Frame { frame, ack }) => {
+                    self.accept_incoming_frame(&frame);
+                    if inbox
+                        .ack(SOCKS_HOST, self.socks_port, &ack, isol.as_ref())
+                        .is_err()
+                    {
+                        self.relay_note("relay fetch incomplete");
+                        return;
+                    }
+                    got += 1;
+                }
+                Err(_) => {
+                    self.relay_note("relay refused");
+                    return;
+                }
+            }
+        }
+        if got == 0 {
+            self.relay_note("relay inbox empty");
+        } else {
+            self.relay_note(&format!("relay fetched {got} frame(s)"));
+        }
+    }
+
+    fn relay_send_pending(&mut self) {
+        if !self.relay_ready() {
+            return;
+        }
+        let mut pending = self
+            .session
+            .as_ref()
+            .map(|s| s.pending.clone())
+            .unwrap_or_default();
+        let mut deposited = 0usize;
+        let mut unreachable = false;
+        for (onion, frame) in &pending {
+            if unreachable {
+                break;
+            }
+            match self.relay_deposit_onion(onion, frame) {
+                RelayHop::Deposited => deposited += 1,
+                RelayHop::Unreachable => unreachable = true,
+                RelayHop::Skipped | RelayHop::Refused => {}
+            }
+        }
+        for (_, frame) in &mut pending {
+            frame.zeroize();
+        }
+        if unreachable {
+            self.relay_note("relay unreachable");
+        } else {
+            self.relay_note(&format!("relay deposited {deposited} frame(s)"));
         }
     }
 
@@ -3158,8 +3547,17 @@ impl App {
             };
         } else {
             // OPSEC: short reason only — frame stays queued for :retry.
+            // A configured relay gets a copy; the local queue is kept until
+            // a direct send works, so a relay drop does not lose the frame.
+            let hop = self.relay_deposit_contact(&contact.id, &frame);
             self.push_msg(format!("[{peer_label}] queued offline (SOCKS send failed)"));
-            self.status_msg = "Queued: SOCKS send failed (frame committed)".into();
+            self.status_msg = match hop {
+                RelayHop::Deposited => "Queued: deposited to relay (still queued locally)".into(),
+                RelayHop::Unreachable | RelayHop::Refused => {
+                    "Queued: SOCKS send failed; relay deposit failed".into()
+                }
+                RelayHop::Skipped => "Queued: SOCKS send failed (frame committed)".into(),
+            };
         }
     }
 
@@ -3933,6 +4331,10 @@ impl App {
             }
             ":listen" => self.listen(),
             ":retry" => self.retry_pending(true),
+            other if other == ":relay" || other.starts_with(":relay ") => {
+                let args = other.strip_prefix(":relay").unwrap_or("").trim();
+                self.handle_relay(args);
+            }
             ":status" | ":tor" => {
                 self.check_tor(true);
                 let probe = tor_probe(SOCKS_HOST, self.socks_port, CONTROL_PORT);
@@ -4011,6 +4413,9 @@ impl App {
                 self.push_msg("  :isolate [on|off|status] Tor SOCKS stream isolation (default on)");
                 self.push_msg(
                     "  :retry                  flush pending queue (Tor / net_mode gate)",
+                );
+                self.push_msg(
+                    "  :relay                  inbox/card for a self-hosted relay (ciphertext)",
                 );
                 self.push_msg(
                     "  :disappear [off|30s|…]  local TTL erase + ratchet skipped-key wipe",
@@ -5735,6 +6140,44 @@ mod tests {
         let app = App::new();
         assert!(app.session.is_none());
         app
+    }
+
+    #[test]
+    fn relay_commands_refuse_when_locked_extreme_or_malformed() {
+        let mut app = locked_app();
+        app.handle_command(":relay status");
+        assert!(app.status_msg.contains("Unlock"), "{}", app.status_msg);
+
+        let id = LongTermIdentity::from_seed([0x11; 32]);
+        let mut app = unlocked_app_with(&id, "unused.onion");
+        app.net.set_posture(PostureProfile::Extreme);
+        app.handle_command(":relay inbox example.com ab");
+        assert!(app.status_msg.contains("extreme"), "{}", app.status_msg);
+
+        app.net.set_posture(PostureProfile::Standard);
+        let onion = "aibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibejsqd.onion";
+        app.handle_command(&format!(":relay inbox {onion} not-hex"));
+        assert!(app.status_msg.contains("refused"), "{}", app.status_msg);
+        assert!(app.session.as_ref().unwrap().relay_inbox.is_empty());
+
+        let hex = "ab".repeat(64);
+        app.handle_command(&format!(":relay inbox {onion} {hex}"));
+        assert!(
+            app.status_msg.contains("relay inbox set"),
+            "{}",
+            app.status_msg
+        );
+        assert!(!app.session.as_ref().unwrap().relay_inbox.is_empty());
+
+        app.tor_status = TorStatus::Available;
+        app.handle_command(":relay clear");
+        assert!(app.session.as_ref().unwrap().relay_inbox.is_empty());
+        app.handle_command(":relay fetch");
+        assert!(
+            app.status_msg.contains("no relay inbox"),
+            "{}",
+            app.status_msg
+        );
     }
 
     #[test]

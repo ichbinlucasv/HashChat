@@ -18,6 +18,9 @@
 //! - **Held outbound frames** (they were sealed under those ratchets).
 //! - **Open one-time invites.** Their salts are spend-once; bringing them back
 //!   would let a used invite be redeemed again.
+//! - **Relay inbox and deposit tokens.** A restored copy would pull or fill
+//!   the same mailbox as the machine that still holds it. Set the relay up
+//!   again after restore.
 //! - The save id and the wipe-settings record, which belong to the old machine.
 //!
 //! Extreme posture refuses to export: it keeps no contacts on disk, and a
@@ -69,6 +72,10 @@ fn backup_view(state: &SessionState) -> SessionState {
     s.clear_pending_secure();
     s.pending_invites.zeroize();
     s.pending_invites.clear();
+    s.relay_inbox.zeroize();
+    s.relay_inbox.clear();
+    s.relay_targets.zeroize();
+    s.relay_targets.clear();
     s.save_id = None;
     s.wipe_settings = None;
     s
@@ -452,5 +459,24 @@ mod tests {
         );
         let again = load_session_with_key(&dir.0, &key).unwrap();
         assert_eq!(again.identity.onion_key, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn backup_omits_relay_tokens() {
+        use crate::onion_binding::test_support::onion_and_key;
+        use crate::relay::{Inbox, TargetBook};
+        let (bare, _) = onion_and_key(2);
+        let onion = format!("{bare}.onion");
+        let mut s = sample();
+        let inbox = Inbox::parse(&onion, &"11".repeat(64)).unwrap();
+        s.relay_inbox = inbox.to_bytes();
+        let mut book = TargetBook::default();
+        book.insert("c1", &onion, &"22".repeat(64)).unwrap();
+        s.relay_targets = book.to_bytes();
+        let file = export_backup(&s, PASS, 9).unwrap();
+        assert!(!file.windows(16).any(|w| w == &s.relay_inbox[..16]));
+        let (opened, _) = open_backup(&file, PASS).unwrap();
+        assert!(opened.relay_inbox.is_empty());
+        assert!(opened.relay_targets.is_empty());
     }
 }
