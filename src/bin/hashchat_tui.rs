@@ -20,7 +20,7 @@ use crossterm::terminal::{
 };
 use hashchat_rust::backup::{export_backup, install_fresh_profile, open_backup, read_backup_file};
 use hashchat_rust::invite;
-use hashchat_rust::relay::{self, Fetched, Inbox, TargetBook};
+use hashchat_rust::relay::{self, DepositHop, Fetched, InboxBook, TargetBook};
 use hashchat_rust::{
     attempt_failed, attempt_succeeded, begin_attempt, binary_status,
     bootstrap_ratchet_from_signed_link, build_wire_aad_v3, check_new_passphrase,
@@ -344,15 +344,6 @@ enum TorChange {
     CameBack,
 }
 
-/// What a relay deposit did. `Skipped` means there was nothing to do.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RelayHop {
-    Skipped,
-    Deposited,
-    Unreachable,
-    Refused,
-}
-
 /// `:relay for <contact> <onion> <card>`. The contact token may contain
 /// spaces, so the onion and the card are the last two words.
 fn split_relay_tail(args: &str) -> Option<(&str, &str, &str)> {
@@ -366,6 +357,43 @@ fn split_relay_tail(args: &str) -> Option<(&str, &str, &str)> {
         return None;
     }
     Some((token, onion, hex))
+}
+
+/// `:relay forget CONTACT` or `:relay forget CONTACT ONION`.
+///
+/// The last word is a relay onion only when it is a v3 onion and a contact
+/// token remains in front of it. One word is always the contact, even when
+/// that word is itself an onion address.
+fn split_forget_target(args: &str) -> Option<(&str, Option<&str>)> {
+    let args = args.trim();
+    if args.is_empty() {
+        return None;
+    }
+    if let Some(at) = args.rfind(char::is_whitespace) {
+        let last = args[at + 1..].trim();
+        let token = args[..at].trim();
+        if !token.is_empty() && is_onion_destination(last) {
+            return Some((token, Some(last)));
+        }
+    }
+    Some((args, None))
+}
+
+fn wipe_strings(items: &mut Vec<String>) {
+    for item in items.iter_mut() {
+        item.zeroize();
+    }
+    items.clear();
+}
+
+fn relay_queue_status(hop: DepositHop) -> String {
+    match hop {
+        DepositHop::Deposited => "Queued: deposited to relay (still queued locally)".to_string(),
+        DepositHop::Unreachable | DepositHop::Refused => {
+            "Queued: SOCKS send failed; relay deposit failed".to_string()
+        }
+        DepositHop::Skipped => "Queued: SOCKS send failed (frame committed)".to_string(),
+    }
 }
 
 fn tor_change(prev: TorStatus, next: TorStatus) -> Option<TorChange> {
@@ -2345,6 +2373,7 @@ impl App {
             None
         };
         let mut changed = false;
+        let mut relay_down: Vec<String> = Vec::new();
         for held in due {
             let queued = self
                 .session
@@ -2394,14 +2423,17 @@ impl App {
                 self.set_delivery(&held.contact_id, held.msg_number, Delivery::Sent);
                 self.status_msg = format!("Sent {} B via SOCKS after jitter", held.frame.len());
             } else {
+                let hop =
+                    self.relay_deposit_contact(&held.contact_id, &held.frame, &mut relay_down);
                 self.set_delivery(&held.contact_id, held.msg_number, Delivery::Queued);
                 self.push_msg(format!(
                     "[{}] queued offline (SOCKS send failed)",
                     held.peer_label
                 ));
-                self.status_msg = "Queued: SOCKS send failed (frame committed)".into();
+                self.status_msg = relay_queue_status(hop);
             }
         }
+        wipe_strings(&mut relay_down);
         if changed {
             let _ = self.persist_session();
         }
@@ -2457,7 +2489,7 @@ impl App {
         let mut fail = 0usize;
         let mut ok = 0usize;
         let mut remain = Vec::new();
-        let mut relay_down = false;
+        let mut relay_down: Vec<String> = Vec::new();
         for (onion, frame) in waiting {
             // Session borrow ended above so isolation helper can read contacts/seed.
             let isol = self.socks_isolation_creds_for(None, &onion);
@@ -2471,16 +2503,13 @@ impl App {
             ) {
                 Ok(()) => ok += 1,
                 Err(_) => {
-                    if !relay_down
-                        && self.relay_deposit_onion(&onion, &frame) == RelayHop::Unreachable
-                    {
-                        relay_down = true;
-                    }
+                    let _ = self.relay_deposit_onion(&onion, &frame, &mut relay_down);
                     remain.push((onion, frame));
                     fail += 1;
                 }
             }
         }
+        wipe_strings(&mut relay_down);
         if let Some(session) = self.session.as_mut() {
             for (o, f) in remain {
                 let _ = session.queue_pending(o, f);
@@ -2593,48 +2622,54 @@ impl App {
         true
     }
 
-    fn relay_deposit_contact(&mut self, contact_id: &str, frame: &[u8]) -> RelayHop {
+    fn relay_deposit_contact(
+        &mut self,
+        contact_id: &str,
+        frame: &[u8],
+        down: &mut Vec<String>,
+    ) -> DepositHop {
         if !self.relay_path_open() {
-            return RelayHop::Skipped;
+            return DepositHop::Skipped;
         }
-        let target = {
+        let targets = {
             let Some(session) = self.session.as_ref() else {
-                return RelayHop::Skipped;
+                return DepositHop::Skipped;
             };
             let Ok(book) = TargetBook::from_bytes(&session.relay_targets) else {
-                return RelayHop::Skipped;
+                return DepositHop::Skipped;
             };
-            let Some(target) = book.get(contact_id) else {
-                return RelayHop::Skipped;
-            };
-            target.clone()
+            book.cards_for_ids(&[contact_id])
         };
-        self.deposit_target(&target, frame)
+        self.deposit_targets(&targets, frame, down)
     }
 
-    fn relay_deposit_onion(&mut self, onion: &str, frame: &[u8]) -> RelayHop {
+    /// `onion` is the contact's hidden service, the address on the pending
+    /// frame. Cards are looked up by that contact, then tried in order.
+    fn relay_deposit_onion(
+        &mut self,
+        onion: &str,
+        frame: &[u8],
+        down: &mut Vec<String>,
+    ) -> DepositHop {
         if !self.relay_path_open() {
-            return RelayHop::Skipped;
+            return DepositHop::Skipped;
         }
-        let target = {
+        let targets = {
             let Some(session) = self.session.as_ref() else {
-                return RelayHop::Skipped;
+                return DepositHop::Skipped;
             };
             let Ok(book) = TargetBook::from_bytes(&session.relay_targets) else {
-                return RelayHop::Skipped;
+                return DepositHop::Skipped;
             };
-            let ids: Vec<String> = session
+            let ids: Vec<&str> = session
                 .contacts
                 .iter()
                 .filter(|c| c.onion == onion)
-                .map(|c| c.id.clone())
+                .map(|c| c.id.as_str())
                 .collect();
-            let Some(target) = book.find_onion(onion, &ids) else {
-                return RelayHop::Skipped;
-            };
-            target.clone()
+            book.cards_for_ids(&ids)
         };
-        self.deposit_target(&target, frame)
+        self.deposit_targets(&targets, frame, down)
     }
 
     /// Tor is up and this posture allows a relay hop. Does not open a socket.
@@ -2651,20 +2686,24 @@ impl App {
         self.bridges_hold_reason().is_none()
     }
 
-    fn deposit_target(&mut self, target: &relay::Target, frame: &[u8]) -> RelayHop {
+    fn deposit_targets(
+        &mut self,
+        targets: &[relay::Target],
+        frame: &[u8],
+        down: &mut Vec<String>,
+    ) -> DepositHop {
         let id = relay::frame_deposit_id(frame);
-        if self.relay_deposited.contains(&id) {
-            return RelayHop::Skipped;
+        if targets.is_empty() || self.relay_deposited.contains(&id) {
+            return DepositHop::Skipped;
         }
-        let isol = self.relay_isolation(target.onion());
-        match target.deposit(SOCKS_HOST, self.socks_port, frame, isol.as_ref()) {
-            Ok(()) => {
-                self.remember_deposit(id);
-                RelayHop::Deposited
-            }
-            Err("relay unreachable") => RelayHop::Unreachable,
-            Err(_) => RelayHop::Refused,
+        let hop = relay::failover_deposit(targets, down, |target| {
+            let isol = self.relay_isolation(target.onion());
+            target.deposit(SOCKS_HOST, self.socks_port, frame, isol.as_ref())
+        });
+        if hop == DepositHop::Deposited {
+            self.remember_deposit(id);
         }
+        hop
     }
 
     fn handle_relay(&mut self, args: &str) {
@@ -2689,10 +2728,36 @@ impl App {
             self.relay_send_pending();
             return;
         }
-        if args == "clear" {
+        if args == "clear" || args.starts_with("clear ") {
+            let onion = args["clear".len()..].trim();
+            if onion.split_whitespace().nth(1).is_some() {
+                self.relay_usage();
+                return;
+            }
+            let Some(session) = self.session.as_ref() else {
+                return;
+            };
+            let mut book = match InboxBook::from_stored(&session.relay_inbox) {
+                Ok(book) => book,
+                Err(_) => {
+                    self.relay_note("relay inbox refused");
+                    return;
+                }
+            };
+            let removed = if onion.is_empty() {
+                book.clear();
+                true
+            } else {
+                book.remove_onion(onion).unwrap_or(false)
+            };
+            if !removed {
+                self.relay_note("relay inbox refused");
+                return;
+            }
+            let bytes = book.to_bytes();
             if let Some(session) = self.session.as_mut() {
                 session.relay_inbox.zeroize();
-                session.relay_inbox.clear();
+                session.relay_inbox = bytes;
             }
             self.note_saved("relay inbox cleared");
             return;
@@ -2708,17 +2773,26 @@ impl App {
                     self.relay_usage();
                     return;
                 }
-                match Inbox::parse(onion, hex) {
-                    Ok(inbox) => {
-                        let bytes = inbox.to_bytes();
-                        if let Some(session) = self.session.as_mut() {
-                            session.relay_inbox.zeroize();
-                            session.relay_inbox = bytes;
-                        }
-                        self.note_saved("relay inbox set");
+                let Some(session) = self.session.as_ref() else {
+                    return;
+                };
+                let mut book = match InboxBook::from_stored(&session.relay_inbox) {
+                    Ok(book) => book,
+                    Err(_) => {
+                        self.relay_note("relay inbox refused");
+                        return;
                     }
-                    Err(_) => self.relay_note("relay inbox refused"),
+                };
+                if book.insert(onion, hex).is_err() {
+                    self.relay_note("relay inbox refused");
+                    return;
                 }
+                let bytes = book.to_bytes();
+                if let Some(session) = self.session.as_mut() {
+                    session.relay_inbox.zeroize();
+                    session.relay_inbox = bytes;
+                }
+                self.note_saved("relay inbox set");
             }
             Some("for") => {
                 let rest = args.strip_prefix("for").unwrap_or("").trim();
@@ -2734,11 +2808,16 @@ impl App {
                     self.relay_note("relay contact refused");
                     return;
                 };
-                let mut book = self
-                    .session
-                    .as_ref()
-                    .and_then(|s| TargetBook::from_bytes(&s.relay_targets).ok())
-                    .unwrap_or_default();
+                let Some(session) = self.session.as_ref() else {
+                    return;
+                };
+                let mut book = match TargetBook::from_bytes(&session.relay_targets) {
+                    Ok(book) => book,
+                    Err(_) => {
+                        self.relay_note("relay card refused");
+                        return;
+                    }
+                };
                 if book.insert(&contact_id, onion, hex).is_err() {
                     self.relay_note("relay card refused");
                     return;
@@ -2751,7 +2830,11 @@ impl App {
                 self.note_saved("relay target set");
             }
             Some("forget") => {
-                let token = args.strip_prefix("forget").unwrap_or("").trim();
+                let rest = args.strip_prefix("forget").unwrap_or("").trim();
+                let Some((token, onion)) = split_forget_target(rest) else {
+                    self.relay_usage();
+                    return;
+                };
                 let Some(contact_id) = self
                     .session
                     .as_ref()
@@ -2760,12 +2843,22 @@ impl App {
                     self.relay_note("relay contact refused");
                     return;
                 };
-                let mut book = self
-                    .session
-                    .as_ref()
-                    .and_then(|s| TargetBook::from_bytes(&s.relay_targets).ok())
-                    .unwrap_or_default();
-                if !book.remove(&contact_id) {
+                let Some(session) = self.session.as_ref() else {
+                    return;
+                };
+                let mut book = match TargetBook::from_bytes(&session.relay_targets) {
+                    Ok(book) => book,
+                    Err(_) => {
+                        self.relay_note("relay contact refused");
+                        return;
+                    }
+                };
+                let removed = if let Some(onion) = onion {
+                    book.remove_onion(&contact_id, onion).unwrap_or(false)
+                } else {
+                    book.remove(&contact_id)
+                };
+                if !removed {
                     self.relay_note("relay contact refused");
                     return;
                 }
@@ -2781,7 +2874,9 @@ impl App {
     }
 
     fn relay_usage(&mut self) {
-        self.relay_note("usage: :relay status|inbox|for|forget|fetch|send|clear");
+        self.relay_note(
+            "usage: :relay status|inbox ONION HEX|for CONTACT ONION HEX|forget CONTACT [ONION]|fetch|send|clear [ONION]",
+        );
     }
 
     fn note_saved(&mut self, ok: &str) {
@@ -2797,26 +2892,32 @@ impl App {
             self.relay_note("relay off (extreme)");
             return;
         }
-        let (inbox, targets) = self
-            .session
-            .as_ref()
-            .map(|s| {
-                let inbox = !s.relay_inbox.is_empty();
-                let targets = TargetBook::from_bytes(&s.relay_targets)
-                    .map(|b| b.len())
-                    .unwrap_or(0);
-                (inbox, targets)
-            })
-            .unwrap_or((false, 0));
-        let inbox = if inbox { "set" } else { "off" };
-        self.relay_note(&format!("relay inbox={inbox} targets={targets}"));
+        let line = self.session.as_ref().map(|s| {
+            let inboxes = if s.relay_inbox.is_empty() {
+                Ok(0)
+            } else {
+                InboxBook::from_stored(&s.relay_inbox).map(|b| b.len())
+            };
+            let targets = if s.relay_targets.is_empty() {
+                Ok(0)
+            } else {
+                TargetBook::from_bytes(&s.relay_targets).map(|b| b.len())
+            };
+            match (inboxes, targets) {
+                (Ok(inboxes), Ok(targets)) => {
+                    format!("relay inboxes={inboxes} targets={targets}")
+                }
+                _ => "relay records refused".to_string(),
+            }
+        });
+        self.relay_note(line.as_deref().unwrap_or("relay inboxes=0 targets=0"));
     }
 
     fn relay_fetch(&mut self) {
         if !self.relay_ready() {
             return;
         }
-        let inbox = {
+        let book = {
             let Some(session) = self.session.as_ref() else {
                 return;
             };
@@ -2824,40 +2925,72 @@ impl App {
                 self.relay_note("no relay inbox");
                 return;
             }
-            match Inbox::from_bytes(&session.relay_inbox) {
-                Ok(inbox) => inbox,
+            match InboxBook::from_stored(&session.relay_inbox) {
+                Ok(book) if !book.is_empty() => book,
+                Ok(_) => {
+                    self.relay_note("no relay inbox");
+                    return;
+                }
                 Err(_) => {
                     self.relay_note("relay inbox refused");
                     return;
                 }
             }
         };
-        let isol = self.relay_isolation(inbox.onion());
         let mut got = 0usize;
-        for _ in 0..8 {
-            match inbox.fetch(SOCKS_HOST, self.socks_port, isol.as_ref()) {
-                Ok(Fetched::Empty) => break,
-                Ok(Fetched::Frame { frame, ack }) => {
-                    self.accept_incoming_frame(&frame);
-                    if inbox
-                        .ack(SOCKS_HOST, self.socks_port, &ack, isol.as_ref())
-                        .is_err()
-                    {
-                        self.relay_note("relay fetch incomplete");
-                        return;
-                    }
-                    got += 1;
+        let mut unreachable = false;
+        let mut refused = false;
+        let mut incomplete = false;
+        let mut down: Vec<String> = Vec::new();
+        for inbox in book.iter() {
+            if got >= 8 {
+                break;
+            }
+            if down.iter().any(|onion| onion == inbox.onion()) {
+                unreachable = true;
+                continue;
+            }
+            let isol = self.relay_isolation(inbox.onion());
+            loop {
+                if got >= 8 {
+                    break;
                 }
-                Err(_) => {
-                    self.relay_note("relay refused");
-                    return;
+                match inbox.fetch(SOCKS_HOST, self.socks_port, isol.as_ref()) {
+                    Ok(Fetched::Empty) => break,
+                    Ok(Fetched::Frame { frame, ack }) => {
+                        self.accept_incoming_frame(&frame);
+                        if inbox
+                            .ack(SOCKS_HOST, self.socks_port, &ack, isol.as_ref())
+                            .is_err()
+                        {
+                            incomplete = true;
+                            break;
+                        }
+                        got += 1;
+                    }
+                    Err("relay unreachable") => {
+                        unreachable = true;
+                        down.push(inbox.onion().to_string());
+                        break;
+                    }
+                    Err(_) => {
+                        refused = true;
+                        break;
+                    }
                 }
             }
         }
-        if got == 0 {
-            self.relay_note("relay inbox empty");
-        } else {
+        wipe_strings(&mut down);
+        if incomplete {
+            self.relay_note("relay fetch incomplete");
+        } else if got > 0 {
             self.relay_note(&format!("relay fetched {got} frame(s)"));
+        } else if refused {
+            self.relay_note("relay refused");
+        } else if unreachable {
+            self.relay_note("relay unreachable");
+        } else {
+            self.relay_note("relay inbox empty");
         }
     }
 
@@ -2872,20 +3005,21 @@ impl App {
             .unwrap_or_default();
         let mut deposited = 0usize;
         let mut unreachable = false;
+        let mut refused = false;
+        let mut down: Vec<String> = Vec::new();
         for (onion, frame) in &pending {
-            if unreachable {
-                break;
-            }
-            match self.relay_deposit_onion(onion, frame) {
-                RelayHop::Deposited => deposited += 1,
-                RelayHop::Unreachable => unreachable = true,
-                RelayHop::Skipped | RelayHop::Refused => {}
+            match self.relay_deposit_onion(onion, frame, &mut down) {
+                DepositHop::Deposited => deposited += 1,
+                DepositHop::Unreachable => unreachable = true,
+                DepositHop::Refused => refused = true,
+                DepositHop::Skipped => {}
             }
         }
+        wipe_strings(&mut down);
         for (_, frame) in &mut pending {
             frame.zeroize();
         }
-        if unreachable {
+        if deposited == 0 && unreachable && !refused {
             self.relay_note("relay unreachable");
         } else {
             self.relay_note(&format!("relay deposited {deposited} frame(s)"));
@@ -3549,15 +3683,11 @@ impl App {
             // OPSEC: short reason only — frame stays queued for :retry.
             // A configured relay gets a copy; the local queue is kept until
             // a direct send works, so a relay drop does not lose the frame.
-            let hop = self.relay_deposit_contact(&contact.id, &frame);
+            let mut relay_down = Vec::new();
+            let hop = self.relay_deposit_contact(&contact.id, &frame, &mut relay_down);
+            wipe_strings(&mut relay_down);
             self.push_msg(format!("[{peer_label}] queued offline (SOCKS send failed)"));
-            self.status_msg = match hop {
-                RelayHop::Deposited => "Queued: deposited to relay (still queued locally)".into(),
-                RelayHop::Unreachable | RelayHop::Refused => {
-                    "Queued: SOCKS send failed; relay deposit failed".into()
-                }
-                RelayHop::Skipped => "Queued: SOCKS send failed (frame committed)".into(),
-            };
+            self.status_msg = relay_queue_status(hop);
         }
     }
 
@@ -4415,7 +4545,7 @@ impl App {
                     "  :retry                  flush pending queue (Tor / net_mode gate)",
                 );
                 self.push_msg(
-                    "  :relay                  inbox/card for a self-hosted relay (ciphertext)",
+                    "  :relay                  self-hosted relays; failover in the order added",
                 );
                 self.push_msg(
                     "  :disappear [off|30s|…]  local TTL erase + ratchet skipped-key wipe",
@@ -6178,6 +6308,78 @@ mod tests {
             "{}",
             app.status_msg
         );
+    }
+
+    #[test]
+    fn relay_commands_keep_several_cards_and_do_not_replace_a_corrupt_book() {
+        let id = LongTermIdentity::from_seed([0x12; 32]);
+        let mut app = unlocked_app_with(&id, "unused.onion");
+        let contact_onion = "aibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibejsqd.onion";
+        let relay_b = "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion";
+        let contact_id = app
+            .session
+            .as_mut()
+            .unwrap()
+            .upsert_contact_from_link(contact_onion, [3; 32], [4; 32], "Ada")
+            .id;
+        let hex = "ab".repeat(64);
+        app.handle_command(&format!(":relay for Ada {contact_onion} {hex}"));
+        assert!(
+            app.status_msg.contains("relay target set"),
+            "{}",
+            app.status_msg
+        );
+        app.handle_command(&format!(":relay for Ada {relay_b} {hex}"));
+        assert!(
+            app.status_msg.contains("relay target set"),
+            "{}",
+            app.status_msg
+        );
+        let cards = TargetBook::from_bytes(&app.session.as_ref().unwrap().relay_targets)
+            .unwrap()
+            .cards_for_ids(&[&contact_id]);
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].onion(), contact_onion);
+        assert_eq!(cards[1].onion(), relay_b);
+        app.handle_command(&format!(":relay forget Ada {relay_b}"));
+        assert!(app.status_msg.contains("cleared"), "{}", app.status_msg);
+        assert_eq!(
+            TargetBook::from_bytes(&app.session.as_ref().unwrap().relay_targets)
+                .unwrap()
+                .len(),
+            1
+        );
+        app.handle_command(":relay status");
+        assert!(
+            app.status_msg.contains("inboxes=0") && app.status_msg.contains("targets=1"),
+            "{}",
+            app.status_msg
+        );
+
+        app.handle_command(&format!(":relay inbox {contact_onion} {hex}"));
+        app.handle_command(&format!(":relay inbox {relay_b} {hex}"));
+        assert_eq!(
+            InboxBook::from_stored(&app.session.as_ref().unwrap().relay_inbox)
+                .unwrap()
+                .len(),
+            2
+        );
+        app.handle_command(&format!(":relay clear {relay_b}"));
+        assert_eq!(
+            InboxBook::from_stored(&app.session.as_ref().unwrap().relay_inbox)
+                .unwrap()
+                .len(),
+            1
+        );
+        app.handle_command(&format!(":relay inbox {contact_onion} {}", "cd".repeat(64)));
+        let book = InboxBook::from_stored(&app.session.as_ref().unwrap().relay_inbox).unwrap();
+        assert_eq!(book.len(), 1);
+
+        let corrupt = vec![9u8, 9, 9];
+        app.session.as_mut().unwrap().relay_targets = corrupt.clone();
+        app.handle_command(&format!(":relay for Ada {relay_b} {hex}"));
+        assert!(app.status_msg.contains("refused"), "{}", app.status_msg);
+        assert_eq!(app.session.as_ref().unwrap().relay_targets, corrupt);
     }
 
     #[test]

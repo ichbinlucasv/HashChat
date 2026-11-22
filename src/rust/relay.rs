@@ -10,10 +10,17 @@
 //! listener). Creating or deleting a mailbox is an in-process operator
 //! action, so it is not reachable through the onion.
 //!
-//! What this is not: several relays with failover, cover traffic, or a
-//! promise that the operator is honest. A relay can drop frames, refuse the
-//! queue, or record timing. Delivery is best-effort. Frames expire. The
-//! sender keeps a local copy until a direct Tor send works.
+//! A profile may use several relays. Deposit tries a contact's cards in the
+//! order they were stored and stops at the first that accepts the slot.
+//! Fetch walks the profile's own inboxes in that same kind of order. This is
+//! failover, not a copy on every relay.
+//!
+//! What this is not: cover traffic, a background poll, or a promise that the
+//! operator is honest. A relay can drop frames, refuse the queue, or record
+//! timing. A relay that answers FULL or REFUSED has already seen the slot.
+//! If a reply is lost after the relay stored the frame, the next relay may
+//! store a second copy. Delivery is best-effort. Frames expire. The sender
+//! keeps a local copy until a direct Tor send works.
 //!
 //! Disk, when a directory is configured, holds ciphertext and token hashes
 //! in owner-only files. The tokens themselves are not written. Wiping
@@ -55,6 +62,18 @@ pub const MAX_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// Deposit targets stored in one profile.
 pub const MAX_RELAY_TARGETS: usize = 64;
+
+/// Relay cards for one contact. Tried in stored order; the first accept wins.
+pub const MAX_RELAYS_PER_CONTACT: usize = 4;
+
+/// Inboxes one profile fetches. Same cap: more relays means more operators
+/// who can see ciphertext and timing.
+pub const MAX_RELAY_INBOXES: usize = 4;
+
+/// Stored inbox book. A single inbox written by an older profile is version 1.
+const INBOX_BOOK_VERSION: u8 = 2;
+
+const MAX_INBOX_STORED: usize = 1024;
 
 const MAGIC: &[u8; 4] = b"HCRL";
 const VERSION: u8 = 1;
@@ -434,7 +453,21 @@ pub enum Fetched {
     Frame { frame: Vec<u8>, ack: Ack },
 }
 
-/// Where to deposit frames for one contact.
+/// What a deposit attempt did.
+///
+/// `Deposited` is the first relay that accepted the slot. Later relays are
+/// not contacted. `Unreachable` means every tried relay failed before a
+/// reply, or was already known down. `Refused` means at least one relay
+/// answered and none accepted. `Skipped` means there was no card to try.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DepositHop {
+    Skipped,
+    Deposited,
+    Unreachable,
+    Refused,
+}
+
+/// Where to deposit frames for one contact, on one relay.
 #[derive(Clone, Zeroize)]
 pub struct Target {
     contact_id: String,
@@ -481,6 +514,57 @@ impl Target {
             _ => Err("relay refused"),
         }
     }
+
+    /// Loopback deposit for tests. Refuses any address that is not loopback.
+    #[cfg(test)]
+    fn deposit_addr(&self, addr: SocketAddr, frame: &[u8]) -> Result<(), &'static str> {
+        let mut slot = pack_slot(frame)?;
+        let mut req = request(OP_PUT, &self.id, &self.push_token, &slot);
+        let reply = exchange_public(addr, &req);
+        slot.zeroize();
+        req.zeroize();
+        let reply = reply?;
+        match reply.status {
+            ST_OK => Ok(()),
+            ST_FULL => Err("relay full"),
+            _ => Err("relay refused"),
+        }
+    }
+}
+
+/// Try `targets` in order. `down` holds relay onions that already failed to
+/// connect during this batch; those are skipped and not contacted again.
+///
+/// The onion strings in `down` are copies. The caller zeroizes that list
+/// when the batch ends. This function does not log them.
+pub fn failover_deposit<F>(targets: &[Target], down: &mut Vec<String>, mut try_one: F) -> DepositHop
+where
+    F: FnMut(&Target) -> Result<(), &'static str>,
+{
+    if targets.is_empty() {
+        return DepositHop::Skipped;
+    }
+    let mut refused = false;
+    for target in targets {
+        if down.iter().any(|onion| onion == target.onion()) {
+            continue;
+        }
+        match try_one(target) {
+            Ok(()) => return DepositHop::Deposited,
+            Err("relay unreachable") => {
+                let onion = target.onion().to_string();
+                if !down.iter().any(|known| known == &onion) {
+                    down.push(onion);
+                }
+            }
+            Err(_) => refused = true,
+        }
+    }
+    if refused {
+        DepositHop::Refused
+    } else {
+        DepositHop::Unreachable
+    }
 }
 
 /// Deposit targets kept inside the encrypted profile.
@@ -498,16 +582,22 @@ impl TargetBook {
         self.targets.is_empty()
     }
 
+    /// First card for this contact. Failover uses [`TargetBook::cards_for_ids`].
     pub fn get(&self, contact_id: &str) -> Option<&Target> {
         self.targets.iter().find(|t| t.contact_id == contact_id)
     }
 
-    /// First target whose contact id is in `ids` and whose onion equals `onion`.
-    pub fn find_onion(&self, onion: &str, ids: &[String]) -> Option<&Target> {
-        let onion = onion.trim();
+    /// Cards whose contact id is in `ids`, in failover order (first stored, first tried).
+    ///
+    /// The queued frame is addressed to the contact's own onion. These cards
+    /// carry the relay onion, which is a different host. Matching the two
+    /// onions would skip every real relay.
+    pub fn cards_for_ids(&self, ids: &[&str]) -> Vec<Target> {
         self.targets
             .iter()
-            .find(|t| t.onion == onion && ids.iter().any(|id| id == &t.contact_id))
+            .filter(|target| ids.iter().any(|id| *id == target.contact_id))
+            .cloned()
+            .collect()
     }
 
     pub fn insert(
@@ -524,12 +614,32 @@ impl TargetBook {
         id.copy_from_slice(&pair[..32]);
         push.copy_from_slice(&pair[32..]);
         pair.zeroize();
-        if let Some(pos) = self.targets.iter().position(|t| t.contact_id == contact_id) {
-            self.targets.remove(pos);
-        } else if self.targets.len() >= MAX_RELAY_TARGETS {
+        if let Some(pos) = self
+            .targets
+            .iter()
+            .position(|t| t.contact_id == contact_id && t.onion == onion)
+        {
+            self.targets[pos] = Target {
+                contact_id,
+                onion,
+                id,
+                push_token: push,
+            };
+            return Ok(());
+        }
+        let for_contact = self
+            .targets
+            .iter()
+            .filter(|t| t.contact_id == contact_id)
+            .count();
+        if for_contact >= MAX_RELAYS_PER_CONTACT || self.targets.len() >= MAX_RELAY_TARGETS {
             id.zeroize();
             push.zeroize();
-            return Err("relay targets full");
+            return Err(if for_contact >= MAX_RELAYS_PER_CONTACT {
+                "too many relays"
+            } else {
+                "relay targets full"
+            });
         }
         self.targets.push(Target {
             contact_id,
@@ -540,12 +650,26 @@ impl TargetBook {
         Ok(())
     }
 
+    /// Drop every card for this contact.
     pub fn remove(&mut self, contact_id: &str) -> bool {
-        let Some(pos) = self.targets.iter().position(|t| t.contact_id == contact_id) else {
-            return false;
+        let before = self.targets.len();
+        self.targets.retain(|t| t.contact_id != contact_id);
+        self.targets.len() != before
+    }
+
+    /// Drop one card. The onion is the relay, not the contact.
+    pub fn remove_onion(&mut self, contact_id: &str, onion: &str) -> Result<bool, &'static str> {
+        let contact_id = check_contact_id(contact_id)?;
+        let onion = check_onion(onion)?;
+        let Some(pos) = self
+            .targets
+            .iter()
+            .position(|t| t.contact_id == contact_id && t.onion == onion)
+        else {
+            return Ok(false);
         };
         self.targets.remove(pos);
-        true
+        Ok(true)
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -592,7 +716,18 @@ impl TargetBook {
             pos += 32;
             push.copy_from_slice(&bytes[pos..pos + 32]);
             pos += 32;
-            if targets.iter().any(|t| t.contact_id == contact_id) {
+            if targets
+                .iter()
+                .any(|t| t.contact_id == contact_id && t.onion == onion)
+            {
+                return Err("bad relay targets");
+            }
+            if targets
+                .iter()
+                .filter(|t| t.contact_id == contact_id)
+                .count()
+                >= MAX_RELAYS_PER_CONTACT
+            {
                 return Err("bad relay targets");
             }
             targets.push(Target {
@@ -628,6 +763,132 @@ fn take_str<'a>(bytes: &'a [u8], pos: &mut usize) -> Result<&'a str, &'static st
     let s = std::str::from_utf8(&bytes[*pos..end]).map_err(|_| "bad relay targets")?;
     *pos = end;
     Ok(s)
+}
+
+/// Inboxes this profile fetches, in the order they were added.
+#[derive(Clone, Default)]
+pub struct InboxBook {
+    inboxes: Vec<Inbox>,
+}
+
+impl InboxBook {
+    pub fn len(&self) -> usize {
+        self.inboxes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inboxes.is_empty()
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, Inbox> {
+        self.inboxes.iter()
+    }
+
+    /// Add an inbox, or replace the pull token when that relay onion is already stored.
+    pub fn insert(&mut self, onion: &str, inbox_hex: &str) -> Result<(), &'static str> {
+        let inbox = Inbox::parse(onion, inbox_hex)?;
+        if let Some(pos) = self.inboxes.iter().position(|i| i.onion() == inbox.onion()) {
+            self.inboxes[pos] = inbox;
+            return Ok(());
+        }
+        if self.inboxes.len() >= MAX_RELAY_INBOXES {
+            return Err("too many relays");
+        }
+        self.inboxes.push(inbox);
+        Ok(())
+    }
+
+    pub fn clear(&mut self) {
+        self.inboxes.clear();
+    }
+
+    pub fn remove_onion(&mut self, onion: &str) -> Result<bool, &'static str> {
+        let onion = check_onion(onion)?;
+        let Some(pos) = self.inboxes.iter().position(|i| i.onion() == onion) else {
+            return Ok(false);
+        };
+        self.inboxes.remove(pos);
+        Ok(true)
+    }
+
+    /// Empty input is an empty book. Version 1 is one inbox from an older profile.
+    /// Version 2 is this book.
+    pub fn from_stored(bytes: &[u8]) -> Result<Self, &'static str> {
+        if bytes.is_empty() {
+            return Ok(Self {
+                inboxes: Vec::new(),
+            });
+        }
+        if bytes.len() > MAX_INBOX_STORED {
+            return Err("bad relay inbox");
+        }
+        match bytes[0] {
+            VERSION => {
+                let inbox = Inbox::from_bytes(bytes)?;
+                Ok(Self {
+                    inboxes: vec![inbox],
+                })
+            }
+            INBOX_BOOK_VERSION => parse_inbox_book(bytes),
+            _ => Err("bad relay inbox"),
+        }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        if self.inboxes.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let count = u8::try_from(self.inboxes.len()).unwrap_or(0);
+        out.push(INBOX_BOOK_VERSION);
+        out.push(count);
+        for inbox in &self.inboxes {
+            let body = inbox.to_bytes();
+            let n = u16::try_from(body.len()).unwrap_or(0);
+            out.extend_from_slice(&n.to_be_bytes());
+            out.extend_from_slice(&body);
+        }
+        out
+    }
+}
+
+fn parse_inbox_book(bytes: &[u8]) -> Result<InboxBook, &'static str> {
+    if bytes.len() < 2 || bytes[0] != INBOX_BOOK_VERSION {
+        return Err("bad relay inbox");
+    }
+    let n = bytes[1] as usize;
+    if n == 0 || n > MAX_RELAY_INBOXES {
+        return Err("bad relay inbox");
+    }
+    let mut pos = 2usize;
+    let mut inboxes = Vec::with_capacity(n);
+    for _ in 0..n {
+        if pos + 2 > bytes.len() {
+            return Err("bad relay inbox");
+        }
+        let len = u16::from_be_bytes([bytes[pos], bytes[pos + 1]]) as usize;
+        pos += 2;
+        if len == 0 {
+            return Err("bad relay inbox");
+        }
+        let end = pos.checked_add(len).ok_or("bad relay inbox")?;
+        if end > bytes.len() {
+            return Err("bad relay inbox");
+        }
+        let inbox = Inbox::from_bytes(&bytes[pos..end])?;
+        pos = end;
+        if inboxes
+            .iter()
+            .any(|have: &Inbox| have.onion() == inbox.onion())
+        {
+            return Err("bad relay inbox");
+        }
+        inboxes.push(inbox);
+    }
+    if pos != bytes.len() {
+        return Err("bad relay inbox");
+    }
+    Ok(InboxBook { inboxes })
 }
 
 struct Reply {
@@ -1474,7 +1735,8 @@ stdin, one command a line:
 
 The inbox line stays with you. The card line is what a contact is given,
 together with the onion, which you check out of band. The card does not
-bind the onion. There is no account and no request log. The process sees
+bind the onion. A contact may hold cards for several relays; this process
+is one relay. There is no account and no request log. The process sees
 ciphertext. --memory keeps the queue and the onion only until exit.
 ";
 
@@ -1826,6 +2088,245 @@ mod tests {
         let huge = vec![b'a'; 300];
         let mut cursor = Cursor::new(huge);
         assert!(matches!(next_operator_line(&mut cursor), LineRead::Refused));
+    }
+
+    fn card_hex(secrets: &MailboxSecrets) -> String {
+        let revealed = secrets.reveal();
+        revealed
+            .as_str()
+            .lines()
+            .nth(1)
+            .unwrap()
+            .strip_prefix("card ")
+            .unwrap()
+            .to_string()
+    }
+
+    fn fill_mailbox(addr: SocketAddr, secrets: &MailboxSecrets, frames: &[&[u8]]) {
+        for frame in frames {
+            let slot = pack_slot(frame).unwrap();
+            let put = request(OP_PUT, &secrets.id, &secrets.push_token, &slot);
+            assert_eq!(exchange_public(addr, &put).unwrap().status, ST_OK);
+        }
+    }
+
+    fn head_frame(addr: SocketAddr, secrets: &MailboxSecrets) -> Vec<u8> {
+        let get = request(
+            OP_GET,
+            &secrets.id,
+            &secrets.pull_token,
+            &vec![0u8; RELAY_SLOT_BYTES],
+        );
+        unpack_slot(&exchange_public(addr, &get).unwrap().slot).unwrap()
+    }
+
+    #[test]
+    fn several_relays_keep_order_and_a_new_card_does_not_drop_the_others() {
+        let o1 = onion(1);
+        let o2 = onion(2);
+        let o3 = onion(3);
+        let mut book = TargetBook::default();
+        book.insert("c", &o1, &"ab".repeat(64)).unwrap();
+        book.insert("c", &o2, &"cd".repeat(64)).unwrap();
+        book.insert("c", &o1, &"ef".repeat(64)).unwrap();
+        let cards = book.cards_for_ids(&["c"]);
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].onion(), o1);
+        assert_eq!(cards[1].onion(), o2);
+        assert_eq!(cards[0].push_token, [0xef; 32]);
+        assert_ne!(cards[0].onion(), "contact.onion");
+        book.insert("c", &o3, &"11".repeat(64)).unwrap();
+        book.insert("other", &o1, &"22".repeat(64)).unwrap();
+        assert_eq!(book.cards_for_ids(&["c"]).len(), 3);
+        assert!(book.remove_onion("c", &o2).unwrap());
+        assert!(!book.remove_onion("c", &o2).unwrap());
+        assert_eq!(
+            book.cards_for_ids(&["c"])
+                .iter()
+                .map(|t| t.onion().to_string())
+                .collect::<Vec<_>>(),
+            vec![o1.clone(), o3]
+        );
+        assert!(book.remove("c"));
+        assert_eq!(book.len(), 1);
+        assert!(book.get("other").is_some());
+
+        for n in 4u8..=7 {
+            book.insert("c", &onion(n), &"33".repeat(64)).unwrap();
+        }
+        assert_eq!(
+            book.insert("c", &onion(8), &"33".repeat(64)),
+            Err("too many relays")
+        );
+        assert_eq!(book.cards_for_ids(&["c"]).len(), MAX_RELAYS_PER_CONTACT);
+
+        let mut full = TargetBook::default();
+        for n in 0..MAX_RELAY_TARGETS as u8 {
+            full.insert(&format!("p{n}"), &onion(n), &"44".repeat(64))
+                .unwrap();
+        }
+        assert_eq!(
+            full.insert("overflow", &onion(200), &"44".repeat(64)),
+            Err("relay targets full")
+        );
+
+        let stored = book.to_bytes();
+        let loaded = TargetBook::from_bytes(&stored).unwrap();
+        assert_eq!(loaded.cards_for_ids(&["c"]).len(), MAX_RELAYS_PER_CONTACT);
+        let mut single = TargetBook::default();
+        single.insert("c", &o1, &"ab".repeat(64)).unwrap();
+        let raw = single.to_bytes();
+        let mut dup = raw.clone();
+        dup[2] = 2;
+        dup.extend_from_slice(&raw[3..]);
+        assert!(TargetBook::from_bytes(&dup).is_err());
+    }
+
+    #[test]
+    fn legacy_inbox_loads_and_a_book_caps_at_four() {
+        let o1 = onion(20);
+        let legacy = Inbox::parse(&o1, &"ab".repeat(64)).unwrap().to_bytes();
+        assert_eq!(legacy[0], VERSION);
+        let book = InboxBook::from_stored(&legacy).unwrap();
+        assert_eq!(book.len(), 1);
+        assert_eq!(book.iter().next().unwrap().onion(), o1);
+        let mut book = InboxBook::from_stored(&[]).unwrap();
+        book.insert(&o1, &"ab".repeat(64)).unwrap();
+        book.insert(&o1, &"cd".repeat(64)).unwrap();
+        assert_eq!(book.len(), 1);
+        assert_eq!(book.iter().next().unwrap().pull_token, [0xcd; 32]);
+        for n in 21..24 {
+            book.insert(&onion(n), &"11".repeat(64)).unwrap();
+        }
+        assert_eq!(book.len(), MAX_RELAY_INBOXES);
+        assert_eq!(
+            book.insert(&onion(24), &"11".repeat(64)),
+            Err("too many relays")
+        );
+        let stored = book.to_bytes();
+        assert_eq!(stored[0], INBOX_BOOK_VERSION);
+        let loaded = InboxBook::from_stored(&stored).unwrap();
+        assert_eq!(loaded.len(), MAX_RELAY_INBOXES);
+        assert_eq!(loaded.iter().next().unwrap().pull_token, [0xcd; 32]);
+        let mut short = stored.clone();
+        short.pop();
+        assert!(InboxBook::from_stored(&short).is_err());
+        let mut extra = stored.clone();
+        extra.push(0);
+        assert!(InboxBook::from_stored(&extra).is_err());
+        assert!(InboxBook::from_stored(&[INBOX_BOOK_VERSION, 0]).is_err());
+        assert!(InboxBook::from_stored(&[9, 1]).is_err());
+        assert!(book.remove_onion(&onion(21)).unwrap());
+        assert_eq!(book.len(), 3);
+        book.clear();
+        assert!(book.is_empty());
+        assert!(book.to_bytes().is_empty());
+    }
+
+    #[test]
+    fn failover_uses_the_next_relay_when_the_first_is_full_or_down() {
+        let primary = small_server(None);
+        let backup = small_server(None);
+        let primary_secrets = primary.create_mailbox().unwrap();
+        let backup_secrets = backup.create_mailbox().unwrap();
+        let o1 = onion(30);
+        let o2 = onion(31);
+        let mut book = TargetBook::default();
+        book.insert("c", &o1, &card_hex(&primary_secrets)).unwrap();
+        book.insert("c", &o2, &card_hex(&backup_secrets)).unwrap();
+        let targets = book.cards_for_ids(&["c"]);
+
+        fill_mailbox(
+            primary.public_addr(),
+            &primary_secrets,
+            &[b"old-1", b"old-2"],
+        );
+        let mut calls = Vec::new();
+        let hop = failover_deposit(&targets, &mut Vec::new(), |target| {
+            calls.push(target.onion().to_string());
+            let addr = if target.onion() == o1 {
+                primary.public_addr()
+            } else {
+                backup.public_addr()
+            };
+            target.deposit_addr(addr, b"moved")
+        });
+        assert_eq!(hop, DepositHop::Deposited);
+        assert_eq!(calls, vec![o1.clone(), o2.clone()]);
+        assert_eq!(
+            head_frame(primary.public_addr(), &primary_secrets),
+            b"old-1"
+        );
+        assert_eq!(head_frame(backup.public_addr(), &backup_secrets), b"moved");
+
+        let mut saw_second = false;
+        let hop = failover_deposit(&targets, &mut Vec::new(), |target| {
+            if target.onion() == o2 {
+                saw_second = true;
+            }
+            Ok(())
+        });
+        assert_eq!(hop, DepositHop::Deposited);
+        assert!(!saw_second);
+
+        let closed = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1);
+        let o0 = onion(32);
+        let mut book = TargetBook::default();
+        book.insert("c", &o0, &"ab".repeat(64)).unwrap();
+        book.insert("c", &o2, &card_hex(&backup_secrets)).unwrap();
+        let targets = book.cards_for_ids(&["c"]);
+        let mut down = Vec::new();
+        let mut calls = Vec::new();
+        let hop = failover_deposit(&targets, &mut down, |target| {
+            calls.push(target.onion().to_string());
+            if target.onion() == o0 {
+                target.deposit_addr(closed, b"via-backup")
+            } else {
+                target.deposit_addr(backup.public_addr(), b"via-backup")
+            }
+        });
+        assert_eq!(hop, DepositHop::Deposited);
+        assert_eq!(calls, vec![o0.clone(), o2.clone()]);
+        assert_eq!(down, vec![o0.clone()]);
+        let mut later = 0usize;
+        let hop = failover_deposit(&targets, &mut down, |target| {
+            later += 1;
+            assert_eq!(target.onion(), o2);
+            Err("relay full")
+        });
+        assert_eq!(later, 1);
+        assert_eq!(hop, DepositHop::Refused);
+        assert!(down.iter().any(|onion| onion == &o0));
+
+        let mut down = Vec::new();
+        assert_eq!(
+            failover_deposit(&targets, &mut down, |_| Err("relay unreachable")),
+            DepositHop::Unreachable
+        );
+        assert_eq!(down.len(), 2);
+        let mut skipped = 0usize;
+        assert_eq!(
+            failover_deposit(&targets, &mut down, |_| {
+                skipped += 1;
+                Ok(())
+            }),
+            DepositHop::Unreachable
+        );
+        assert_eq!(skipped, 0);
+        assert_eq!(
+            failover_deposit(&[], &mut Vec::new(), |_| Ok(())),
+            DepositHop::Skipped
+        );
+        assert_eq!(
+            failover_deposit(&targets, &mut Vec::new(), |target| {
+                if target.onion() == o0 {
+                    Err("relay unreachable")
+                } else {
+                    Err("relay refused")
+                }
+            }),
+            DepositHop::Refused
+        );
     }
 
     fn rand_bytes() -> [u8; 4] {

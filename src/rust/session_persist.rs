@@ -48,8 +48,11 @@
 //! u32 BE length + bytes; empty = none), so an invite issued before a restart
 //! can still be accepted once and never twice.
 //! v14 = + relay inbox and relay deposit targets (length-prefixed bytes;
-//! empty = none). These are bearer tokens for a self-hosted relay. Extreme
-//! saves them empty. A backup leaves them out, same as ratchet state.
+//! empty = none). Inbox bytes are one inbox (version 1) or a book of up to
+//! four (version 2). A contact may have up to four deposit cards, tried in
+//! the order they were stored. These are bearer tokens for a self-hosted
+//! relay. Extreme saves them empty. A backup leaves them out, same as
+//! ratchet state.
 //! Load accepts v1–v14; save always writes v14. Older blobs load empty deny lists;
 //! pre-v6 contacts are treated as **verified** for continuity (new `:add-contact`
 //! entries start unverified). Pre-v7 loads default idle lock to 5 minutes.
@@ -1232,7 +1235,7 @@ pub(crate) fn deserialize_blob(plain: &[u8]) -> Result<SessionState, &'static st
     let (relay_inbox, relay_targets) = if ver >= BLOB_VERSION_V14 {
         let mut inbox = read_len_bytes(plain, &mut pos)?;
         let mut targets = read_len_bytes(plain, &mut pos)?;
-        let inbox_ok = inbox.is_empty() || crate::relay::Inbox::from_bytes(&inbox).is_ok();
+        let inbox_ok = crate::relay::InboxBook::from_stored(&inbox).is_ok();
         let targets_ok = crate::relay::TargetBook::from_bytes(&targets).is_ok();
         if !inbox_ok || !targets_ok {
             inbox.zeroize();
@@ -3237,9 +3240,11 @@ mod tests {
     fn relay_records_roundtrip_and_extreme_wipe_drop_them() {
         use crate::net_mode::PostureProfile;
         use crate::onion_binding::test_support::onion_and_key;
-        use crate::relay::{Inbox, TargetBook};
+        use crate::relay::{Inbox, InboxBook, TargetBook};
         let (bare, _) = onion_and_key(8);
         let onion = format!("{bare}.onion");
+        let (bare2, _) = onion_and_key(9);
+        let onion2 = format!("{bare2}.onion");
         let id = LongTermIdentity::from_seed([0x21; 32]);
         let mut session =
             SessionState::from_identity(IdentityOnionState::from_identity(&id, "r.onion", vec![]));
@@ -3251,6 +3256,25 @@ mod tests {
         let loaded = deserialize_blob(&serialize_blob_at(&session, 1_000)).unwrap();
         assert_eq!(loaded.relay_inbox, session.relay_inbox);
         assert_eq!(loaded.relay_targets, session.relay_targets);
+
+        let mut inboxes = InboxBook::default();
+        inboxes.insert(&onion, &"ab".repeat(64)).unwrap();
+        inboxes.insert(&onion2, &"ef".repeat(64)).unwrap();
+        session.relay_inbox = inboxes.to_bytes();
+        book.insert("c1", &onion2, &"12".repeat(64)).unwrap();
+        session.relay_targets = book.to_bytes();
+        let loaded = deserialize_blob(&serialize_blob_at(&session, 1_000)).unwrap();
+        assert_eq!(
+            InboxBook::from_stored(&loaded.relay_inbox).unwrap().len(),
+            2
+        );
+        assert_eq!(
+            TargetBook::from_bytes(&loaded.relay_targets)
+                .unwrap()
+                .cards_for_ids(&["c1"])
+                .len(),
+            2
+        );
 
         session.net.set_posture(PostureProfile::Extreme);
         let disk = session.for_disk();

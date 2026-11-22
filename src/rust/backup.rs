@@ -464,14 +464,19 @@ mod tests {
     #[test]
     fn backup_omits_relay_tokens() {
         use crate::onion_binding::test_support::onion_and_key;
-        use crate::relay::{Inbox, TargetBook};
+        use crate::relay::{InboxBook, TargetBook};
         let (bare, _) = onion_and_key(2);
         let onion = format!("{bare}.onion");
+        let (bare2, _) = onion_and_key(3);
+        let onion2 = format!("{bare2}.onion");
         let mut s = sample();
-        let inbox = Inbox::parse(&onion, &"11".repeat(64)).unwrap();
-        s.relay_inbox = inbox.to_bytes();
+        let mut inboxes = InboxBook::default();
+        inboxes.insert(&onion, &"11".repeat(64)).unwrap();
+        inboxes.insert(&onion2, &"33".repeat(64)).unwrap();
+        s.relay_inbox = inboxes.to_bytes();
         let mut book = TargetBook::default();
         book.insert("c1", &onion, &"22".repeat(64)).unwrap();
+        book.insert("c1", &onion2, &"44".repeat(64)).unwrap();
         s.relay_targets = book.to_bytes();
         let file = export_backup(&s, PASS, 9).unwrap();
         assert!(!file.windows(16).any(|w| w == &s.relay_inbox[..16]));
