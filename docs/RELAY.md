@@ -63,29 +63,64 @@ the card line, or the onion into an issue or a chat log.
 
 In the desktop TUI, after unlock:
 
-- `:relay inbox ONION HEX` stores your inbox
-- `:relay for CONTACT ONION HEX` stores a contact's card (the contact token
-  may contain spaces; the onion and the hex are the last two words)
-- `:relay forget CONTACT` removes that card
-- `:relay status` prints whether an inbox is set and how many targets, not
-  the secrets
-- `:relay send` deposits the local pending queue
-- `:relay fetch` pulls up to eight frames, then stops
-- `:relay clear` forgets the inbox
+- `:relay inbox ONION HEX` adds your inbox, or replaces the pull token when
+  that onion is already stored. A profile holds up to four inboxes.
+- `:relay for CONTACT ONION HEX` adds a contact's card (the contact token
+  may contain spaces; the onion and the hex are the last two words). The
+  same onion replaces that card and keeps its place in the order. A different
+  onion is added and is tried later. Up to four cards per contact. Adding a
+  card does not remove the others: `:relay forget` the old onion to stop
+  sending there.
+- `:relay forget CONTACT` removes every card for that contact.
+  `:relay forget CONTACT ONION` removes one card.
+- `:relay status` prints how many inboxes and how many cards, not the secrets.
+- `:relay send` deposits the local pending queue.
+- `:relay fetch` pulls up to eight frames in total, walking the inboxes in
+  order, then stops.
+- `:relay clear` forgets every inbox. `:relay clear ONION` forgets one.
 
 A direct Tor send that fails can also deposit one copy when a card is set.
-The frame stays in the local pending queue until a later direct send works,
-so a relay that drops it does not lose the only copy. There is no background
-poll. Fetch when you choose to. `:bridges require on` holds deposit and
-fetch the same way it holds a direct send.
+The same deposit runs when a jitter-held frame is released and the direct
+send fails, and when `:retry` fails. The frame stays in the local pending
+queue until a later direct send works, so a relay that drops it does not
+lose the only copy. There is no background poll. Fetch when you choose to.
+`:bridges require on` holds deposit and fetch the same way it holds a direct
+send.
+
+## Failover
+
+Cards for one contact are tried in the order they were added. The first
+relay that accepts the slot keeps the only copy this attempt sends on. The
+later relays are not contacted for that frame. A relay that does not answer,
+answers FULL, or answers REFUSED is skipped and the next card is tried.
+
+That is failover, not a copy on every relay. The first relay, while it is
+up, is the one that sees the ciphertext. A backup sees a frame only when
+every earlier relay missed this attempt.
+
+A FULL or REFUSED answer means that relay already received the slot. There
+is no separate probe: the protocol has no way to test a token without
+sending a valid frame, and an invalid frame is refused for the same status
+as a bad token. If the relay stored the frame and the reply was lost, the
+next card may store a second copy. After a restart the in-memory deposit id
+is gone, so a later retry can deposit the frame again.
+
+An onion that does not answer is remembered for the rest of that send,
+retry, or fetch, and is not dialed again during it. The list is not written
+down. The next command tries the onion again.
+
+`:relay send` and a failed `:retry` look up cards by the contact whose own
+onion is on the queued frame. The relay onion and the contact onion are
+different hosts. A profile that cannot parse its stored cards refuses the
+command and leaves the bytes in place.
 
 Extreme posture refuses every relay command except a status line that says
 the relay is off, and the next save writes the tokens empty. A backup file
 omits them for the same reason it omits ratchet state: a restored copy must
 not share the live mailbox.
 
-Android does not deposit or fetch. This slice is the desktop client and the
-relay process.
+Android does not deposit or fetch. This is the desktop client and the relay
+process.
 
 ## Caps
 
@@ -98,6 +133,8 @@ relay process.
 | Time to live | 1 to 168 hours, default 72 |
 | Live connections | 16, each with a 20 second read and write timeout |
 | Deposit targets in one profile | 64 |
+| Relays for one contact | 4, tried in stored order |
+| Inboxes in one profile | 4, fetched in stored order |
 
 A full mailbox answers FULL and leaves the oldest frame in place. Expired
 frames (`expiry <= now`) are dropped on put, get, and ack. Get peeks the
@@ -129,12 +166,18 @@ THREATMODEL.md for `:wipe`.
 
 ## What a fetch does to a slot
 
+Fetch walks each inbox until eight frames have been taken in total, or the
+inboxes are exhausted. An inbox that does not answer, or that refuses, does
+not stop the walk. The eight-frame cap is for the whole command, not for
+each inbox.
+
 A slot that is not a well-formed frame is acked immediately so it cannot
 block the head. A well-formed frame is acked after one local decrypt
 attempt, including an attempt that fails. A frame this profile cannot open
 is therefore removed from the relay. The sender still has it in the local
 queue until a direct send succeeds. Add the contact before you fetch if you
-need that copy.
+need that copy. An inbox whose ack fails is left alone for the rest of that
+command; the other inboxes are still fetched.
 
 The client remembers a deposit id (SHA-256 of the frame, label
 `HashChat-relay-deposit-v1`) in process memory, up to 128, so a retry does
@@ -144,9 +187,10 @@ frame again.
 
 ## What this is not
 
-- Several relays for one contact, or failover if one is down
+- A copy of each frame on every relay. Failover stops at the first accept.
 - Cover traffic, or a claim that deposit timing is hidden from the operator
 - A background poll (the 30 second bridge re-check is a Tor control query,
   not a relay fetch)
 - I2P (still refused)
+- An Android client (the shell does not deposit or fetch)
 - A promise that the operator is honest

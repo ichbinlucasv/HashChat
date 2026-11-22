@@ -148,8 +148,11 @@ authoritative restart path for contacts/ratchets/pending is `state.enc`.
 statement, the wire limits, and what an operator can and cannot see are in
 [`docs/RELAY.md`](docs/RELAY.md). Short version: ciphertext and token hashes
 only, no accounts, no program request log, create/delete/wipe not reachable
-through the onion, Extreme and backups do not keep the tokens. Failover
-across several relays is not implemented.
+through the onion, Extreme and backups do not keep the tokens. A contact
+may have up to four relay cards. Deposit tries them in order and stops at
+the first that accepts. Fetch walks up to four inboxes. A relay that answers
+FULL or REFUSED has already seen the slot. A card whose stored bytes do not
+parse is refused and left in place. Android does not speak the relay.
 
 ## Unsafe inventory (I-5)
 

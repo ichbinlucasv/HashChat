@@ -94,7 +94,7 @@ See [INSTALL.md](INSTALL.md) for Fedora / Ubuntu / Arch / Tails / Qubes walkthro
 - Rust ratchet + AEAD (speculative receive; AAD-bound frames)
 - Signed contact links + SAS fingerprint (`docs/CONTACT_LINK_V1.md`)
 - Tor SOCKS / ControlPort path (fail-closed cookie auth; loopback proxy policy)
-- Self-hosted relay for one mailbox (`hashchat-relay`, TUI `:relay`; see `docs/RELAY.md`). Several relays and failover are not in yet. Android does not speak the relay yet.
+- Self-hosted relays (`hashchat-relay`, TUI `:relay`; see `docs/RELAY.md`): up to four per contact, with failover in the order they were added. Android does not speak the relay yet.
 - Passphrase-wrapped persistence for identity, contacts, ratchets, pending queue
 - Panic wipe of local sensitive state
 
